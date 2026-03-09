@@ -59,10 +59,10 @@ func newLogger(noColor bool) zerolog.Logger {
 			return level
 		},
 		FormatMessage: func(i interface{}) string {
-			if i == nil {
-				return ""
+			if s, ok := i.(string); ok {
+				return "  " + s
 			}
-			return "  " + i.(string)
+			return ""
 		},
 	}
 	return zerolog.New(output).With().Timestamp().Logger()

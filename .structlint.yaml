@@ -2,8 +2,10 @@ version: "1"
 
 dir_structure:
   allowed_paths:
+    - "."
     - cmd/**
     - internal/**
+    - integration/**
     - .github/**
     - bin/**
     - dist/**
@@ -30,15 +32,17 @@ file_naming:
     - "*.md"
     - "*.txt"
     - "*.sql"
+    - "*.mod"
+    - "*.sum"
     - "Makefile"
     - "LICENSE"
+    - ".gitignore"
     - ".goreleaser.yml"
     - ".golangci.yml"
     - ".structlint.yaml"
-    - "go.sum"
 
 ignore:
-  - bin/**
-  - dist/**
-  - vendor/**
-  - "*.sum"
+  - .git
+  - bin
+  - dist
+  - vendor
