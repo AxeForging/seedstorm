@@ -150,7 +150,29 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 			return pks[gofakeit.Number(0, len(pks)-1)], nil
 		}
 	}
-	return generate(col.Faker)
+	val, err := generate(col.Faker)
+	if err != nil {
+		return nil, err
+	}
+	// Safety: coerce numeric values to string for string-typed columns so
+	// AI-suggested numeric fakers don't break varchar/text inserts.
+	if val != nil && isStringColType(col.Type) {
+		switch v := val.(type) {
+		case int:
+			return fmt.Sprintf("%d", v), nil
+		case int64:
+			return fmt.Sprintf("%d", v), nil
+		case float64:
+			return fmt.Sprintf("%g", v), nil
+		}
+	}
+	return val, nil
+}
+
+func isStringColType(colType string) bool {
+	t := strings.ToLower(colType)
+	return strings.Contains(t, "char") || strings.Contains(t, "text") ||
+		t == "clob" || t == "tinytext" || t == "mediumtext" || t == "longtext"
 }
 
 var reArgs = regexp.MustCompile(`^(\w+)\(([^)]*)\)$`)
