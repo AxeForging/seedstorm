@@ -139,10 +139,15 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 		parts := strings.SplitN(col.FK, ".", 2)
 		if len(parts) == 2 {
 			fkTable := parts[0]
-			if pks, ok := generatedPKs[fkTable]; ok && len(pks) > 0 {
-				return pks[gofakeit.Number(0, len(pks)-1)], nil
+			pks := generatedPKs[fkTable]
+			if len(pks) == 0 {
+				if fkTable == tableName {
+					// Self-referential FK with no rows yet — root row, NULL parent
+					return nil, nil
+				}
+				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
 			}
-			return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
+			return pks[gofakeit.Number(0, len(pks)-1)], nil
 		}
 	}
 	return generate(col.Faker)
@@ -228,6 +233,8 @@ func generate(fakerStr string) (interface{}, error) {
 		return gofakeit.MacAddress(), nil
 	case "hexcolor":
 		return gofakeit.HexColor(), nil
+	case "productname":
+		return gofakeit.ProductName(), nil
 	case "company":
 		return gofakeit.Company(), nil
 	case "jobtitle":
