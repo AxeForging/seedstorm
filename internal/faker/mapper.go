@@ -34,7 +34,7 @@ func semanticMapper(name string) string {
 	switch {
 	case n == "email" || strings.HasSuffix(n, "_email"):
 		return "email"
-	case n == "name" || n == "full_name":
+	case n == "full_name" || n == "person_name":
 		return "name"
 	case n == "first_name" || n == "firstname":
 		return "firstname"

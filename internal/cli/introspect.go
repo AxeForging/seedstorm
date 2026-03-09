@@ -20,10 +20,10 @@ columns, data types, primary keys, foreign keys, and enum values.
 Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "db",
-				Usage:    "Database type: mysql or postgres",
-				Value:    "postgres",
-				Sources:  cli.EnvVars("SEEDSTORM_DB"),
+				Name:    "db",
+				Usage:   "Database type: mysql or postgres",
+				Value:   "postgres",
+				Sources: cli.EnvVars("SEEDSTORM_DB"),
 			},
 			&cli.StringFlag{
 				Name:     "dsn",

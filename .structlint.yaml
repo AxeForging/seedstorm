@@ -1,44 +1,63 @@
-version: "1"
-
 dir_structure:
-  allowed_paths:
-    - cmd/**
-    - internal/**
-    - .github/**
-    - bin/**
-    - dist/**
-    - init/**
-  required_paths:
-    - cmd/seedstorm/main.go
-    - internal/app/app.go
-    - internal/build/info.go
-    - internal/cli/root.go
-    - internal/db/db.go
-    - internal/faker/faker.go
-    - internal/schema/schema.go
-    - internal/graph/graph.go
-    - internal/ai/ai.go
-    - internal/logging/logging.go
-    - Makefile
-    - go.mod
+  allowedPaths:
+    - "."
+    - "cmd/**"
+    - "internal/**"
+    - "integration/**"
+    - "init/**"
+    - ".github/**"
+    - "bin/**"
+    - "dist/**"
+  requiredPaths:
+    - "cmd/seedstorm/main.go"
+    - "internal/app/app.go"
+    - "internal/build/info.go"
+    - "internal/cli/root.go"
+    - "internal/db/db.go"
+    - "internal/faker/faker.go"
+    - "internal/schema/schema.go"
+    - "internal/graph/graph.go"
+    - "internal/ai/ai.go"
+    - "internal/logging/logging.go"
+    - "Makefile"
+    - "go.mod"
 
-file_naming:
+file_naming_pattern:
   allowed:
     - "*.go"
+    - "*.mod"
+    - "*.sum"
     - "*.yaml"
     - "*.yml"
     - "*.md"
     - "*.txt"
     - "*.sql"
+    - "README*"
+    - "LICENSE*"
     - "Makefile"
-    - "LICENSE"
-    - ".goreleaser.yml"
+    - ".gitignore"
     - ".golangci.yml"
+    - ".goreleaser.yml"
     - ".structlint.yaml"
-    - "go.sum"
+    - "lefthook.yml"
+  disallowed:
+    - "*.env*"
+    - ".env*"
+    - "*.key"
+    - "*.pem"
+    - "*.log"
+    - "*.tmp"
+    - ".DS_Store"
+    - "Thumbs.db"
+  required:
+    - "go.mod"
+    - "README.md"
+    - ".gitignore"
+    - "*.go"
 
 ignore:
-  - bin/**
-  - dist/**
-  - vendor/**
-  - "*.sum"
+  - ".git"
+  - "vendor"
+  - "node_modules"
+  - "bin"
+  - "dist"

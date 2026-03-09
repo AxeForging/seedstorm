@@ -79,8 +79,10 @@ Database context:
 Rules:
 - Return ONLY the function name or function call, nothing else
 - Use lowercase, no "gofakeit." prefix
-- Valid functions include: name, firstname, lastname, email, phone, username, street, city, state, country, zip, url, uuid, company, jobtitle, word, sentence, datetime, date, bool, ipv4, hexcolor, latitude, longitude, price(min,max), number(min,max), paragraph(n)
+- Valid functions: name, firstname, lastname, email, phone, username, street, city, state, country, zip, url, uuid, company, jobtitle, productname, word, sentence, datetime, date, bool, ipv4, hexcolor, latitude, longitude, price(min,max), number(min,max), paragraph(n)
+- CRITICAL: match return type to column type. If column type contains "char", "text", or "varchar" → use a string-returning function (word, sentence, uuid, url, company, etc.) NOT number() or price()
 - Choose based on what the column SEMANTICALLY represents in a %s table context
+- Examples: tracking_number(varchar) → uuid, brand name(varchar) → company, product name(varchar) → productname, review body(text) → paragraph(2), coupon code(varchar) → word, wishlist name(varchar) → sentence
 
 Return only the faker function call:`, allTables, tableName, siblingCols, colName, colType, tableName)
 }
@@ -95,5 +97,8 @@ func cleanFakerString(s string) string {
 	s = strings.TrimPrefix(s, "```")
 	s = strings.TrimSuffix(s, "```")
 	s = strings.TrimSpace(s)
+	// Strip bare parentheses — e.g. "company()" → "company", "street()" → "street"
+	// but keep parameterized calls like "price(1,1000)", "number(0,500)"
+	s = strings.TrimSuffix(s, "()")
 	return s
 }
