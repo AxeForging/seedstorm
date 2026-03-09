@@ -11,17 +11,16 @@ import (
 	"github.com/tmc/langchaingo/llms/googleai"
 )
 
-const defaultModel = "gemini-2.5-flash"
-
 // EnrichFakerMappings uses Gemini to produce semantically meaningful faker mappings
 // for columns that lack one or have a generic fallback.
-func EnrichFakerMappings(ctx context.Context, s *schema.Schema, provider string) (*schema.Schema, string, error) {
+// model is the Gemini model ID (e.g. "gemini-2.5-flash", "gemini-1.5-pro").
+func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model string) (*schema.Schema, string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, "", fmt.Errorf("GEMINI_API_KEY environment variable is not set")
 	}
 
-	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(defaultModel))
+	llm, err := googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(model))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create Gemini client: %w", err)
 	}
@@ -63,7 +62,7 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, provider string)
 		}
 	}
 
-	return s, defaultModel, nil
+	return s, model, nil
 }
 
 // buildPrompt constructs a context-rich prompt for Gemini.

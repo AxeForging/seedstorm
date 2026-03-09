@@ -22,7 +22,7 @@ LDFLAGS := -s -w \
 
 GOOS_ARCH := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-.PHONY: all build build-all run test lint fmt format tidy clean dev-up dev-down ci version tag
+.PHONY: all build build-all run test test-integration lint fmt format tidy clean dev-up dev-down ci version tag
 
 all: build
 
@@ -47,6 +47,11 @@ run: build
 
 test:
 	go test -race -count=1 ./...
+
+test-integration: dev-up
+	@echo "Waiting for databases to be healthy..."
+	@docker compose wait mysql postgres 2>/dev/null || sleep 10
+	cd integration && go test -v -tags integration -count=1 ./... -timeout 120s
 
 lint:
 	golangci-lint run --timeout=5m

@@ -51,21 +51,29 @@ func queryExistingPKs(db *sql.DB, sortedTables []string, tables map[string]schem
 			if !col.PK {
 				continue
 			}
-			rows, err := db.Query(fmt.Sprintf("SELECT %s FROM %s", colName, tableName)) //nolint:gosec
-			if err != nil {
-				return fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var pk interface{}
-				if err := rows.Scan(&pk); err != nil {
-					return err
-				}
-				generatedPKs[tableName] = append(generatedPKs[tableName], pk)
+			if err := scanPKs(db, tableName, colName, generatedPKs); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func scanPKs(db *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}) error {
+	rows, err := db.Query(fmt.Sprintf("SELECT %s FROM %s", colName, tableName)) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pk interface{}
+		if err := rows.Scan(&pk); err != nil {
+			return err
+		}
+		generatedPKs[tableName] = append(generatedPKs[tableName], pk)
+	}
+	return rows.Err()
 }
 
 func findEnumColumn(table schema.Table) (string, []string) {

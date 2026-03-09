@@ -64,6 +64,14 @@ func semanticMapper(name string) string {
 		return "price(1,1000)"
 	case strings.Contains(n, "uuid") || strings.HasSuffix(n, "_id") && strings.Contains(n, "uuid"):
 		return "uuid"
+	case n == "rating" || n == "score" || n == "stars":
+		return "number(1,5)"
+	case n == "age":
+		return "number(18,90)"
+	case n == "quantity" || n == "qty" || n == "stock" || n == "count":
+		return "number(0,500)"
+	case n == "percentage" || n == "percent" || n == "discount":
+		return "number(0,100)"
 	case n == "ip" || n == "ip_address":
 		return "ipv4"
 	case n == "color" || n == "colour":

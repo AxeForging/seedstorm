@@ -38,12 +38,20 @@ Requires GEMINI_API_KEY to be set.`,
 				Usage: "AI provider to use (currently: gemini)",
 				Value: "gemini",
 			},
+			&cli.StringFlag{
+				Name:    "model",
+				Aliases: []string{"m"},
+				Usage:   "AI model to use (e.g. gemini-2.5-flash, gemini-1.5-pro)",
+				Value:   "gemini-2.5-flash",
+				Sources: cli.EnvVars("SEEDSTORM_AI_MODEL"),
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
 			schemaPath := cmd.String("schema")
 			out := cmd.String("out")
 			provider := cmd.String("provider")
+			model := cmd.String("model")
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
@@ -53,10 +61,11 @@ Requires GEMINI_API_KEY to be set.`,
 
 			log.Info().
 				Str("provider", provider).
+				Str("model", model).
 				Int("tables", len(s.Tables)).
 				Msg("Enriching faker mappings with AI")
 
-			enriched, model, err := ai.EnrichFakerMappings(ctx, s, provider)
+			enriched, model, err := ai.EnrichFakerMappings(ctx, s, model)
 			if err != nil {
 				return fmt.Errorf("AI enrichment failed: %w", err)
 			}
