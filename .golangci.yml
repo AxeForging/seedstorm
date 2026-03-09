@@ -1,0 +1,27 @@
+version: "2"
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - gosimple
+    - ineffassign
+    - misspell
+    - errcheck
+    - gofumpt
+  disable:
+    - depguard
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  gofumpt:
+    extra-rules: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+
+run:
+  timeout: 5m

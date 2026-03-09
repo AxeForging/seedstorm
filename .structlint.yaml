@@ -1,0 +1,44 @@
+version: "1"
+
+dir_structure:
+  allowed_paths:
+    - cmd/**
+    - internal/**
+    - .github/**
+    - bin/**
+    - dist/**
+    - init/**
+  required_paths:
+    - cmd/seedstorm/main.go
+    - internal/app/app.go
+    - internal/build/info.go
+    - internal/cli/root.go
+    - internal/db/db.go
+    - internal/faker/faker.go
+    - internal/schema/schema.go
+    - internal/graph/graph.go
+    - internal/ai/ai.go
+    - internal/logging/logging.go
+    - Makefile
+    - go.mod
+
+file_naming:
+  allowed:
+    - "*.go"
+    - "*.yaml"
+    - "*.yml"
+    - "*.md"
+    - "*.txt"
+    - "*.sql"
+    - "Makefile"
+    - "LICENSE"
+    - ".goreleaser.yml"
+    - ".golangci.yml"
+    - ".structlint.yaml"
+    - "go.sum"
+
+ignore:
+  - bin/**
+  - dist/**
+  - vendor/**
+  - "*.sum"
