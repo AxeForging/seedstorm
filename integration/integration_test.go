@@ -1007,6 +1007,100 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	t.Run("enum coverage: orders.status all values present", func(t *testing.T) {
+		statusVals := []string{"pending", "processing", "shipped", "delivered", "cancelled"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM orders`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("orders.status: missing value %q — enum top-up did not fire", want)
+			}
+		}
+		t.Logf("orders.status distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: support_tickets.status all values present", func(t *testing.T) {
+		statusVals := []string{"open", "in_progress", "resolved", "closed"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM support_tickets`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("support_tickets.status: missing value %q", want)
+			}
+		}
+		t.Logf("support_tickets.status distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: support_tickets.priority all values present", func(t *testing.T) {
+		priorityVals := []string{"low", "medium", "high", "critical"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT priority FROM support_tickets`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range priorityVals {
+			if !seen[want] {
+				t.Errorf("support_tickets.priority: missing value %q", want)
+			}
+		}
+		t.Logf("support_tickets.priority distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: employees.status all values present", func(t *testing.T) {
+		statusVals := []string{"active", "inactive", "on_leave", "terminated"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM employees`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("employees.status: missing value %q", want)
+			}
+		}
+		t.Logf("employees.status distinct values: %v", seen)
+	})
+
 	// ── Truncate subtests ────────────────────────────────────────────────────────
 
 	var truncateSortedTables []string
@@ -1924,6 +2018,100 @@ func TestMySQLIntegration(t *testing.T) {
 		if broken > 0 {
 			t.Errorf("deep chain broken: %d return_requests have no traceable user", broken)
 		}
+	})
+
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	t.Run("enum coverage: orders.status all values present", func(t *testing.T) {
+		statusVals := []string{"pending", "processing", "shipped", "delivered", "cancelled"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM orders`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("orders.status: missing value %q — enum top-up did not fire", want)
+			}
+		}
+		t.Logf("orders.status distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: support_tickets.status all values present", func(t *testing.T) {
+		statusVals := []string{"open", "in_progress", "resolved", "closed"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM support_tickets`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("support_tickets.status: missing value %q", want)
+			}
+		}
+		t.Logf("support_tickets.status distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: support_tickets.priority all values present", func(t *testing.T) {
+		priorityVals := []string{"low", "medium", "high", "critical"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT priority FROM support_tickets`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range priorityVals {
+			if !seen[want] {
+				t.Errorf("support_tickets.priority: missing value %q", want)
+			}
+		}
+		t.Logf("support_tickets.priority distinct values: %v", seen)
+	})
+
+	t.Run("enum coverage: employees.status all values present", func(t *testing.T) {
+		statusVals := []string{"active", "inactive", "on_leave", "terminated"}
+		seen := map[string]bool{}
+		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM employees`)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			seen[v] = true
+		}
+		for _, want := range statusVals {
+			if !seen[want] {
+				t.Errorf("employees.status: missing value %q", want)
+			}
+		}
+		t.Logf("employees.status distinct values: %v", seen)
 	})
 
 	// ── Truncate subtests ────────────────────────────────────────────────────────

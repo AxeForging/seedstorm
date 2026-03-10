@@ -38,6 +38,13 @@ func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, db *s
 			if err := generateStandardRows(data, generatedPKs, table, tableName, rows); err != nil {
 				return nil, fmt.Errorf("table %s: %w", tableName, err)
 			}
+			// Guarantee every enum value appears at least once, independently per column.
+			enumCols := findAllEnumColumns(table)
+			if len(enumCols) > 0 {
+				if err := topUpEnumCoverage(data, generatedPKs, table, tableName, enumCols); err != nil {
+					return nil, fmt.Errorf("table %s enum top-up: %w", tableName, err)
+				}
+			}
 		}
 	}
 
@@ -86,6 +93,52 @@ func findEnumColumn(table schema.Table) (string, []string) {
 		}
 	}
 	return "", nil
+}
+
+// findAllEnumColumns returns every column whose faker is a randomstring(...),
+// mapping column name → slice of enum values.
+func findAllEnumColumns(table schema.Table) map[string][]string {
+	re := regexp.MustCompile(`\(([^)]+)\)`)
+	result := make(map[string][]string)
+	for colName, col := range table.Columns {
+		if strings.HasPrefix(col.Faker, "randomstring(") {
+			if m := re.FindStringSubmatch(col.Faker); len(m) > 1 {
+				vals := strings.Split(m[1], ",")
+				for i, v := range vals {
+					vals[i] = strings.TrimSpace(v)
+				}
+				result[colName] = vals
+			}
+		}
+	}
+	return result
+}
+
+// topUpEnumCoverage appends one row per missing enum value for each enum column
+// in the table, ensuring 100% coverage regardless of how many rows were generated.
+// Each column is handled independently — no cartesian product is produced.
+func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string) error {
+	for colName, vals := range enumCols {
+		present := make(map[string]bool, len(vals))
+		for _, row := range data[tableName] {
+			if v, ok := row[colName].(string); ok {
+				present[v] = true
+			}
+		}
+		for _, val := range vals {
+			if present[val] {
+				continue
+			}
+			v := val
+			row, err := generateRow(table, tableName, generatedPKs, &v, colName)
+			if err != nil {
+				return err
+			}
+			data[tableName] = append(data[tableName], row)
+			present[val] = true
+		}
+	}
+	return nil
 }
 
 func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int) error {
