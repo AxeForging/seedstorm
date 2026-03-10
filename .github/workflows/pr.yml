@@ -56,7 +56,7 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_PROVIDER: gemini
-          AI_MODEL: gemini-2.5-flash
+          AI_MODEL: gemini-2.5-flash-preview
           AI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SHOW_TOKEN_USAGE: true
           INCREMENTAL: false
