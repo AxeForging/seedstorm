@@ -7,7 +7,9 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 - **Schema self-discovery** — introspects tables, columns, types, PKs, FKs, and enum values from a live database
 - **FK-aware seeding** — topological sort guarantees parent tables are seeded before their children; handles self-referential FKs, near-cycles (nullable FK edges), and deep multi-level chains without loops or infinite retries
 - **Semantic faker** — maps column names (`email`, `first_name`, `price`, `city`…) and DB types to realistic `gofakeit` generators automatically
+- **Automatic enum coverage** — after standard row generation, every enum value is guaranteed to appear at least `--rows` times; each column is handled independently so multi-enum tables (e.g. `status` + `priority`) get full coverage without a cartesian product
 - **AI enrichment** — Gemini reads your full schema and rewrites faker hints for business-meaningful data (`product.name` → `productname`, `order.notes` → `sentence`, etc.)
+- **Truncate before seeding** — `--truncate` clears all tables in FK-safe order before inserting; prompts for confirmation unless `--yes` is passed
 - **Dry-run mode** — prints INSERT SQL without touching the database
 - **Generate without inserting** — export fake data as YAML, JSON, or SQL
 - **Pretty logs** — colored, timestamped zerolog output at each pipeline step
@@ -165,6 +167,8 @@ seedstorm seed \
 | `--enum-rows` | `0` | Rows per enum value (0 = use `--rows`) |
 | `--disable-fk` | false | Skip FK ordering |
 | `--dry-run` / `-n` | false | Print SQL, do not execute |
+| `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
+| `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
 
 ---
 
