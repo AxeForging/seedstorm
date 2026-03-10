@@ -115,12 +115,23 @@ func findAllEnumColumns(table schema.Table) map[string][]string {
 	return result
 }
 
+// maxEnumTopUpValues is the maximum pool size for which topUpEnumCoverage will
+// add extra rows. Pools larger than this are treated as "example lists" (e.g.
+// AI-generated name suggestions) rather than true DB enums, so we skip the
+// top-up to avoid generating far more rows than the user requested.
+const maxEnumTopUpValues = 12
+
 // topUpEnumCoverage ensures each enum value appears at least minRows times.
 // For each enum column it counts existing occurrences and appends rows until
 // every value reaches minRows. Each column is handled independently — no
 // cartesian product is produced.
+// Columns with more than maxEnumTopUpValues values are skipped: large pools
+// are AI example lists, not true enums, and top-up would inflate row counts.
 func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int) error {
 	for colName, vals := range enumCols {
+		if len(vals) > maxEnumTopUpValues {
+			continue
+		}
 		counts := make(map[string]int, len(vals))
 		for _, row := range data[tableName] {
 			if v, ok := row[colName].(string); ok {
