@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
@@ -60,6 +63,15 @@ Use --dry-run to print SQL statements without executing them.`,
 				Aliases: []string{"n"},
 				Usage:   "Print SQL without executing",
 			},
+			&cli.BoolFlag{
+				Name:  "truncate",
+				Usage: "Truncate all tables before seeding (prompts for confirmation unless --yes is set)",
+			},
+			&cli.BoolFlag{
+				Name:    "yes",
+				Aliases: []string{"y"},
+				Usage:   "Skip confirmation prompt (use with --truncate)",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -70,6 +82,8 @@ Use --dry-run to print SQL statements without executing them.`,
 			enumRows := cmd.Int("enum-rows")
 			disableFK := cmd.Bool("disable-fk")
 			dryRun := cmd.Bool("dry-run")
+			truncate := cmd.Bool("truncate")
+			yes := cmd.Bool("yes")
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
@@ -110,6 +124,23 @@ Use --dry-run to print SQL statements without executing them.`,
 
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
+			}
+
+			// Truncate tables before seeding
+			if truncate && !dryRun {
+				if !yes {
+					fmt.Fprintf(os.Stderr, "\nAbout to TRUNCATE %d tables. All existing data will be deleted.\nType \"yes\" to continue or press Ctrl+C to abort: ", len(sortedTables))
+					scanner := bufio.NewScanner(os.Stdin)
+					scanner.Scan()
+					if strings.TrimSpace(scanner.Text()) != "yes" {
+						return fmt.Errorf("truncate aborted")
+					}
+				}
+				log.Info().Int("tables", len(sortedTables)).Msg("Truncating tables")
+				if err := db.Truncate(ctx, dbConn, dbType, sortedTables); err != nil {
+					return fmt.Errorf("truncate failed: %w", err)
+				}
+				log.Info().Msg("Truncate complete")
 			}
 
 			// Generate data

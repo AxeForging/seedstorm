@@ -1007,6 +1007,79 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
+	// ── Truncate subtests ────────────────────────────────────────────────────────
+
+	var truncateSortedTables []string
+
+	t.Run("truncate: resolve table order", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+		for _, tbl := range tables {
+			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+			for _, col := range tbl.Columns {
+				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable}
+				if col.FK != nil {
+					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+				}
+				st.Columns[col.Name] = sc
+			}
+			s.Tables[tbl.Name] = st
+		}
+		g := graph.Build(s)
+		sorted, err := g.TopologicalSort()
+		if err != nil {
+			t.Fatalf("topological sort: %v", err)
+		}
+		truncateSortedTables = sorted
+	})
+
+	t.Run("truncate: all tables empty after truncate", func(t *testing.T) {
+		if len(truncateSortedTables) == 0 {
+			t.Skip("table order not resolved — previous subtest failed")
+		}
+		if err := db.Truncate(context.Background(), conn, postgresDriver, truncateSortedTables); err != nil {
+			t.Fatalf("truncate: %v", err)
+		}
+		allTables := []string{
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			"products", "employees",
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
+		}
+		for _, tbl := range allTables {
+			if n := countRows(t, conn, tbl); n != 0 {
+				t.Errorf("table %s: expected 0 rows after truncate, got %d", tbl, n)
+			}
+		}
+	})
+
+	t.Run("truncate: re-seed after truncate succeeds", func(t *testing.T) {
+		if len(truncateSortedTables) == 0 {
+			t.Skip("table order not resolved — previous subtest failed")
+		}
+		buildAndSeed(t, "postgres (post-truncate)", postgresDriver, dsn, conn)
+		allTables := []string{
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			"products", "employees",
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
+		}
+		for _, tbl := range allTables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("table %s has 0 rows after re-seed — expected > 0", tbl)
+			}
+		}
+	})
+
 	t.Run("teardown", func(t *testing.T) {
 		execScript(t, conn, "schema_postgres.sql") // re-run drops everything
 	})
@@ -1850,6 +1923,79 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 		if broken > 0 {
 			t.Errorf("deep chain broken: %d return_requests have no traceable user", broken)
+		}
+	})
+
+	// ── Truncate subtests ────────────────────────────────────────────────────────
+
+	var truncateSortedTablesMy []string
+
+	t.Run("truncate: resolve table order", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+		for _, tbl := range tables {
+			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+			for _, col := range tbl.Columns {
+				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable}
+				if col.FK != nil {
+					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+				}
+				st.Columns[col.Name] = sc
+			}
+			s.Tables[tbl.Name] = st
+		}
+		g := graph.Build(s)
+		sorted, err := g.TopologicalSort()
+		if err != nil {
+			t.Fatalf("topological sort: %v", err)
+		}
+		truncateSortedTablesMy = sorted
+	})
+
+	t.Run("truncate: all tables empty after truncate", func(t *testing.T) {
+		if len(truncateSortedTablesMy) == 0 {
+			t.Skip("table order not resolved — previous subtest failed")
+		}
+		if err := db.Truncate(context.Background(), conn, mysqlDriver, truncateSortedTablesMy); err != nil {
+			t.Fatalf("truncate: %v", err)
+		}
+		allTables := []string{
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			"products", "employees",
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
+		}
+		for _, tbl := range allTables {
+			if n := countRows(t, conn, tbl); n != 0 {
+				t.Errorf("table %s: expected 0 rows after truncate, got %d", tbl, n)
+			}
+		}
+	})
+
+	t.Run("truncate: re-seed after truncate succeeds", func(t *testing.T) {
+		if len(truncateSortedTablesMy) == 0 {
+			t.Skip("table order not resolved — previous subtest failed")
+		}
+		buildAndSeed(t, "mysql (post-truncate)", mysqlDriver, dsn, conn)
+		allTables := []string{
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			"products", "employees",
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
+		}
+		for _, tbl := range allTables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("table %s has 0 rows after re-seed — expected > 0", tbl)
+			}
 		}
 	})
 
