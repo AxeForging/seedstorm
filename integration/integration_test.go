@@ -1009,96 +1009,48 @@ func TestPostgresIntegration(t *testing.T) {
 
 	// ── Enum coverage subtests ───────────────────────────────────────────────────
 
-	t.Run("enum coverage: orders.status all values present", func(t *testing.T) {
-		statusVals := []string{"pending", "processing", "shipped", "delivered", "cancelled"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM orders`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	enumCountQuery := func(t *testing.T, table, col, val string) int {
+		t.Helper()
+		var n int
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = $1", table, col) //nolint:gosec
+		if err := conn.QueryRowContext(context.Background(), q, val).Scan(&n); err != nil {
+			t.Fatalf("enum count query %s.%s=%q: %v", table, col, val, err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("orders.status: missing value %q — enum top-up did not fire", want)
+		return n
+	}
+
+	t.Run("enum coverage: orders.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"pending", "processing", "shipped", "delivered", "cancelled"} {
+			if n := enumCountQuery(t, "orders", "status", want); n < seedRows {
+				t.Errorf("orders.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("orders.status distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: support_tickets.status all values present", func(t *testing.T) {
-		statusVals := []string{"open", "in_progress", "resolved", "closed"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM support_tickets`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("support_tickets.status: missing value %q", want)
+	t.Run("enum coverage: support_tickets.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"open", "in_progress", "resolved", "closed"} {
+			if n := enumCountQuery(t, "support_tickets", "status", want); n < seedRows {
+				t.Errorf("support_tickets.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("support_tickets.status distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: support_tickets.priority all values present", func(t *testing.T) {
-		priorityVals := []string{"low", "medium", "high", "critical"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT priority FROM support_tickets`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range priorityVals {
-			if !seen[want] {
-				t.Errorf("support_tickets.priority: missing value %q", want)
+	t.Run("enum coverage: support_tickets.priority each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"low", "medium", "high", "critical"} {
+			if n := enumCountQuery(t, "support_tickets", "priority", want); n < seedRows {
+				t.Errorf("support_tickets.priority=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("support_tickets.priority distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: employees.status all values present", func(t *testing.T) {
-		statusVals := []string{"active", "inactive", "on_leave", "terminated"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM employees`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("employees.status: missing value %q", want)
+	t.Run("enum coverage: employees.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"active", "inactive", "on_leave", "terminated"} {
+			if n := enumCountQuery(t, "employees", "status", want); n < seedRows {
+				t.Errorf("employees.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("employees.status distinct values: %v", seen)
 	})
 
 	// ── Truncate subtests ────────────────────────────────────────────────────────
@@ -2022,96 +1974,46 @@ func TestMySQLIntegration(t *testing.T) {
 
 	// ── Enum coverage subtests ───────────────────────────────────────────────────
 
-	t.Run("enum coverage: orders.status all values present", func(t *testing.T) {
-		statusVals := []string{"pending", "processing", "shipped", "delivered", "cancelled"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM orders`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
+	enumCountQueryMy := func(t *testing.T, table, col, val string) int {
+		t.Helper()
+		var n int
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ?", table, col) //nolint:gosec
+		if err := conn.QueryRowContext(context.Background(), q, val).Scan(&n); err != nil {
+			t.Fatalf("enum count query %s.%s=%q: %v", table, col, val, err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("orders.status: missing value %q — enum top-up did not fire", want)
+		return n
+	}
+
+	t.Run("enum coverage: orders.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"pending", "processing", "shipped", "delivered", "cancelled"} {
+			if n := enumCountQueryMy(t, "orders", "status", want); n < seedRows {
+				t.Errorf("orders.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("orders.status distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: support_tickets.status all values present", func(t *testing.T) {
-		statusVals := []string{"open", "in_progress", "resolved", "closed"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM support_tickets`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("support_tickets.status: missing value %q", want)
+	t.Run("enum coverage: support_tickets.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"open", "in_progress", "resolved", "closed"} {
+			if n := enumCountQueryMy(t, "support_tickets", "status", want); n < seedRows {
+				t.Errorf("support_tickets.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("support_tickets.status distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: support_tickets.priority all values present", func(t *testing.T) {
-		priorityVals := []string{"low", "medium", "high", "critical"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT priority FROM support_tickets`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range priorityVals {
-			if !seen[want] {
-				t.Errorf("support_tickets.priority: missing value %q", want)
+	t.Run("enum coverage: support_tickets.priority each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"low", "medium", "high", "critical"} {
+			if n := enumCountQueryMy(t, "support_tickets", "priority", want); n < seedRows {
+				t.Errorf("support_tickets.priority=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("support_tickets.priority distinct values: %v", seen)
 	})
 
-	t.Run("enum coverage: employees.status all values present", func(t *testing.T) {
-		statusVals := []string{"active", "inactive", "on_leave", "terminated"}
-		seen := map[string]bool{}
-		rows, err := conn.QueryContext(context.Background(), `SELECT DISTINCT status FROM employees`)
-		if err != nil {
-			t.Fatalf("query: %v", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
-			seen[v] = true
-		}
-		for _, want := range statusVals {
-			if !seen[want] {
-				t.Errorf("employees.status: missing value %q", want)
+	t.Run("enum coverage: employees.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"active", "inactive", "on_leave", "terminated"} {
+			if n := enumCountQueryMy(t, "employees", "status", want); n < seedRows {
+				t.Errorf("employees.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
 		}
-		t.Logf("employees.status distinct values: %v", seen)
 	})
 
 	// ── Truncate subtests ────────────────────────────────────────────────────────

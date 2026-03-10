@@ -71,11 +71,11 @@ func TestFindAllEnumColumns_none(t *testing.T) {
 
 // ── topUpEnumCoverage ─────────────────────────────────────────────────────────
 
-func TestTopUpEnumCoverage_fillsMissingValues(t *testing.T) {
+func TestTopUpEnumCoverage_topsUpToMinRows(t *testing.T) {
 	tbl := makeEnumTable(map[string][]string{
 		"status": {"pending", "active", "closed"},
 	})
-	// Simulate 2 rows, both "pending" — active and closed are missing
+	// 2 rows for "pending", 0 for "active" and "closed"; minRows = 3
 	data := map[string][]map[string]interface{}{
 		"items": {
 			{"id": 1, "status": "pending"},
@@ -85,46 +85,49 @@ func TestTopUpEnumCoverage_fillsMissingValues(t *testing.T) {
 	pks := map[string][]interface{}{"items": {1, 2}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "items", enumCols); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "items", enumCols, 3); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 
-	got := map[string]bool{}
+	counts := map[string]int{}
 	for _, row := range data["items"] {
 		if v, ok := row["status"].(string); ok {
-			got[v] = true
+			counts[v]++
 		}
 	}
 	for _, want := range []string{"pending", "active", "closed"} {
-		if !got[want] {
-			t.Errorf("missing enum value %q after top-up", want)
+		if counts[want] < 3 {
+			t.Errorf("status=%q: expected >= 3 rows, got %d", want, counts[want])
 		}
 	}
-	// Should have added exactly 2 rows (active + closed)
-	if len(data["items"]) != 4 {
-		t.Errorf("expected 4 rows (2 original + 2 top-up), got %d", len(data["items"]))
+	// pending had 2 → +1; active had 0 → +3; closed had 0 → +3; total = 2+1+3+3 = 9
+	if len(data["items"]) != 9 {
+		t.Errorf("expected 9 rows, got %d", len(data["items"]))
 	}
 }
 
-func TestTopUpEnumCoverage_noOpWhenAllPresent(t *testing.T) {
+func TestTopUpEnumCoverage_noOpWhenAllMeetMinRows(t *testing.T) {
 	tbl := makeEnumTable(map[string][]string{
 		"status": {"a", "b", "c"},
 	})
 	data := map[string][]map[string]interface{}{
 		"t": {
 			{"id": 1, "status": "a"},
-			{"id": 2, "status": "b"},
-			{"id": 3, "status": "c"},
+			{"id": 2, "status": "a"},
+			{"id": 3, "status": "b"},
+			{"id": 4, "status": "b"},
+			{"id": 5, "status": "c"},
+			{"id": 6, "status": "c"},
 		},
 	}
-	pks := map[string][]interface{}{"t": {1, 2, 3}}
+	pks := map[string][]interface{}{"t": {1, 2, 3, 4, 5, 6}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "t", enumCols); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "t", enumCols, 2); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
-	if len(data["t"]) != 3 {
-		t.Errorf("expected 3 rows (no top-up needed), got %d", len(data["t"]))
+	if len(data["t"]) != 6 {
+		t.Errorf("expected 6 rows (no top-up needed), got %d", len(data["t"]))
 	}
 }
 
@@ -133,7 +136,7 @@ func TestTopUpEnumCoverage_multipleEnumColumns(t *testing.T) {
 		"status":   {"open", "closed"},
 		"priority": {"low", "high"},
 	})
-	// Both rows have only "open" status and "low" priority
+	// Both rows have only "open" status and "low" priority; minRows = 2
 	data := map[string][]map[string]interface{}{
 		"tickets": {
 			{"id": 1, "status": "open", "priority": "low"},
@@ -143,28 +146,30 @@ func TestTopUpEnumCoverage_multipleEnumColumns(t *testing.T) {
 	pks := map[string][]interface{}{"tickets": {1, 2}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "tickets", enumCols); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "tickets", enumCols, 2); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 
-	statusSeen := map[string]bool{}
-	prioritySeen := map[string]bool{}
+	counts := map[string]map[string]int{
+		"status":   {},
+		"priority": {},
+	}
 	for _, row := range data["tickets"] {
 		if v, ok := row["status"].(string); ok {
-			statusSeen[v] = true
+			counts["status"][v]++
 		}
 		if v, ok := row["priority"].(string); ok {
-			prioritySeen[v] = true
+			counts["priority"][v]++
 		}
 	}
 	for _, want := range []string{"open", "closed"} {
-		if !statusSeen[want] {
-			t.Errorf("status: missing %q after top-up", want)
+		if counts["status"][want] < 2 {
+			t.Errorf("status=%q: expected >= 2 rows, got %d", want, counts["status"][want])
 		}
 	}
 	for _, want := range []string{"low", "high"} {
-		if !prioritySeen[want] {
-			t.Errorf("priority: missing %q after top-up", want)
+		if counts["priority"][want] < 2 {
+			t.Errorf("priority=%q: expected >= 2 rows, got %d", want, counts["priority"][want])
 		}
 	}
 }
@@ -179,20 +184,20 @@ func TestGenerate_enumTopUp_singleColumn(t *testing.T) {
 			}),
 		},
 	}
-	// Only 2 rows — statistically likely to miss several values
-	data, err := Generate(s, []string{"orders"}, 2, 0, nil)
+	const wantRows = 5
+	data, err := Generate(s, []string{"orders"}, wantRows, 0, nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	seen := map[string]bool{}
+	counts := map[string]int{}
 	for _, row := range data["orders"] {
 		if v, ok := row["status"].(string); ok {
-			seen[v] = true
+			counts[v]++
 		}
 	}
 	for _, want := range []string{"pending", "processing", "shipped", "delivered", "cancelled"} {
-		if !seen[want] {
-			t.Errorf("Generate: missing enum value %q in output", want)
+		if counts[want] < wantRows {
+			t.Errorf("status=%q: expected >= %d rows, got %d", want, wantRows, counts[want])
 		}
 	}
 }
@@ -206,28 +211,29 @@ func TestGenerate_enumTopUp_multipleColumns(t *testing.T) {
 			}),
 		},
 	}
-	data, err := Generate(s, []string{"tickets"}, 1, 0, nil)
+	const wantRows = 3
+	data, err := Generate(s, []string{"tickets"}, wantRows, 0, nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	statusSeen := map[string]bool{}
-	prioritySeen := map[string]bool{}
+	statusCounts := map[string]int{}
+	priorityCounts := map[string]int{}
 	for _, row := range data["tickets"] {
 		if v, ok := row["status"].(string); ok {
-			statusSeen[v] = true
+			statusCounts[v]++
 		}
 		if v, ok := row["priority"].(string); ok {
-			prioritySeen[v] = true
+			priorityCounts[v]++
 		}
 	}
 	for _, want := range []string{"open", "in_progress", "resolved", "closed"} {
-		if !statusSeen[want] {
-			t.Errorf("status: missing %q", want)
+		if statusCounts[want] < wantRows {
+			t.Errorf("status=%q: expected >= %d rows, got %d", want, wantRows, statusCounts[want])
 		}
 	}
 	for _, want := range []string{"low", "medium", "high", "critical"} {
-		if !prioritySeen[want] {
-			t.Errorf("priority: missing %q", want)
+		if priorityCounts[want] < wantRows {
+			t.Errorf("priority=%q: expected >= %d rows, got %d", want, wantRows, priorityCounts[want])
 		}
 	}
 }
