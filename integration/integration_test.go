@@ -1007,6 +1007,52 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	enumCountQuery := func(t *testing.T, table, col, val string) int {
+		t.Helper()
+		var n int
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = $1", table, col) //nolint:gosec
+		if err := conn.QueryRowContext(context.Background(), q, val).Scan(&n); err != nil {
+			t.Fatalf("enum count query %s.%s=%q: %v", table, col, val, err)
+		}
+		return n
+	}
+
+	t.Run("enum coverage: orders.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"pending", "processing", "shipped", "delivered", "cancelled"} {
+			if n := enumCountQuery(t, "orders", "status", want); n < seedRows {
+				t.Errorf("orders.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: support_tickets.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"open", "in_progress", "resolved", "closed"} {
+			if n := enumCountQuery(t, "support_tickets", "status", want); n < seedRows {
+				t.Errorf("support_tickets.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: support_tickets.priority each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"low", "medium", "high", "critical"} {
+			if n := enumCountQuery(t, "support_tickets", "priority", want); n < seedRows {
+				t.Errorf("support_tickets.priority=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: employees.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"active", "inactive", "on_leave", "terminated"} {
+			if n := enumCountQuery(t, "employees", "status", want); n < seedRows {
+				t.Errorf("employees.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
 	// ── Truncate subtests ────────────────────────────────────────────────────────
 
 	var truncateSortedTables []string
@@ -1923,6 +1969,50 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 		if broken > 0 {
 			t.Errorf("deep chain broken: %d return_requests have no traceable user", broken)
+		}
+	})
+
+	// ── Enum coverage subtests ───────────────────────────────────────────────────
+
+	enumCountQueryMy := func(t *testing.T, table, col, val string) int {
+		t.Helper()
+		var n int
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ?", table, col) //nolint:gosec
+		if err := conn.QueryRowContext(context.Background(), q, val).Scan(&n); err != nil {
+			t.Fatalf("enum count query %s.%s=%q: %v", table, col, val, err)
+		}
+		return n
+	}
+
+	t.Run("enum coverage: orders.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"pending", "processing", "shipped", "delivered", "cancelled"} {
+			if n := enumCountQueryMy(t, "orders", "status", want); n < seedRows {
+				t.Errorf("orders.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: support_tickets.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"open", "in_progress", "resolved", "closed"} {
+			if n := enumCountQueryMy(t, "support_tickets", "status", want); n < seedRows {
+				t.Errorf("support_tickets.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: support_tickets.priority each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"low", "medium", "high", "critical"} {
+			if n := enumCountQueryMy(t, "support_tickets", "priority", want); n < seedRows {
+				t.Errorf("support_tickets.priority=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
+		}
+	})
+
+	t.Run("enum coverage: employees.status each value >= seedRows", func(t *testing.T) {
+		for _, want := range []string{"active", "inactive", "on_leave", "terminated"} {
+			if n := enumCountQueryMy(t, "employees", "status", want); n < seedRows {
+				t.Errorf("employees.status=%q: expected >= %d rows, got %d", want, seedRows, n)
+			}
 		}
 	})
 

@@ -69,7 +69,7 @@ func semanticMapper(name string) string {
 	case n == "age":
 		return "number(18,90)"
 	case n == "quantity" || n == "qty" || n == "stock" || n == "count":
-		return "number(0,500)"
+		return "number(1,500)"
 	case n == "percentage" || n == "percent" || n == "discount":
 		return "number(0,100)"
 	case n == "ip" || n == "ip_address":

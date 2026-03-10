@@ -38,6 +38,13 @@ func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, db *s
 			if err := generateStandardRows(data, generatedPKs, table, tableName, rows); err != nil {
 				return nil, fmt.Errorf("table %s: %w", tableName, err)
 			}
+			// Guarantee every enum value appears at least `rows` times, independently per column.
+			enumCols := findAllEnumColumns(table)
+			if len(enumCols) > 0 {
+				if err := topUpEnumCoverage(data, generatedPKs, table, tableName, enumCols, rows); err != nil {
+					return nil, fmt.Errorf("table %s enum top-up: %w", tableName, err)
+				}
+			}
 		}
 	}
 
@@ -86,6 +93,53 @@ func findEnumColumn(table schema.Table) (string, []string) {
 		}
 	}
 	return "", nil
+}
+
+// findAllEnumColumns returns every column whose faker is a randomstring(...),
+// mapping column name → slice of enum values.
+func findAllEnumColumns(table schema.Table) map[string][]string {
+	re := regexp.MustCompile(`\(([^)]+)\)`)
+	result := make(map[string][]string)
+	for colName, col := range table.Columns {
+		if strings.HasPrefix(col.Faker, "randomstring(") {
+			if m := re.FindStringSubmatch(col.Faker); len(m) > 1 {
+				vals := strings.Split(m[1], ",")
+				for i, v := range vals {
+					vals[i] = strings.TrimSpace(v)
+				}
+				result[colName] = vals
+			}
+		}
+	}
+	return result
+}
+
+// topUpEnumCoverage ensures each enum value appears at least minRows times.
+// For each enum column it counts existing occurrences and appends rows until
+// every value reaches minRows. Each column is handled independently — no
+// cartesian product is produced.
+func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int) error {
+	for colName, vals := range enumCols {
+		counts := make(map[string]int, len(vals))
+		for _, row := range data[tableName] {
+			if v, ok := row[colName].(string); ok {
+				counts[v]++
+			}
+		}
+		for _, val := range vals {
+			need := minRows - counts[val]
+			for i := 0; i < need; i++ {
+				v := val
+				row, err := generateRow(table, tableName, generatedPKs, &v, colName)
+				if err != nil {
+					return err
+				}
+				data[tableName] = append(data[tableName], row)
+				counts[val]++
+			}
+		}
+	}
+	return nil
 }
 
 func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int) error {
