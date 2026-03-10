@@ -5,7 +5,7 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 ## Features
 
 - **Schema self-discovery** — introspects tables, columns, types, PKs, FKs, and enum values from a live database
-- **FK-aware seeding** — topological sort guarantees parent tables are seeded before their children
+- **FK-aware seeding** — topological sort guarantees parent tables are seeded before their children; handles self-referential FKs, near-cycles (nullable FK edges), and deep multi-level chains without loops or infinite retries
 - **Semantic faker** — maps column names (`email`, `first_name`, `price`, `city`…) and DB types to realistic `gofakeit` generators automatically
 - **AI enrichment** — Gemini reads your full schema and rewrites faker hints for business-meaningful data (`product.name` → `productname`, `order.notes` → `sentence`, etc.)
 - **Dry-run mode** — prints INSERT SQL without touching the database
@@ -62,13 +62,13 @@ Sample output:
 ```
 23:33:54 INFO   Loading schema path=schema.enriched.yaml
 23:33:54 INFO   Building dependency graph
-23:33:54 INFO   Seed order resolved order="brands → categories → users → products → orders → order_items"
+23:33:54 INFO   Seed order resolved order="companies → brands → categories → users → departments → products → employees → ..."
 23:33:54 INFO   Connecting to database db=postgres
 23:33:54 INFO   Generating fake data rows=100
+23:33:54 INFO   Seeding table table=companies rows=100
 23:33:54 INFO   Seeding table table=brands rows=100
-23:33:54 INFO   Seeding table table=categories rows=100
 ...
-23:33:55 INFO   Seeding complete tables=6 total_rows=600 duration=892ms
+23:33:55 INFO   Seeding complete tables=28 total_rows=2800 duration=1.4s
 ```
 
 ---
@@ -333,13 +333,29 @@ go test ./... -v
 
 ### Integration tests
 
-Integration tests spin up a 15-table e-commerce schema (brands, categories, products, orders, shipments, payments, reviews, wishlists, …) against both MySQL and PostgreSQL. They verify:
+Integration tests spin up a 28-table real-world schema against both MySQL and PostgreSQL, covering every FK edge case a production company schema throws at a seeder:
 
-- All 15 tables receive rows
-- All 17 FK relationships have zero orphans
-- Value constraints hold (ratings 1–5, prices > 0, quantities ≥ 1)
+| Edge case | Tables |
+|-----------|--------|
+| Self-referential FK | `categories`, `departments`, `employees` |
+| Near-cycle (nullable FK breaks it) | `departments.head_employee_id ↔ employees.department_id` |
+| Deep FK chain (5 levels) | `return_requests → order_items → orders → users` |
+| Many-to-many junctions | `product_tags`, `project_assignments`, `wishlist_items` |
+| Multiple enums per table | `support_tickets` (status + priority) |
+| 3-FK tables | `support_tickets`, `departments` |
+| Dual JSONB columns | `audit_logs` |
+| Supplier + procurement chain | `suppliers → purchase_orders → purchase_order_items` |
+| Warehouse + inventory | `companies → warehouses → inventory` |
+
+Tests verify:
+
+- All 28 tables receive exactly the requested number of rows
+- 38 FK relationships have zero orphans
+- 6 value constraints hold (ratings 1–5, prices > 0, quantities ≥ 1, salaries > 0)
 - All FK relationships are auto-discovered by `introspect`
-- Enum values are correctly discovered
+- Enum values are correctly discovered for all enum columns
+- Self-referential tables always have at least one root node (NULL parent)
+- Deep 5-level FK chains are fully intact
 
 ```bash
 # Requires running databases (make dev-up)
@@ -354,25 +370,21 @@ Expected output:
 
 ```
 === RUN   TestPostgresIntegration/introspect_and_seed
-    integration_test.go:181: === Seed Summary (postgres) ===
+    integration_test.go:XXX: === Seed Summary (postgres) ===
+          companies            25 rows
           brands               25 rows
           categories           25 rows
-          coupons              25 rows
+          suppliers            25 rows
           tags                 25 rows
           users                25 rows
+          departments          25 rows
           products             25 rows
-          wishlists            25 rows
-          addresses            25 rows
-          reviews              25 rows
-          product_tags         25 rows
-          wishlist_items       25 rows
-          orders               25 rows
-          order_items          25 rows
-          payments             25 rows
-          shipments            25 rows
-          Total: 375 rows across 15 tables (2.38s)
+          employees            25 rows
+          ...
+          audit_logs           25 rows
+          Total: 700 rows across 28 tables (4.43s)
 ...
---- PASS: TestPostgresIntegration (3.52s)
+--- PASS: TestPostgresIntegration (6.87s)
 ```
 
 ### CI
