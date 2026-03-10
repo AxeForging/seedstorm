@@ -115,6 +115,7 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 
 func generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
 	row := make(map[string]interface{})
+	var pksToAdd []interface{}
 	for colName, col := range table.Columns {
 		val, err := generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
 		if err != nil {
@@ -122,9 +123,12 @@ func generateRow(table schema.Table, tableName string, generatedPKs map[string][
 		}
 		row[colName] = val
 		if col.PK {
-			generatedPKs[tableName] = append(generatedPKs[tableName], val)
+			pksToAdd = append(pksToAdd, val)
 		}
 	}
+	// Add PKs only after all columns are generated so self-referential FK columns
+	// don't see the current row's own PK during generation (would skip the first NULL root).
+	generatedPKs[tableName] = append(generatedPKs[tableName], pksToAdd...)
 	return row, nil
 }
 
@@ -141,8 +145,10 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 			fkTable := parts[0]
 			pks := generatedPKs[fkTable]
 			if len(pks) == 0 {
-				if fkTable == tableName {
-					// Self-referential FK with no rows yet — root row, NULL parent
+				if fkTable == tableName || col.Nullable {
+					// Self-referential FK or nullable FK with no parent rows yet:
+					// insert NULL. For nullable FKs this handles near-cycles where
+					// the parent table is seeded after this one.
 					return nil, nil
 				}
 				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)

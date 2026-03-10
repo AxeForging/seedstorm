@@ -19,10 +19,11 @@ type Table struct {
 
 // Column holds metadata and faker mapping for a single column.
 type Column struct {
-	Type  string `yaml:"type"`
-	Faker string `yaml:"faker,omitempty"`
-	FK    string `yaml:"fk,omitempty"`
-	PK    bool   `yaml:"pk,omitempty"`
+	Type     string `yaml:"type"`
+	Faker    string `yaml:"faker,omitempty"`
+	FK       string `yaml:"fk,omitempty"`
+	PK       bool   `yaml:"pk,omitempty"`
+	Nullable bool   `yaml:"nullable,omitempty"`
 }
 
 // Load reads a schema YAML file from disk.

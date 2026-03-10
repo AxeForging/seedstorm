@@ -1,5 +1,18 @@
 -- Teardown (always safe to re-run)
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS return_requests;
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS support_tickets;
+DROP TABLE IF EXISTS project_assignments;
+DROP TABLE IF EXISTS purchase_order_items;
+DROP TABLE IF EXISTS purchase_orders;
+DROP TABLE IF EXISTS inventory;
+DROP TABLE IF EXISTS projects;
+DROP TABLE IF EXISTS employees;
+DROP TABLE IF EXISTS departments;
+DROP TABLE IF EXISTS warehouses;
+DROP TABLE IF EXISTS suppliers;
+DROP TABLE IF EXISTS companies;
 DROP TABLE IF EXISTS wishlist_items;
 DROP TABLE IF EXISTS wishlists;
 DROP TABLE IF EXISTS reviews;
@@ -60,6 +73,24 @@ CREATE TABLE coupons (
     is_active      TINYINT(1) NOT NULL DEFAULT 1
 );
 
+CREATE TABLE companies (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    industry     VARCHAR(100),
+    website      VARCHAR(255),
+    founded_year INT,
+    is_active    TINYINT(1) NOT NULL DEFAULT 1
+);
+
+CREATE TABLE suppliers (
+    id      INT AUTO_INCREMENT PRIMARY KEY,
+    name    VARCHAR(255) NOT NULL,
+    email   VARCHAR(255),
+    phone   VARCHAR(50),
+    country VARCHAR(100),
+    rating  DECIMAL(3,2)
+);
+
 -- Level 1: FK to level 0
 CREATE TABLE addresses (
     id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -89,7 +120,48 @@ CREATE TABLE products (
     FOREIGN KEY (brand_id)    REFERENCES brands(id)
 );
 
+-- departments: head_employee_id FK added after employees is created (near-cycle)
+CREATE TABLE departments (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    company_id       INT          NOT NULL,
+    parent_dept_id   INT          NULL,
+    head_employee_id INT          NULL,    -- FK constraint added after employees table created
+    name             VARCHAR(100) NOT NULL,
+    budget           DECIMAL(15,2),
+    FOREIGN KEY (company_id)     REFERENCES companies(id),
+    FOREIGN KEY (parent_dept_id) REFERENCES departments(id)
+);
+
+CREATE TABLE warehouses (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT          NOT NULL,
+    name       VARCHAR(100) NOT NULL,
+    city       VARCHAR(100),
+    country    VARCHAR(100),
+    is_active  TINYINT(1) NOT NULL DEFAULT 1,
+    FOREIGN KEY (company_id) REFERENCES companies(id)
+);
+
 -- Level 2: FK to level 1
+CREATE TABLE employees (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    department_id INT          NOT NULL,
+    manager_id    INT          NULL,
+    first_name    VARCHAR(100) NOT NULL,
+    last_name     VARCHAR(100) NOT NULL,
+    email         VARCHAR(255) NOT NULL,
+    title         VARCHAR(100),
+    salary        DECIMAL(12,2),
+    hired_at      TIMESTAMP NULL,
+    status        ENUM('active','inactive','on_leave','terminated') NOT NULL DEFAULT 'active',
+    FOREIGN KEY (department_id) REFERENCES departments(id),
+    FOREIGN KEY (manager_id)    REFERENCES employees(id)
+);
+
+-- Add the deferred FK for departments.head_employee_id now that employees exists
+ALTER TABLE departments ADD CONSTRAINT fk_dept_head
+    FOREIGN KEY (head_employee_id) REFERENCES employees(id);
+
 CREATE TABLE product_tags (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     product_id INT NOT NULL,
@@ -122,6 +194,56 @@ CREATE TABLE wishlists (
 );
 
 -- Level 3: FK to level 2
+CREATE TABLE projects (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    department_id INT          NOT NULL,
+    lead_id       INT          NOT NULL,
+    name          VARCHAR(255) NOT NULL,
+    status        ENUM('planning','active','on_hold','completed','cancelled') NOT NULL DEFAULT 'planning',
+    start_date    DATE,
+    end_date      DATE,
+    budget        DECIMAL(15,2),
+    FOREIGN KEY (department_id) REFERENCES departments(id),
+    FOREIGN KEY (lead_id)       REFERENCES employees(id)
+);
+
+CREATE TABLE inventory (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    product_id   INT       NOT NULL,
+    warehouse_id INT       NOT NULL,
+    quantity     INT       NOT NULL DEFAULT 0,
+    reserved_qty INT       NOT NULL DEFAULT 0,
+    last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id)   REFERENCES products(id),
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id)
+);
+
+CREATE TABLE purchase_orders (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    supplier_id  INT          NOT NULL,
+    approved_by  INT          NULL,
+    status       ENUM('draft','submitted','approved','received','cancelled') NOT NULL DEFAULT 'draft',
+    total_amount DECIMAL(15,2),
+    ordered_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+    FOREIGN KEY (approved_by) REFERENCES employees(id)
+);
+
+CREATE TABLE support_tickets (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT          NOT NULL,
+    assigned_to INT          NULL,
+    order_id    INT          NULL,
+    subject     VARCHAR(255) NOT NULL,
+    body        TEXT,
+    status      ENUM('open','in_progress','resolved','closed')    NOT NULL DEFAULT 'open',
+    priority    ENUM('low','medium','high','critical')            NOT NULL DEFAULT 'medium',
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id)     REFERENCES users(id),
+    FOREIGN KEY (assigned_to) REFERENCES employees(id),
+    FOREIGN KEY (order_id)    REFERENCES orders(id)
+);
+
 CREATE TABLE order_items (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     order_id   INT           NOT NULL,
@@ -174,6 +296,55 @@ CREATE TABLE wishlist_items (
     added_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (wishlist_id) REFERENCES wishlists(id),
     FOREIGN KEY (product_id)  REFERENCES products(id)
+);
+
+CREATE TABLE audit_logs (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT          NULL,
+    employee_id   INT          NULL,
+    action        VARCHAR(100),
+    resource_type VARCHAR(100),
+    resource_id   INT,
+    old_value     JSON,
+    new_value     JSON,
+    ip_address    VARCHAR(45),
+    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id)     REFERENCES users(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
+-- Level 4: deepest FK chains
+CREATE TABLE project_assignments (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    project_id   INT       NOT NULL,
+    employee_id  INT       NOT NULL,
+    role         ENUM('lead','developer','designer','qa','manager') NOT NULL DEFAULT 'developer',
+    assigned_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    FOREIGN KEY (project_id)  REFERENCES projects(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
+CREATE TABLE purchase_order_items (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    purchase_order_id INT           NOT NULL,
+    product_id        INT           NOT NULL,
+    quantity          INT           NOT NULL DEFAULT 1,
+    unit_cost         DECIMAL(10,2) NOT NULL,
+    FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id),
+    FOREIGN KEY (product_id)        REFERENCES products(id)
+);
+
+CREATE TABLE return_requests (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    order_item_id INT           NOT NULL,
+    processed_by  INT           NULL,
+    reason        TEXT,
+    status        ENUM('pending','approved','rejected','refunded') NOT NULL DEFAULT 'pending',
+    refund_amount DECIMAL(10,2),
+    requested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_item_id) REFERENCES order_items(id),
+    FOREIGN KEY (processed_by)  REFERENCES employees(id)
 );
 
 SET FOREIGN_KEY_CHECKS = 1;

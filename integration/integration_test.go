@@ -97,9 +97,10 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
-				Type:  col.Type,
-				PK:    col.IsPK,
-				Faker: faker.MapColumnToFaker(driver, col),
+				Type:     col.Type,
+				PK:       col.IsPK,
+				Nullable: col.IsNullable,
+				Faker:    faker.MapColumnToFaker(driver, col),
 			}
 			if col.FK != nil {
 				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
@@ -156,7 +157,7 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "=== Seed Summary (%s) ===\n", label)
 	for _, tableName := range sortedTables {
-		fmt.Fprintf(&sb, "  %-20s %d rows\n", tableName, len(data[tableName]))
+		fmt.Fprintf(&sb, "  %-25s %d rows\n", tableName, len(data[tableName]))
 	}
 	fmt.Fprintf(&sb, "  Total: %d rows across %d tables (%.2fs)", totalRows, len(sortedTables), elapsed.Seconds())
 	t.Log(sb.String())
@@ -183,9 +184,18 @@ func TestPostgresIntegration(t *testing.T) {
 
 	t.Run("row counts", func(t *testing.T) {
 		allTables := []string{
-			"brands", "categories", "tags", "users", "coupons",
-			"addresses", "products", "product_tags", "orders", "wishlists",
-			"order_items", "shipments", "payments", "reviews", "wishlist_items",
+			// L0
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			// L1
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			// L2
+			"products", "employees",
+			// L3
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			// L4
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
 		}
 		type tableCount struct {
 			name string
@@ -203,13 +213,13 @@ func TestPostgresIntegration(t *testing.T) {
 		var sb strings.Builder
 		sb.WriteString("=== Row Counts ===\n")
 		for _, tc := range counts {
-			fmt.Fprintf(&sb, "  %-20s %d\n", tc.name, tc.n)
+			fmt.Fprintf(&sb, "  %-25s %d\n", tc.name, tc.n)
 		}
 		_ = data // data available for callers; row counts come from DB
 		t.Log(sb.String())
 	})
 
-	// FK integrity checks — one subtest per relationship (17 total)
+	// ── FK integrity checks (existing) ─────────────────────────────────────────
 
 	t.Run("FK: addresses -> users", func(t *testing.T) {
 		var orphans int
@@ -449,7 +459,303 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
-	// Value constraint checks
+	// ── FK integrity checks (new tables) ───────────────────────────────────────
+
+	t.Run("FK: departments -> companies", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM departments c
+			LEFT JOIN companies p ON c.company_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in departments (company_id)", orphans)
+		}
+	})
+
+	t.Run("FK: departments -> head_employee (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM departments c
+			LEFT JOIN employees p ON c.head_employee_id = p.id
+			WHERE c.head_employee_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in departments (head_employee_id)", orphans)
+		}
+	})
+
+	t.Run("FK: employees -> departments", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM employees c
+			LEFT JOIN departments p ON c.department_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in employees (department_id)", orphans)
+		}
+	})
+
+	t.Run("FK: warehouses -> companies", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM warehouses c
+			LEFT JOIN companies p ON c.company_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in warehouses (company_id)", orphans)
+		}
+	})
+
+	t.Run("FK: projects -> departments", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM projects c
+			LEFT JOIN departments p ON c.department_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in projects (department_id)", orphans)
+		}
+	})
+
+	t.Run("FK: projects -> employees (lead)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM projects c
+			LEFT JOIN employees p ON c.lead_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in projects (lead_id)", orphans)
+		}
+	})
+
+	t.Run("FK: project_assignments -> projects", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM project_assignments c
+			LEFT JOIN projects p ON c.project_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in project_assignments (project_id)", orphans)
+		}
+	})
+
+	t.Run("FK: project_assignments -> employees", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM project_assignments c
+			LEFT JOIN employees p ON c.employee_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in project_assignments (employee_id)", orphans)
+		}
+	})
+
+	t.Run("FK: inventory -> products", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM inventory c
+			LEFT JOIN products p ON c.product_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in inventory (product_id)", orphans)
+		}
+	})
+
+	t.Run("FK: inventory -> warehouses", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM inventory c
+			LEFT JOIN warehouses p ON c.warehouse_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in inventory (warehouse_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_orders -> suppliers", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_orders c
+			LEFT JOIN suppliers p ON c.supplier_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_orders (supplier_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_orders -> employees (approved_by, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_orders c
+			LEFT JOIN employees p ON c.approved_by = p.id
+			WHERE c.approved_by IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_orders (approved_by)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_order_items -> purchase_orders", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_order_items c
+			LEFT JOIN purchase_orders p ON c.purchase_order_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_order_items (purchase_order_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_order_items -> products", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_order_items c
+			LEFT JOIN products p ON c.product_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_order_items (product_id)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> users", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN users p ON c.user_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (user_id)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> employees (assigned_to, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN employees p ON c.assigned_to = p.id
+			WHERE c.assigned_to IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (assigned_to)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> orders (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN orders p ON c.order_id = p.id
+			WHERE c.order_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (order_id)", orphans)
+		}
+	})
+
+	t.Run("FK: return_requests -> order_items", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests c
+			LEFT JOIN order_items p ON c.order_item_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in return_requests (order_item_id)", orphans)
+		}
+	})
+
+	t.Run("FK: return_requests -> employees (processed_by, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests c
+			LEFT JOIN employees p ON c.processed_by = p.id
+			WHERE c.processed_by IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in return_requests (processed_by)", orphans)
+		}
+	})
+
+	t.Run("FK: audit_logs -> users (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM audit_logs c
+			LEFT JOIN users p ON c.user_id = p.id
+			WHERE c.user_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in audit_logs (user_id)", orphans)
+		}
+	})
+
+	t.Run("FK: audit_logs -> employees (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM audit_logs c
+			LEFT JOIN employees p ON c.employee_id = p.id
+			WHERE c.employee_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in audit_logs (employee_id)", orphans)
+		}
+	})
+
+	// ── Value constraint checks ─────────────────────────────────────────────────
 
 	t.Run("value constraints: reviews rating 1-5", func(t *testing.T) {
 		var bad int
@@ -487,7 +793,43 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
-	// FK discovery subtest
+	t.Run("value constraints: employees salary positive", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM employees WHERE salary IS NOT NULL AND salary <= 0`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d employees with non-positive salary", bad)
+		}
+	})
+
+	t.Run("value constraints: inventory quantity non-negative", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM inventory WHERE quantity < 0`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d inventory rows with negative quantity", bad)
+		}
+	})
+
+	t.Run("value constraints: purchase_order_items quantity positive", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM purchase_order_items WHERE quantity < 1`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d purchase_order_items with quantity < 1", bad)
+		}
+	})
+
+	// ── FK discovery subtest ────────────────────────────────────────────────────
 
 	t.Run("FK discovery: all relationships detected", func(t *testing.T) {
 		tables, err := db.Introspect(postgresDriver, dsn)
@@ -505,6 +847,7 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 
 		expected := map[string]int{
+			// existing
 			"addresses":      1, // user_id
 			"products":       2, // category_id, brand_id
 			"product_tags":   2, // product_id, tag_id
@@ -516,6 +859,18 @@ func TestPostgresIntegration(t *testing.T) {
 			"wishlists":      1, // user_id
 			"wishlist_items": 2, // wishlist_id, product_id
 			"categories":     1, // parent_id (self-ref)
+			// new
+			"departments":          3, // company_id, parent_dept_id (self-ref), head_employee_id
+			"employees":            2, // department_id, manager_id (self-ref)
+			"warehouses":           1, // company_id
+			"projects":             2, // department_id, lead_id
+			"project_assignments":  2, // project_id, employee_id
+			"inventory":            2, // product_id, warehouse_id
+			"purchase_orders":      2, // supplier_id, approved_by
+			"purchase_order_items": 2, // purchase_order_id, product_id
+			"support_tickets":      3, // user_id, assigned_to, order_id
+			"return_requests":      2, // order_item_id, processed_by
+			"audit_logs":           2, // user_id, employee_id
 		}
 		for tbl, expectedFKs := range expected {
 			if fksByTable[tbl] != expectedFKs {
@@ -525,7 +880,7 @@ func TestPostgresIntegration(t *testing.T) {
 		t.Logf("FK discovery: %+v", fksByTable)
 	})
 
-	// Enum discovery subtest
+	// ── Enum discovery subtests ─────────────────────────────────────────────────
 
 	t.Run("enum discovery: orders.status", func(t *testing.T) {
 		tables, err := db.Introspect(postgresDriver, dsn)
@@ -557,6 +912,98 @@ func TestPostgresIntegration(t *testing.T) {
 				}
 				t.Logf("orders.status enum values: %v", col.EnumValues)
 			}
+		}
+	})
+
+	t.Run("enum discovery: employees.status", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+
+		expectedValues := []string{"active", "inactive", "on_leave", "terminated"}
+		for _, tbl := range tables {
+			if tbl.Name != "employees" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "status" {
+					continue
+				}
+				if len(col.EnumValues) == 0 {
+					t.Error("employees.status: expected enum values, got none")
+					return
+				}
+				got := map[string]bool{}
+				for _, v := range col.EnumValues {
+					got[v] = true
+				}
+				for _, want := range expectedValues {
+					if !got[want] {
+						t.Errorf("employees.status: missing expected enum value %q", want)
+					}
+				}
+				t.Logf("employees.status enum values: %v", col.EnumValues)
+			}
+		}
+	})
+
+	// ── Self-ref root node subtests ─────────────────────────────────────────────
+
+	t.Run("self-ref: categories has root nodes (NULL parent_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM categories WHERE parent_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("categories: expected at least one root node (NULL parent_id), got 0")
+		}
+		t.Logf("categories root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: departments has root nodes (NULL parent_dept_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM departments WHERE parent_dept_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("departments: expected at least one root node (NULL parent_dept_id), got 0")
+		}
+		t.Logf("departments root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: employees has root nodes (NULL manager_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM employees WHERE manager_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("employees: expected at least one root node (NULL manager_id), got 0")
+		}
+		t.Logf("employees root nodes: %d", roots)
+	})
+
+	// ── Deep chain subtest ──────────────────────────────────────────────────────
+
+	t.Run("deep chain: return_requests -> order_items -> orders -> users", func(t *testing.T) {
+		var broken int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests rr
+			JOIN order_items oi ON rr.order_item_id = oi.id
+			JOIN orders o ON oi.order_id = o.id
+			JOIN users u ON o.user_id = u.id
+			WHERE u.id IS NULL`).Scan(&broken)
+		if err != nil {
+			t.Fatalf("deep chain check: %v", err)
+		}
+		if broken > 0 {
+			t.Errorf("deep chain broken: %d return_requests have no traceable user", broken)
 		}
 	})
 
@@ -584,9 +1031,18 @@ func TestMySQLIntegration(t *testing.T) {
 
 	t.Run("row counts", func(t *testing.T) {
 		allTables := []string{
-			"brands", "categories", "tags", "users", "coupons",
-			"addresses", "products", "product_tags", "orders", "wishlists",
-			"order_items", "shipments", "payments", "reviews", "wishlist_items",
+			// L0
+			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			// L1
+			"categories", "addresses", "departments", "warehouses", "wishlists",
+			// L2
+			"products", "employees",
+			// L3
+			"product_tags", "orders", "projects", "inventory", "purchase_orders",
+			"support_tickets", "reviews", "wishlist_items", "audit_logs",
+			// L4
+			"order_items", "shipments", "payments", "project_assignments",
+			"purchase_order_items", "return_requests",
 		}
 		type tableCount struct {
 			name string
@@ -603,13 +1059,13 @@ func TestMySQLIntegration(t *testing.T) {
 		var sb strings.Builder
 		sb.WriteString("=== Row Counts ===\n")
 		for _, tc := range counts {
-			fmt.Fprintf(&sb, "  %-20s %d\n", tc.name, tc.n)
+			fmt.Fprintf(&sb, "  %-25s %d\n", tc.name, tc.n)
 		}
 		_ = data
 		t.Log(sb.String())
 	})
 
-	// FK integrity checks — one subtest per relationship (17 total)
+	// ── FK integrity checks (existing) ─────────────────────────────────────────
 
 	t.Run("FK: addresses -> users", func(t *testing.T) {
 		var orphans int
@@ -849,7 +1305,303 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 	})
 
-	// Value constraint checks
+	// ── FK integrity checks (new tables) ───────────────────────────────────────
+
+	t.Run("FK: departments -> companies", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM departments c
+			LEFT JOIN companies p ON c.company_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in departments (company_id)", orphans)
+		}
+	})
+
+	t.Run("FK: departments -> head_employee (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM departments c
+			LEFT JOIN employees p ON c.head_employee_id = p.id
+			WHERE c.head_employee_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in departments (head_employee_id)", orphans)
+		}
+	})
+
+	t.Run("FK: employees -> departments", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM employees c
+			LEFT JOIN departments p ON c.department_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in employees (department_id)", orphans)
+		}
+	})
+
+	t.Run("FK: warehouses -> companies", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM warehouses c
+			LEFT JOIN companies p ON c.company_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in warehouses (company_id)", orphans)
+		}
+	})
+
+	t.Run("FK: projects -> departments", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM projects c
+			LEFT JOIN departments p ON c.department_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in projects (department_id)", orphans)
+		}
+	})
+
+	t.Run("FK: projects -> employees (lead)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM projects c
+			LEFT JOIN employees p ON c.lead_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in projects (lead_id)", orphans)
+		}
+	})
+
+	t.Run("FK: project_assignments -> projects", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM project_assignments c
+			LEFT JOIN projects p ON c.project_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in project_assignments (project_id)", orphans)
+		}
+	})
+
+	t.Run("FK: project_assignments -> employees", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM project_assignments c
+			LEFT JOIN employees p ON c.employee_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in project_assignments (employee_id)", orphans)
+		}
+	})
+
+	t.Run("FK: inventory -> products", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM inventory c
+			LEFT JOIN products p ON c.product_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in inventory (product_id)", orphans)
+		}
+	})
+
+	t.Run("FK: inventory -> warehouses", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM inventory c
+			LEFT JOIN warehouses p ON c.warehouse_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in inventory (warehouse_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_orders -> suppliers", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_orders c
+			LEFT JOIN suppliers p ON c.supplier_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_orders (supplier_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_orders -> employees (approved_by, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_orders c
+			LEFT JOIN employees p ON c.approved_by = p.id
+			WHERE c.approved_by IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_orders (approved_by)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_order_items -> purchase_orders", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_order_items c
+			LEFT JOIN purchase_orders p ON c.purchase_order_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_order_items (purchase_order_id)", orphans)
+		}
+	})
+
+	t.Run("FK: purchase_order_items -> products", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM purchase_order_items c
+			LEFT JOIN products p ON c.product_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in purchase_order_items (product_id)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> users", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN users p ON c.user_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (user_id)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> employees (assigned_to, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN employees p ON c.assigned_to = p.id
+			WHERE c.assigned_to IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (assigned_to)", orphans)
+		}
+	})
+
+	t.Run("FK: support_tickets -> orders (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM support_tickets c
+			LEFT JOIN orders p ON c.order_id = p.id
+			WHERE c.order_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in support_tickets (order_id)", orphans)
+		}
+	})
+
+	t.Run("FK: return_requests -> order_items", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests c
+			LEFT JOIN order_items p ON c.order_item_id = p.id
+			WHERE p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in return_requests (order_item_id)", orphans)
+		}
+	})
+
+	t.Run("FK: return_requests -> employees (processed_by, non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests c
+			LEFT JOIN employees p ON c.processed_by = p.id
+			WHERE c.processed_by IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in return_requests (processed_by)", orphans)
+		}
+	})
+
+	t.Run("FK: audit_logs -> users (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM audit_logs c
+			LEFT JOIN users p ON c.user_id = p.id
+			WHERE c.user_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in audit_logs (user_id)", orphans)
+		}
+	})
+
+	t.Run("FK: audit_logs -> employees (non-null)", func(t *testing.T) {
+		var orphans int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM audit_logs c
+			LEFT JOIN employees p ON c.employee_id = p.id
+			WHERE c.employee_id IS NOT NULL AND p.id IS NULL`).Scan(&orphans)
+		if err != nil {
+			t.Fatalf("FK check: %v", err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in audit_logs (employee_id)", orphans)
+		}
+	})
+
+	// ── Value constraint checks ─────────────────────────────────────────────────
 
 	t.Run("value constraints: reviews rating 1-5", func(t *testing.T) {
 		var bad int
@@ -887,7 +1639,43 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 	})
 
-	// FK discovery subtest
+	t.Run("value constraints: employees salary positive", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM employees WHERE salary IS NOT NULL AND salary <= 0`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d employees with non-positive salary", bad)
+		}
+	})
+
+	t.Run("value constraints: inventory quantity non-negative", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM inventory WHERE quantity < 0`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d inventory rows with negative quantity", bad)
+		}
+	})
+
+	t.Run("value constraints: purchase_order_items quantity positive", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM purchase_order_items WHERE quantity < 1`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d purchase_order_items with quantity < 1", bad)
+		}
+	})
+
+	// ── FK discovery subtest ────────────────────────────────────────────────────
 
 	t.Run("FK discovery: all relationships detected", func(t *testing.T) {
 		tables, err := db.Introspect(mysqlDriver, dsn)
@@ -905,6 +1693,7 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 
 		expected := map[string]int{
+			// existing
 			"addresses":      1, // user_id
 			"products":       2, // category_id, brand_id
 			"product_tags":   2, // product_id, tag_id
@@ -916,6 +1705,18 @@ func TestMySQLIntegration(t *testing.T) {
 			"wishlists":      1, // user_id
 			"wishlist_items": 2, // wishlist_id, product_id
 			"categories":     1, // parent_id (self-ref)
+			// new
+			"departments":          3, // company_id, parent_dept_id (self-ref), head_employee_id
+			"employees":            2, // department_id, manager_id (self-ref)
+			"warehouses":           1, // company_id
+			"projects":             2, // department_id, lead_id
+			"project_assignments":  2, // project_id, employee_id
+			"inventory":            2, // product_id, warehouse_id
+			"purchase_orders":      2, // supplier_id, approved_by
+			"purchase_order_items": 2, // purchase_order_id, product_id
+			"support_tickets":      3, // user_id, assigned_to, order_id
+			"return_requests":      2, // order_item_id, processed_by
+			"audit_logs":           2, // user_id, employee_id
 		}
 		for tbl, expectedFKs := range expected {
 			if fksByTable[tbl] != expectedFKs {
@@ -925,7 +1726,7 @@ func TestMySQLIntegration(t *testing.T) {
 		t.Logf("FK discovery: %+v", fksByTable)
 	})
 
-	// Enum discovery subtest
+	// ── Enum discovery subtests ─────────────────────────────────────────────────
 
 	t.Run("enum discovery: orders.status", func(t *testing.T) {
 		tables, err := db.Introspect(mysqlDriver, dsn)
@@ -957,6 +1758,98 @@ func TestMySQLIntegration(t *testing.T) {
 				}
 				t.Logf("orders.status enum values: %v", col.EnumValues)
 			}
+		}
+	})
+
+	t.Run("enum discovery: employees.status", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+
+		expectedValues := []string{"active", "inactive", "on_leave", "terminated"}
+		for _, tbl := range tables {
+			if tbl.Name != "employees" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "status" {
+					continue
+				}
+				if len(col.EnumValues) == 0 {
+					t.Error("employees.status: expected enum values, got none")
+					return
+				}
+				got := map[string]bool{}
+				for _, v := range col.EnumValues {
+					got[v] = true
+				}
+				for _, want := range expectedValues {
+					if !got[want] {
+						t.Errorf("employees.status: missing expected enum value %q", want)
+					}
+				}
+				t.Logf("employees.status enum values: %v", col.EnumValues)
+			}
+		}
+	})
+
+	// ── Self-ref root node subtests ─────────────────────────────────────────────
+
+	t.Run("self-ref: categories has root nodes (NULL parent_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM categories WHERE parent_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("categories: expected at least one root node (NULL parent_id), got 0")
+		}
+		t.Logf("categories root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: departments has root nodes (NULL parent_dept_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM departments WHERE parent_dept_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("departments: expected at least one root node (NULL parent_dept_id), got 0")
+		}
+		t.Logf("departments root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: employees has root nodes (NULL manager_id)", func(t *testing.T) {
+		var roots int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM employees WHERE manager_id IS NULL`).Scan(&roots)
+		if err != nil {
+			t.Fatalf("self-ref check: %v", err)
+		}
+		if roots == 0 {
+			t.Error("employees: expected at least one root node (NULL manager_id), got 0")
+		}
+		t.Logf("employees root nodes: %d", roots)
+	})
+
+	// ── Deep chain subtest ──────────────────────────────────────────────────────
+
+	t.Run("deep chain: return_requests -> order_items -> orders -> users", func(t *testing.T) {
+		var broken int
+		err := conn.QueryRowContext(context.Background(), `
+			SELECT COUNT(*) FROM return_requests rr
+			JOIN order_items oi ON rr.order_item_id = oi.id
+			JOIN orders o ON oi.order_id = o.id
+			JOIN users u ON o.user_id = u.id
+			WHERE u.id IS NULL`).Scan(&broken)
+		if err != nil {
+			t.Fatalf("deep chain check: %v", err)
+		}
+		if broken > 0 {
+			t.Errorf("deep chain broken: %d return_requests have no traceable user", broken)
 		}
 	})
 
