@@ -43,11 +43,11 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 		colContext := strings.Join(colNames, ", ")
 
 		for colName, col := range table.Columns {
-			if col.Faker != "" && col.Faker != "word" && col.Faker != "sentence" {
-				continue // already has a meaningful mapping
-			}
 			if col.PK || col.FK != "" {
 				continue // managed by the seed engine
+			}
+			if !shouldEnrich(col.Faker, appContext) {
+				continue
 			}
 
 			prompt := buildPrompt(tableName, colName, col.Type, colContext, tableContext, appContext)
@@ -67,6 +67,24 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 	return s, model, nil
 }
 
+// shouldEnrich returns true if a column's faker mapping should be sent to the AI.
+// Without appContext only truly generic fallbacks are re-enriched.
+// With appContext we also revisit wide default numeric ranges.
+// paragraph() fakers are intentionally excluded: they already produce good
+// free-text output and AI tends to replace them with large randomstring() pools
+// which causes the enum top-up logic to generate far more rows than requested.
+func shouldEnrich(faker, appContext string) bool {
+	if faker == "" || faker == "word" || faker == "sentence" {
+		return true
+	}
+	if appContext == "" {
+		return false
+	}
+	// With domain context, revisit wide-range numeric defaults but NOT paragraph:
+	return faker == "number(1,10000)" ||
+		faker == "price(1,1000)"
+}
+
 // buildPrompt constructs a context-rich prompt for Gemini.
 // appContext is an optional free-text hint about the application domain (may be empty).
 // When appContext is provided and the column is a string type, the AI is also allowed
@@ -77,21 +95,32 @@ func buildPrompt(tableName, colName, colType, siblingCols, allTables, appContext
 		domainLine = fmt.Sprintf("- Application domain / context: %s\n", appContext)
 	}
 
-	randomstringRule := ""
-	if appContext != "" && isStringType(colType) {
-		randomstringRule = fmt.Sprintf(`
-DOMAIN VALUES OPTION (preferred for entity names when domain context is given):
-If the column represents a domain-specific entity name or label (e.g. product name, category name,
-tag name, dish name, ingredient, etc.) you may return:
-  randomstring(Value One,Value Two,Value Three,Value Four,Value Five,Value Six,Value Seven,Value Eight)
-Generate 6-10 realistic values that fit the "%s" domain. No quotes around values. Comma-separated.
-Example for a taco shop product name: randomstring(Taco al Pastor,Burrito de Carnitas,Quesadilla de Pollo,Elote Asado,Guacamole,Salsa Verde,Chile Relleno,Enchiladas Verdes)
-Do NOT use randomstring for personal data (emails, names, phones), UUIDs, descriptions, or long text — use gofakeit functions for those.
-`, appContext)
+	domainRules := ""
+	if appContext != "" {
+		stringSection := ""
+		if isStringType(colType) {
+			stringSection = `
+STRING DOMAIN VALUES (when appContext is set and column is a string type):
+- For NAME / LABEL columns (entity names, categories, tags, options, etc.):
+  Return randomstring with 20-30 distinct realistic values inferred from the column name and domain.
+  No quotes around values. Comma-separated. More values = more seed variety.
+- For SHORT DESCRIPTION / NOTES / SUMMARY columns:
+  Return randomstring with 15-20 short natural-language sentences inferred from the column name and domain.
+  No quotes. Comma-separated.
+- For LONG BODY text (reviews, blog posts, articles): use paragraph(2).
+- Do NOT use randomstring for personal data (emails, names, phones) or UUIDs — use gofakeit functions.`
+		}
+		domainRules = fmt.Sprintf(`
+DOMAIN-AWARE RULES (appContext is set — apply to all column types):
+- Infer what this column represents from its name and the application domain context.
+- For NUMERIC columns (integer, decimal, numeric): return a realistic number(min,max) or price(min,max)
+  range that makes real-world sense for what this column stores in this domain.
+  Do NOT use wide defaults like number(1,10000) — think about actual real-world values.
+%s`, stringSection)
 	}
 
 	returnLine := "Return ONLY the gofakeit function name or call, nothing else"
-	if randomstringRule != "" {
+	if appContext != "" {
 		returnLine = "Return ONLY the gofakeit function call OR a randomstring(...) with domain values, nothing else"
 	}
 
@@ -110,9 +139,8 @@ Rules:
 - Valid gofakeit functions: name, firstname, lastname, email, phone, username, street, city, state, country, zip, url, uuid, company, jobtitle, productname, word, sentence, datetime, date, bool, ipv4, hexcolor, latitude, longitude, price(min,max), number(min,max), paragraph(n)
 - CRITICAL: match return type to column type. If column type contains "char", "text", or "varchar" → use a string-returning function NOT number() or price()
 - Choose based on what the column SEMANTICALLY represents in a %s table context
-- Examples: tracking_number(varchar) → uuid, brand name(varchar) → company, review body(text) → paragraph(2), coupon code(varchar) → word
 %s
-Return only the faker:`, allTables, tableName, siblingCols, colName, colType, domainLine, returnLine, tableName, randomstringRule)
+Return only the faker:`, allTables, tableName, siblingCols, colName, colType, domainLine, returnLine, tableName, domainRules)
 }
 
 // isStringType returns true if the DB column type is a string-like type.

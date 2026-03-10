@@ -26,13 +26,16 @@ func TestBuildPrompt_WithoutAppContext(t *testing.T) {
 }
 
 func TestBuildPrompt_DomainValuesOption_StringColumn(t *testing.T) {
-	// varchar + appContext → randomstring option should appear
+	// varchar + appContext → randomstring option with 20-30 values guidance should appear
 	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "Mexican taco shop")
 	if !strings.Contains(prompt, "randomstring(") {
 		t.Errorf("expected prompt to contain randomstring domain-values option for varchar+appContext, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Mexican taco shop") {
 		t.Errorf("expected prompt to contain domain context value")
+	}
+	if !strings.Contains(prompt, "20-30") {
+		t.Errorf("expected prompt to ask for 20-30 distinct values for better variety")
 	}
 }
 
