@@ -4,11 +4,12 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 
 ## Features
 
-- **Schema self-discovery** — introspects tables, columns, types, PKs, FKs, and enum values from a live database
-- **FK-aware seeding** — topological sort guarantees parent tables are seeded before their children; handles self-referential FKs, near-cycles (nullable FK edges), and deep multi-level chains without loops or infinite retries
+- **Schema self-discovery** — introspects tables, columns, types, PKs, FKs, enum values, UNIQUE constraints, and CHECK constraints from a live database; no manual schema editing required
+- **Constraint-aware faker mapping** — automatically detects UNIQUE constraints (→ `uuid`), CHECK IN constraints (→ `randomstring(a,b,c)`), and CHECK range constraints (→ `number(min,max)`) for both PostgreSQL and MySQL; seed data always satisfies your constraints out of the box
+- **FK-aware seeding** — topological sort guarantees parent tables are seeded before their children; handles self-referential FKs, near-cycles (nullable FK edges), junction tables with composite PK+FK columns, and deep multi-level chains without loops or infinite retries
 - **Semantic faker** — maps column names (`email`, `first_name`, `price`, `city`…) and DB types to realistic `gofakeit` generators automatically
 - **Automatic enum coverage** — after standard row generation, every enum value is guaranteed to appear at least `--rows` times; each column is handled independently so multi-enum tables (e.g. `status` + `priority`) get full coverage without a cartesian product
-- **AI enrichment** — Gemini reads your full schema and rewrites faker hints for business-meaningful data (`product.name` → `productname`, `order.notes` → `sentence`, etc.)
+- **AI enrichment** — Gemini reads your full schema and rewrites faker hints for business-meaningful data (`product.name` → `productname`, `order.notes` → `sentence`, etc.); supply `--prompt` for a domain hint so the AI has richer context
 - **Truncate before seeding** — `--truncate` clears all tables in FK-safe order before inserting; prompts for confirmation unless `--yes` is passed
 - **Dry-run mode** — prints INSERT SQL without touching the database
 - **Generate without inserting** — export fake data as YAML, JSON, or SQL
@@ -47,8 +48,10 @@ seedstorm introspect \
   --out schema.yaml
 
 # 3. (Optional) AI-enrich faker mappings for domain-meaningful data
+#    Use --prompt to give the AI context about your application domain
 GEMINI_API_KEY=xxx seedstorm ai-enrich \
   --schema schema.yaml \
+  --prompt "Mexican taco shop — products are tacos, burritos, and salsas" \
   --out schema.enriched.yaml
 
 # 4. Seed 100 rows per table
@@ -115,6 +118,12 @@ GEMINI_API_KEY=xxx seedstorm ai-enrich \
   --schema schema.yaml \
   --out schema.enriched.yaml
 
+# Supply an application domain hint for richer AI context
+GEMINI_API_KEY=xxx seedstorm ai-enrich \
+  --schema schema.yaml \
+  --prompt "HR management system" \
+  --out schema.enriched.yaml
+
 # Use a specific model
 GEMINI_API_KEY=xxx seedstorm ai-enrich \
   --schema schema.yaml \
@@ -122,12 +131,17 @@ GEMINI_API_KEY=xxx seedstorm ai-enrich \
   --out schema.enriched.yaml
 ```
 
+The `--prompt` hint is injected into every Gemini call as `Application domain / context: <hint>`, helping the model choose more realistic fakers. For example, with `--prompt "TacoShop"`:
+- `products.name` → `productname` instead of `word`
+- `orders.delivery_address` → `street` instead of `sentence`
+- `categories.name` → `productname` (food category) instead of `word`
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--schema` / `-s` | `schema.yaml` | Input schema file |
 | `--out` / `-o` | `schema.enriched.yaml` | Output enriched schema |
 | `--model` / `-m` / `$SEEDSTORM_AI_MODEL` | `gemini-2.5-flash` | Gemini model to use |
-| `--db` / `$SEEDSTORM_DB` | `postgres` | DB type (for type-mapping context) |
+| `--prompt` | — | Optional application domain hint (e.g. `"TacoShop"`, `"HR management system"`) |
 
 ---
 
@@ -350,6 +364,9 @@ Integration tests spin up a 28-table real-world schema against both MySQL and Po
 | Dual JSONB columns | `audit_logs` |
 | Supplier + procurement chain | `suppliers → purchase_orders → purchase_order_items` |
 | Warehouse + inventory | `companies → warehouses → inventory` |
+| UNIQUE constraint → `uuid` faker | `users.email`, `users.username`, `coupons.code` |
+| CHECK IN constraint → `randomstring` faker | `users.role` (admin/user/guest) |
+| CHECK range constraint → `number(min,max)` faker | `products.rating` (1–5) |
 
 Tests verify:
 
@@ -358,6 +375,10 @@ Tests verify:
 - 6 value constraints hold (ratings 1–5, prices > 0, quantities ≥ 1, salaries > 0)
 - All FK relationships are auto-discovered by `introspect`
 - Enum values are correctly discovered for all enum columns
+- UNIQUE columns are auto-detected and assigned `uuid` faker (no duplicates)
+- CHECK IN constraints are auto-detected and assigned `randomstring(...)` faker
+- CHECK range constraints are auto-detected and assigned `number(min,max)` faker
+- Post-seed data validity: all seeded values satisfy the actual DB constraints
 - Self-referential tables always have at least one root node (NULL parent)
 - Deep 5-level FK chains are fully intact
 
