@@ -14,7 +14,9 @@ import (
 // EnrichFakerMappings uses Gemini to produce semantically meaningful faker mappings
 // for columns that lack one or have a generic fallback.
 // model is the Gemini model ID (e.g. "gemini-2.5-flash", "gemini-1.5-pro").
-func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model string) (*schema.Schema, string, error) {
+// appContext is an optional free-text hint describing the application domain
+// (e.g. "TacoShop", "HR management system") that is injected into every prompt.
+func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContext string) (*schema.Schema, string, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, "", fmt.Errorf("GEMINI_API_KEY environment variable is not set")
@@ -48,7 +50,7 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model string) (*
 				continue // managed by the seed engine
 			}
 
-			prompt := buildPrompt(tableName, colName, col.Type, colContext, tableContext)
+			prompt := buildPrompt(tableName, colName, col.Type, colContext, tableContext, appContext)
 			answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
 			if err != nil {
 				return nil, "", fmt.Errorf("AI call failed for %s.%s: %w", tableName, colName, err)
@@ -66,7 +68,12 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model string) (*
 }
 
 // buildPrompt constructs a context-rich prompt for Gemini.
-func buildPrompt(tableName, colName, colType, siblingCols, allTables string) string {
+// appContext is an optional free-text hint about the application domain (may be empty).
+func buildPrompt(tableName, colName, colType, siblingCols, allTables, appContext string) string {
+	domainLine := ""
+	if appContext != "" {
+		domainLine = fmt.Sprintf("- Application domain / context: %s\n", appContext)
+	}
 	return fmt.Sprintf(`You are a database seeding expert. Given a database column, return the most appropriate gofakeit function call for generating realistic fake data.
 
 Database context:
@@ -75,7 +82,7 @@ Database context:
 - Columns in this table: %s
 - Column name: %s
 - Column type: %s
-
+%s
 Rules:
 - Return ONLY the function name or function call, nothing else
 - Use lowercase, no "gofakeit." prefix
@@ -84,7 +91,7 @@ Rules:
 - Choose based on what the column SEMANTICALLY represents in a %s table context
 - Examples: tracking_number(varchar) → uuid, brand name(varchar) → company, product name(varchar) → productname, review body(text) → paragraph(2), coupon code(varchar) → word, wishlist name(varchar) → sentence
 
-Return only the faker function call:`, allTables, tableName, siblingCols, colName, colType, tableName)
+Return only the faker function call:`, allTables, tableName, siblingCols, colName, colType, domainLine, tableName)
 }
 
 func cleanFakerString(s string) string {

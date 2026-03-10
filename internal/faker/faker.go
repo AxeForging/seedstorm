@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -157,14 +158,57 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 }
 
 func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int) error {
+	seenKeys := make(map[string]bool) // guards composite PK uniqueness
 	for i := 0; i < rows; i++ {
-		row, err := generateRow(table, tableName, generatedPKs, nil, "")
-		if err != nil {
-			return err
+		var row map[string]interface{}
+		for attempt := 0; attempt < 200; attempt++ {
+			var err error
+			row, err = generateRow(table, tableName, generatedPKs, nil, "")
+			if err != nil {
+				return err
+			}
+			key := compositePKKey(row, table)
+			if !seenKeys[key] {
+				seenKeys[key] = true
+				break
+			}
+			// Collision detected — discard the PK values just appended and retry.
+			// Roll back the PKs that were added for this row.
+			rollbackLastRowPKs(generatedPKs, tableName, table)
 		}
 		data[tableName] = append(data[tableName], row)
 	}
 	return nil
+}
+
+// compositePKKey returns a deterministic string key for the composite PK values
+// of a row. Parts are sorted so map iteration order doesn't affect the result.
+func compositePKKey(row map[string]interface{}, table schema.Table) string {
+	var parts []string
+	for colName, col := range table.Columns {
+		if col.PK {
+			parts = append(parts, fmt.Sprintf("%s=%v", colName, row[colName]))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// rollbackLastRowPKs removes the PK entries added by the most-recent generateRow call.
+func rollbackLastRowPKs(generatedPKs map[string][]interface{}, tableName string, table schema.Table) {
+	pkCount := 0
+	for _, col := range table.Columns {
+		if col.PK {
+			pkCount++
+		}
+	}
+	if pkCount == 0 {
+		return
+	}
+	pks := generatedPKs[tableName]
+	if len(pks) >= pkCount {
+		generatedPKs[tableName] = pks[:len(pks)-pkCount]
+	}
 }
 
 func generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
@@ -190,9 +234,10 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 	if enumVal != nil && colName == enumCol {
 		return *enumVal, nil
 	}
-	if col.PK {
-		return len(generatedPKs[tableName]) + 1, nil
-	}
+	// FK check before PK: handles junction tables where each composite-PK column
+	// is also a FK (e.g. user_favorites.product_id = PK+FK). Using sequential PK
+	// assignment for both columns would double-increment the shared counter and
+	// produce IDs that exceed the referenced table's row count.
 	if col.FK != "" {
 		parts := strings.SplitN(col.FK, ".", 2)
 		if len(parts) == 2 {
@@ -209,6 +254,9 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 			}
 			return pks[gofakeit.Number(0, len(pks)-1)], nil
 		}
+	}
+	if col.PK {
+		return len(generatedPKs[tableName]) + 1, nil
 	}
 	val, err := generate(col.Faker)
 	if err != nil {

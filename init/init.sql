@@ -6,7 +6,8 @@ CREATE TYPE order_status AS ENUM ('pending', 'processing', 'shipped', 'delivered
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL
+    email VARCHAR(255) NOT NULL UNIQUE,
+    role VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'guest'))
 );
 
 CREATE TABLE IF NOT EXISTS products (

@@ -1053,6 +1053,248 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
+	// ── Constraint-aware introspection subtests ──────────────────────────────────
+
+	t.Run("constraint: users.email detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "email" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("users.email: expected Unique=true, got false")
+				}
+				t.Logf("users.email Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("users.email column not found in introspection result")
+	})
+
+	t.Run("constraint: users.username detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "username" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("users.username: expected Unique=true, got false")
+				}
+				t.Logf("users.username Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("users.username column not found in introspection result")
+	})
+
+	t.Run("constraint: coupons.code detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "coupons" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "code" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("coupons.code: expected Unique=true, got false")
+				}
+				t.Logf("coupons.code Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("coupons.code column not found in introspection result")
+	})
+
+	t.Run("constraint: users.role CHECK values detected", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "role" {
+					continue
+				}
+				if len(col.CheckValues) == 0 {
+					t.Error("users.role: expected CheckValues to be populated, got none")
+					return
+				}
+				got := map[string]bool{}
+				for _, v := range col.CheckValues {
+					got[v] = true
+				}
+				for _, want := range []string{"admin", "user", "guest"} {
+					if !got[want] {
+						t.Errorf("users.role: missing expected check value %q, got %v", want, col.CheckValues)
+					}
+				}
+				t.Logf("users.role CheckValues=%v", col.CheckValues)
+				return
+			}
+		}
+		t.Error("users.role column not found in introspection result")
+	})
+
+	t.Run("constraint: users.email gets uuid faker (UNIQUE)", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "email" {
+					continue
+				}
+				f := faker.MapColumnToFaker(postgresDriver, col)
+				if f != "uuid" {
+					t.Errorf("users.email (UNIQUE): expected faker %q, got %q", "uuid", f)
+				}
+				return
+			}
+		}
+	})
+
+	t.Run("constraint: users.role gets randomstring faker (CHECK)", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "role" {
+					continue
+				}
+				f := faker.MapColumnToFaker(postgresDriver, col)
+				if len(f) == 0 || f[:13] != "randomstring(" {
+					t.Errorf("users.role (CHECK): expected randomstring(...) faker, got %q", f)
+				}
+				t.Logf("users.role faker=%q", f)
+				return
+			}
+		}
+	})
+
+	t.Run("constraint: users.role values all within CHECK set after seed", func(t *testing.T) {
+		var bad int
+		if err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM users WHERE role NOT IN ('admin', 'user', 'guest')`).Scan(&bad); err != nil {
+			t.Fatalf("CHECK constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d users with role outside CHECK constraint values", bad)
+		}
+	})
+
+	t.Run("constraint: users.email all unique after seed", func(t *testing.T) {
+		var total, distinct int
+		if err := conn.QueryRowContext(context.Background(), `SELECT COUNT(*), COUNT(DISTINCT email) FROM users`).Scan(&total, &distinct); err != nil {
+			t.Fatalf("uniqueness check: %v", err)
+		}
+		if total != distinct {
+			t.Errorf("users.email: %d total rows but only %d distinct emails — UNIQUE violated", total, distinct)
+		}
+		t.Logf("users.email: %d rows, all distinct", total)
+	})
+
+	t.Run("constraint: coupons.code all unique after seed", func(t *testing.T) {
+		var total, distinct int
+		if err := conn.QueryRowContext(context.Background(), `SELECT COUNT(*), COUNT(DISTINCT code) FROM coupons`).Scan(&total, &distinct); err != nil {
+			t.Fatalf("uniqueness check: %v", err)
+		}
+		if total != distinct {
+			t.Errorf("coupons.code: %d total rows but only %d distinct codes — UNIQUE violated", total, distinct)
+		}
+		t.Logf("coupons.code: %d rows, all distinct", total)
+	})
+
+	t.Run("constraint: products.rating detected as range CHECK", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "products" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "rating" {
+					continue
+				}
+				if col.CheckMin == nil || col.CheckMax == nil {
+					t.Error("products.rating: expected CheckMin/CheckMax to be set for range constraint, got nil")
+					return
+				}
+				if *col.CheckMin != 1 || *col.CheckMax != 5 {
+					t.Errorf("products.rating: expected range [1,5], got [%d,%d]", *col.CheckMin, *col.CheckMax)
+				}
+				t.Logf("products.rating CheckMin=%d CheckMax=%d", *col.CheckMin, *col.CheckMax)
+				return
+			}
+		}
+		t.Error("products.rating column not found in introspection result")
+	})
+
+	t.Run("constraint: products.rating gets number faker (range CHECK)", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "products" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "rating" {
+					continue
+				}
+				f := faker.MapColumnToFaker(postgresDriver, col)
+				if f != "number(1,5)" {
+					t.Errorf("products.rating (range CHECK 1-5): expected faker %q, got %q", "number(1,5)", f)
+				}
+				return
+			}
+		}
+	})
+
+	t.Run("constraint: products.rating values within range after seed", func(t *testing.T) {
+		var bad int
+		if err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM products WHERE rating < 1 OR rating > 5`).Scan(&bad); err != nil {
+			t.Fatalf("range constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d products with rating outside range [1,5]", bad)
+		}
+	})
+
 	// ── Truncate subtests ────────────────────────────────────────────────────────
 
 	var truncateSortedTables []string
@@ -2013,6 +2255,226 @@ func TestMySQLIntegration(t *testing.T) {
 			if n := enumCountQueryMy(t, "employees", "status", want); n < seedRows {
 				t.Errorf("employees.status=%q: expected >= %d rows, got %d", want, seedRows, n)
 			}
+		}
+	})
+
+	// ── Constraint-aware introspection subtests ──────────────────────────────────
+
+	t.Run("constraint: users.email detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "email" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("users.email: expected Unique=true, got false")
+				}
+				t.Logf("users.email Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("users.email column not found in introspection result")
+	})
+
+	t.Run("constraint: users.username detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "username" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("users.username: expected Unique=true, got false")
+				}
+				t.Logf("users.username Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("users.username column not found in introspection result")
+	})
+
+	t.Run("constraint: coupons.code detected as UNIQUE", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "coupons" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "code" {
+					continue
+				}
+				if !col.Unique {
+					t.Error("coupons.code: expected Unique=true, got false")
+				}
+				t.Logf("coupons.code Unique=%v", col.Unique)
+				return
+			}
+		}
+		t.Error("coupons.code column not found in introspection result")
+	})
+
+	t.Run("constraint: users.role CHECK values detected", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "role" {
+					continue
+				}
+				if len(col.CheckValues) == 0 {
+					t.Error("users.role: expected CheckValues to be populated, got none")
+					return
+				}
+				got := map[string]bool{}
+				for _, v := range col.CheckValues {
+					got[v] = true
+				}
+				for _, want := range []string{"admin", "user", "guest"} {
+					if !got[want] {
+						t.Errorf("users.role: missing expected check value %q, got %v", want, col.CheckValues)
+					}
+				}
+				t.Logf("users.role CheckValues=%v", col.CheckValues)
+				return
+			}
+		}
+		t.Error("users.role column not found in introspection result")
+	})
+
+	t.Run("constraint: users.role gets randomstring faker (CHECK)", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "users" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "role" {
+					continue
+				}
+				f := faker.MapColumnToFaker(mysqlDriver, col)
+				if len(f) == 0 || f[:13] != "randomstring(" {
+					t.Errorf("users.role (CHECK): expected randomstring(...) faker, got %q", f)
+				}
+				t.Logf("users.role faker=%q", f)
+				return
+			}
+		}
+	})
+
+	t.Run("constraint: users.role values all within CHECK set after seed", func(t *testing.T) {
+		var bad int
+		if err := conn.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM users WHERE role NOT IN ('admin', 'user', 'guest')").Scan(&bad); err != nil {
+			t.Fatalf("CHECK constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d users with role outside CHECK constraint values", bad)
+		}
+	})
+
+	t.Run("constraint: users.email all unique after seed", func(t *testing.T) {
+		var total, distinct int
+		if err := conn.QueryRowContext(context.Background(), "SELECT COUNT(*), COUNT(DISTINCT email) FROM users").Scan(&total, &distinct); err != nil {
+			t.Fatalf("uniqueness check: %v", err)
+		}
+		if total != distinct {
+			t.Errorf("users.email: %d total rows but only %d distinct emails — UNIQUE violated", total, distinct)
+		}
+		t.Logf("users.email: %d rows, all distinct", total)
+	})
+
+	t.Run("constraint: coupons.code all unique after seed", func(t *testing.T) {
+		var total, distinct int
+		if err := conn.QueryRowContext(context.Background(), "SELECT COUNT(*), COUNT(DISTINCT code) FROM coupons").Scan(&total, &distinct); err != nil {
+			t.Fatalf("uniqueness check: %v", err)
+		}
+		if total != distinct {
+			t.Errorf("coupons.code: %d total rows but only %d distinct codes — UNIQUE violated", total, distinct)
+		}
+		t.Logf("coupons.code: %d rows, all distinct", total)
+	})
+
+	t.Run("constraint: products.rating detected as range CHECK", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "products" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "rating" {
+					continue
+				}
+				if col.CheckMin == nil || col.CheckMax == nil {
+					t.Error("products.rating: expected CheckMin/CheckMax to be set for range constraint, got nil")
+					return
+				}
+				if *col.CheckMin != 1 || *col.CheckMax != 5 {
+					t.Errorf("products.rating: expected range [1,5], got [%d,%d]", *col.CheckMin, *col.CheckMax)
+				}
+				t.Logf("products.rating CheckMin=%d CheckMax=%d", *col.CheckMin, *col.CheckMax)
+				return
+			}
+		}
+		t.Error("products.rating column not found in introspection result")
+	})
+
+	t.Run("constraint: products.rating gets number faker (range CHECK)", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		for _, tbl := range tables {
+			if tbl.Name != "products" {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if col.Name != "rating" {
+					continue
+				}
+				f := faker.MapColumnToFaker(mysqlDriver, col)
+				if f != "number(1,5)" {
+					t.Errorf("products.rating (range CHECK 1-5): expected faker %q, got %q", "number(1,5)", f)
+				}
+				return
+			}
+		}
+	})
+
+	t.Run("constraint: products.rating values within range after seed", func(t *testing.T) {
+		var bad int
+		if err := conn.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM products WHERE rating < 1 OR rating > 5").Scan(&bad); err != nil {
+			t.Fatalf("range constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d products with rating outside range [1,5]", bad)
 		}
 	})
 
