@@ -34,6 +34,13 @@ func Build(s *schema.Schema) *Graph {
 			if col.FK == "" {
 				continue
 			}
+			// Nullable FK columns can be seeded as NULL — don't add a dependency
+			// edge. This breaks near-cycles (e.g. departments.head_employee_id →
+			// employees while employees.department_id → departments) without
+			// losing FK integrity: the column will be NULL on first seed pass.
+			if col.Nullable {
+				continue
+			}
 			parts := strings.SplitN(col.FK, ".", 2)
 			if len(parts) != 2 {
 				continue
