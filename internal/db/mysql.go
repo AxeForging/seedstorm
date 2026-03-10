@@ -200,6 +200,8 @@ var (
 // parseMySQLCheckClause extracts the column name and allowed values from a MySQL
 // CHECK clause such as "(role in (_utf8mb4'admin',_utf8mb4'user'))" or
 // "(`role` in ('admin','user'))".
+// MySQL 8.0 stores single quotes with a backslash escape inside the clause text
+// (e.g. _utf8mb4\'admin\'), so we strip trailing backslashes from each value.
 func parseMySQLCheckClause(clause string) (string, []string) {
 	m := mysqlInRe.FindStringSubmatch(clause)
 	if len(m) < 3 {
@@ -208,15 +210,16 @@ func parseMySQLCheckClause(clause string) (string, []string) {
 	col := m[1]
 	var values []string
 	for _, v := range mysqlValRe.FindAllStringSubmatch(m[2], -1) {
-		values = append(values, v[1])
+		val := strings.TrimRight(v[1], "\\")
+		values = append(values, val)
 	}
 	return col, values
 }
 
 var (
-	// matches: col >= N and col <= M  (case-insensitive, optional spaces)
-	myRangeRe   = regexp.MustCompile(`(?i)(\w+)\s*>=\s*(-?\d+).*?(\w+)\s*<=\s*(-?\d+)`)
-	myBetweenRe = regexp.MustCompile(`(?i)(\w+)\s+between\s+(-?\d+)\s+and\s+(-?\d+)`)
+	// matches: col >= N and col <= M  (case-insensitive, optional spaces, optional backtick-quoting)
+	myRangeRe   = regexp.MustCompile("(?i)`?(\\w+)`?\\s*>=\\s*(-?\\d+).*?`?(\\w+)`?\\s*<=\\s*(-?\\d+)")
+	myBetweenRe = regexp.MustCompile("(?i)`?(\\w+)`?\\s+between\\s+(-?\\d+)\\s+and\\s+(-?\\d+)")
 )
 
 // mysqlRangeMap returns map[table][column]=rangeConstraint for CHECK (col >= N AND col <= M).

@@ -110,6 +110,11 @@ func TestParseMySQLCheckRange(t *testing.T) {
 			wantCol: "score", wantMin: 1, wantMax: 10, wantOK: true,
 		},
 		{
+			name:    "MySQL 8.0 backtick-quoted columns with parens per condition",
+			clause:  "((`rating` >= 1) and (`rating` <= 5))",
+			wantCol: "rating", wantMin: 1, wantMax: 5, wantOK: true,
+		},
+		{
 			name:   "IN clause not a range",
 			clause: "(role in ('admin','user'))",
 			wantOK: false,
@@ -154,6 +159,12 @@ func TestParseMySQLCheckClause(t *testing.T) {
 			clause:     "(role in (_utf8mb4'admin',_utf8mb4'user'))",
 			wantCol:    "role",
 			wantValues: []string{"admin", "user"},
+		},
+		{
+			name:       "MySQL 8.0 backtick-quoted column with backslash-escaped quotes",
+			clause:     "(`role` in (_utf8mb4\\'admin\\',_utf8mb4\\'user\\',_utf8mb4\\'guest\\'))",
+			wantCol:    "role",
+			wantValues: []string{"admin", "user", "guest"},
 		},
 		{
 			name:       "no backticks no prefix",
