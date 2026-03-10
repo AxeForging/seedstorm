@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -40,9 +42,19 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 		return nil, err
 	}
 
+	checkMap, err := mysqlCheckMap(db, dbName)
+	if err != nil {
+		return nil, err
+	}
+
+	rangeMap, err := mysqlRangeMap(db, dbName)
+	if err != nil {
+		return nil, err
+	}
+
 	var tables []Table
 	for _, tableName := range tableNames {
-		cols, err := mysqlColumns(db, dbName, tableName, fkMap)
+		cols, err := mysqlColumns(db, dbName, tableName, fkMap, checkMap, rangeMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
@@ -84,7 +96,7 @@ func mysqlFKMap(db *sql.DB, dbName string) (map[string]map[string]*ForeignKey, e
 	return fkMap, nil
 }
 
-func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[string]*ForeignKey) ([]Column, error) {
+func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[string]*ForeignKey, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint) ([]Column, error) {
 	rows, err := db.Query(`
 		SELECT
 			COLUMN_NAME,
@@ -113,6 +125,7 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 			Type:       strings.ToLower(dataType),
 			IsNullable: isNullable == "YES",
 			IsPK:       columnKey == "PRI",
+			Unique:     columnKey == "UNI",
 		}
 
 		// Parse enum values from COLUMN_TYPE e.g. enum('a','b','c')
@@ -127,9 +140,135 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 			}
 		}
 
+		// Apply CHECK constraint values if known
+		if checkMap[tableName] != nil {
+			if vals, ok := checkMap[tableName][name]; ok {
+				col.CheckValues = vals
+			}
+		}
+
+		if rangeMap[tableName] != nil {
+			if r, ok := rangeMap[tableName][name]; ok {
+				col.CheckMin = &r.Min
+				col.CheckMax = &r.Max
+			}
+		}
+
 		columns = append(columns, col)
 	}
 	return columns, nil
+}
+
+// mysqlCheckMap returns map[table][column]=[]values for CHECK IN constraints (MySQL 8.0.16+).
+func mysqlCheckMap(db *sql.DB, dbName string) (map[string]map[string][]string, error) {
+	rows, err := db.Query(`
+		SELECT tc.TABLE_NAME, cc.CHECK_CLAUSE
+		FROM information_schema.TABLE_CONSTRAINTS tc
+		JOIN information_schema.CHECK_CONSTRAINTS cc
+		  ON tc.CONSTRAINT_NAME  = cc.CONSTRAINT_NAME
+		 AND tc.TABLE_SCHEMA     = cc.CONSTRAINT_SCHEMA
+		WHERE tc.TABLE_SCHEMA    = ?
+		  AND tc.CONSTRAINT_TYPE = 'CHECK'`, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query CHECK constraints: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]map[string][]string)
+	for rows.Next() {
+		var table, clause string
+		if err := rows.Scan(&table, &clause); err != nil {
+			return nil, err
+		}
+		col, vals := parseMySQLCheckClause(clause)
+		if col != "" && len(vals) > 0 {
+			if m[table] == nil {
+				m[table] = make(map[string][]string)
+			}
+			m[table][col] = vals
+		}
+	}
+	return m, nil
+}
+
+var (
+	// matches: `col` in (...) or col in (...)
+	mysqlInRe  = regexp.MustCompile("(?i)`?(\\w+)`?\\s+in\\s*\\(([^)]+)\\)")
+	mysqlValRe = regexp.MustCompile(`'([^']+)'`)
+)
+
+// parseMySQLCheckClause extracts the column name and allowed values from a MySQL
+// CHECK clause such as "(role in (_utf8mb4'admin',_utf8mb4'user'))" or
+// "(`role` in ('admin','user'))".
+func parseMySQLCheckClause(clause string) (string, []string) {
+	m := mysqlInRe.FindStringSubmatch(clause)
+	if len(m) < 3 {
+		return "", nil
+	}
+	col := m[1]
+	var values []string
+	for _, v := range mysqlValRe.FindAllStringSubmatch(m[2], -1) {
+		values = append(values, v[1])
+	}
+	return col, values
+}
+
+var (
+	// matches: col >= N and col <= M  (case-insensitive, optional spaces)
+	myRangeRe   = regexp.MustCompile(`(?i)(\w+)\s*>=\s*(-?\d+).*?(\w+)\s*<=\s*(-?\d+)`)
+	myBetweenRe = regexp.MustCompile(`(?i)(\w+)\s+between\s+(-?\d+)\s+and\s+(-?\d+)`)
+)
+
+// mysqlRangeMap returns map[table][column]=rangeConstraint for CHECK (col >= N AND col <= M).
+func mysqlRangeMap(db *sql.DB, dbName string) (map[string]map[string]rangeConstraint, error) {
+	rows, err := db.Query(`
+		SELECT tc.TABLE_NAME, cc.CHECK_CLAUSE
+		FROM information_schema.TABLE_CONSTRAINTS tc
+		JOIN information_schema.CHECK_CONSTRAINTS cc
+		  ON tc.CONSTRAINT_NAME  = cc.CONSTRAINT_NAME
+		 AND tc.TABLE_SCHEMA     = cc.CONSTRAINT_SCHEMA
+		WHERE tc.TABLE_SCHEMA    = ?
+		  AND tc.CONSTRAINT_TYPE = 'CHECK'`, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query range CHECK constraints: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]map[string]rangeConstraint)
+	for rows.Next() {
+		var table, clause string
+		if err := rows.Scan(&table, &clause); err != nil {
+			return nil, err
+		}
+		col, min, max, ok := parseMySQLCheckRange(clause)
+		if ok {
+			if m[table] == nil {
+				m[table] = make(map[string]rangeConstraint)
+			}
+			m[table][col] = rangeConstraint{Min: min, Max: max}
+		}
+	}
+	return m, nil
+}
+
+// parseMySQLCheckRange extracts (column, min, max) from MySQL CHECK clauses like
+// "(spice_level >= 0 and spice_level <= 5)" or "(score between 1 and 10)".
+func parseMySQLCheckRange(clause string) (string, int64, int64, bool) {
+	if m := myBetweenRe.FindStringSubmatch(clause); len(m) == 4 {
+		lo, err1 := strconv.ParseInt(m[2], 10, 64)
+		hi, err2 := strconv.ParseInt(m[3], 10, 64)
+		if err1 == nil && err2 == nil {
+			return m[1], lo, hi, true
+		}
+	}
+	if m := myRangeRe.FindStringSubmatch(clause); len(m) == 5 {
+		lo, err1 := strconv.ParseInt(m[2], 10, 64)
+		hi, err2 := strconv.ParseInt(m[4], 10, 64)
+		if err1 == nil && err2 == nil {
+			return m[1], lo, hi, true
+		}
+	}
+	return "", 0, 0, false
 }
 
 // parseEnumValues extracts values from MySQL COLUMN_TYPE like enum('a','b','c').

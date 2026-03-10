@@ -8,24 +8,39 @@ import (
 )
 
 // MapColumnToFaker returns the most appropriate gofakeit mapping for a column.
-// It first checks for semantic hints in the column name, then falls back to DB type.
+// Priority: enum type > PK > CHECK values > CHECK range > UNIQUE > semantic name > DB type.
 func MapColumnToFaker(dbType string, col db.Column) string {
-	// Enum/set: pick from provided values
+	// 1. Type-level enums (e.g. PostgreSQL ENUM type, MySQL ENUM/SET)
 	if len(col.EnumValues) > 0 {
 		return fmt.Sprintf("randomstring(%s)", strings.Join(col.EnumValues, ","))
 	}
 
-	// PK with auto-increment: no faker needed
+	// 2. PK with auto-increment: no faker needed
 	if col.IsPK {
 		return ""
 	}
 
-	// Semantic mapping based on column name
+	// 3. CHECK IN constraint: generate only values the constraint allows
+	if len(col.CheckValues) > 0 {
+		return fmt.Sprintf("randomstring(%s)", strings.Join(col.CheckValues, ","))
+	}
+
+	// 4. CHECK range constraint (col >= N AND col <= M)
+	if col.CheckMin != nil && col.CheckMax != nil {
+		return fmt.Sprintf("number(%d,%d)", *col.CheckMin, *col.CheckMax)
+	}
+
+	// 5. UNIQUE constraint: uuid guarantees no duplicate key violations
+	if col.Unique {
+		return "uuid"
+	}
+
+	// 6. Semantic mapping based on column name
 	if m := semanticMapper(col.Name); m != "" {
 		return m
 	}
 
-	// Fall back to type-based mapping
+	// 7. Fall back to type-based mapping
 	return typeMapper(dbType, col.Type)
 }
 

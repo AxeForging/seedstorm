@@ -54,10 +54,11 @@ CREATE TABLE tags (
 
 CREATE TABLE users (
     id         INT AUTO_INCREMENT PRIMARY KEY,
-    email      VARCHAR(255) NOT NULL,
+    email      VARCHAR(255) NOT NULL UNIQUE,
     first_name VARCHAR(100) NOT NULL,
     last_name  VARCHAR(100) NOT NULL,
-    username   VARCHAR(100) NOT NULL,
+    username   VARCHAR(100) NOT NULL UNIQUE,
+    role       VARCHAR(20)  NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'guest')),
     phone      VARCHAR(50),
     metadata   JSON,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -65,7 +66,7 @@ CREATE TABLE users (
 
 CREATE TABLE coupons (
     id             INT AUTO_INCREMENT PRIMARY KEY,
-    code           VARCHAR(50)                        NOT NULL,
+    code           VARCHAR(50)                        NOT NULL UNIQUE,
     discount_type  ENUM('percentage','fixed')         NOT NULL DEFAULT 'percentage',
     discount_value DECIMAL(10,2)                      NOT NULL,
     min_order      DECIMAL(10,2),
@@ -110,8 +111,9 @@ CREATE TABLE products (
     brand_id    INT            NOT NULL,
     name        VARCHAR(255)   NOT NULL,
     description TEXT,
-    price       DECIMAL(10,2)  NOT NULL,
-    stock       INT            NOT NULL DEFAULT 0,
+    price       DECIMAL(10,2)  NOT NULL CHECK (price > 0),
+    stock       INT            NOT NULL DEFAULT 0 CHECK (stock >= 0),
+    rating      SMALLINT       NOT NULL DEFAULT 3 CHECK (rating >= 1 AND rating <= 5),
     sku         CHAR(36)       NOT NULL DEFAULT (UUID()),
     is_active   TINYINT(1)     NOT NULL DEFAULT 1,
     metadata    JSON,

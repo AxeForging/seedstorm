@@ -6,7 +6,8 @@ DROP TABLE IF EXISTS users;
 CREATE TABLE users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE
+    email VARCHAR(255) NOT NULL UNIQUE,
+    role VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'guest'))
 );
 
 CREATE TABLE products (

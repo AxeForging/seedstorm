@@ -82,10 +82,11 @@ CREATE TABLE tags (
 
 CREATE TABLE users (
     id         SERIAL PRIMARY KEY,
-    email      VARCHAR(255) NOT NULL,
+    email      VARCHAR(255) NOT NULL UNIQUE,
     first_name VARCHAR(100) NOT NULL,
     last_name  VARCHAR(100) NOT NULL,
-    username   VARCHAR(100) NOT NULL,
+    username   VARCHAR(100) NOT NULL UNIQUE,
+    role       VARCHAR(20)  NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'guest')),
     phone      VARCHAR(50),
     metadata   JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -93,7 +94,7 @@ CREATE TABLE users (
 
 CREATE TABLE coupons (
     id             SERIAL PRIMARY KEY,
-    code           VARCHAR(50)    NOT NULL,
+    code           VARCHAR(50)    NOT NULL UNIQUE,
     discount_type  discount_type  NOT NULL DEFAULT 'percentage',
     discount_value NUMERIC(10,2)  NOT NULL,
     min_order      NUMERIC(10,2),
@@ -137,8 +138,9 @@ CREATE TABLE products (
     brand_id    INTEGER        NOT NULL REFERENCES brands(id),
     name        VARCHAR(255)   NOT NULL,
     description TEXT,
-    price       NUMERIC(10,2)  NOT NULL,
-    stock       INTEGER        NOT NULL DEFAULT 0,
+    price       NUMERIC(10,2)  NOT NULL CHECK (price > 0),
+    stock       INTEGER        NOT NULL DEFAULT 0 CHECK (stock >= 0),
+    rating      SMALLINT       NOT NULL DEFAULT 3 CHECK (rating >= 1 AND rating <= 5),
     sku         UUID           NOT NULL DEFAULT gen_random_uuid(),
     is_active   BOOLEAN        NOT NULL DEFAULT TRUE,
     metadata    JSONB,

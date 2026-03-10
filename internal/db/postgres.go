@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -37,9 +39,24 @@ func introspectPostgres(db *sql.DB) ([]Table, error) {
 		return nil, err
 	}
 
+	uniqueMap, err := postgresUniqueMap(db)
+	if err != nil {
+		return nil, err
+	}
+
+	checkMap, err := postgresCheckMap(db)
+	if err != nil {
+		return nil, err
+	}
+
+	rangeMap, err := postgresRangeMap(db)
+	if err != nil {
+		return nil, err
+	}
+
 	var tables []Table
 	for _, tableName := range tableNames {
-		cols, err := postgresColumns(db, tableName, fkMap, pkMap)
+		cols, err := postgresColumns(db, tableName, fkMap, pkMap, uniqueMap, checkMap, rangeMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
@@ -112,7 +129,9 @@ func postgresPKMap(db *sql.DB) (map[string]map[string]bool, error) {
 	return pkMap, nil
 }
 
-func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool) ([]Column, error) {
+type rangeConstraint struct{ Min, Max int64 }
+
+func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool, uniqueMap map[string]map[string]bool, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint) ([]Column, error) {
 	rows, err := db.Query(`
 		SELECT
 			column_name,
@@ -146,6 +165,7 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 			Type:       colType,
 			IsNullable: isNullable == "YES",
 			IsPK:       pkMap[tableName] != nil && pkMap[tableName][name],
+			Unique:     uniqueMap[tableName] != nil && uniqueMap[tableName][name],
 		}
 
 		// Resolve enum values for user-defined enum types
@@ -159,9 +179,162 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 			}
 		}
 
+		if checkMap[tableName] != nil {
+			if vals, ok := checkMap[tableName][name]; ok {
+				col.CheckValues = vals
+			}
+		}
+
+		if rangeMap[tableName] != nil {
+			if r, ok := rangeMap[tableName][name]; ok {
+				col.CheckMin = &r.Min
+				col.CheckMax = &r.Max
+			}
+		}
+
 		columns = append(columns, col)
 	}
 	return columns, nil
+}
+
+// postgresUniqueMap returns map[table][column]=true for single-column UNIQUE constraints.
+func postgresUniqueMap(db *sql.DB) (map[string]map[string]bool, error) {
+	rows, err := db.Query(`
+		SELECT t.relname, a.attname
+		FROM pg_constraint c
+		JOIN pg_class t       ON c.conrelid = t.oid
+		JOIN pg_namespace n   ON t.relnamespace = n.oid
+		JOIN pg_attribute a   ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+		WHERE c.contype = 'u'
+		  AND n.nspname = 'public'
+		  AND array_length(c.conkey, 1) = 1`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query UNIQUE constraints: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]map[string]bool)
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			return nil, err
+		}
+		if m[table] == nil {
+			m[table] = make(map[string]bool)
+		}
+		m[table][column] = true
+	}
+	return m, nil
+}
+
+// postgresCheckMap returns map[table][column]=[]values for single-column CHECK IN constraints.
+func postgresCheckMap(db *sql.DB) (map[string]map[string][]string, error) {
+	rows, err := db.Query(`
+		SELECT t.relname, a.attname, pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class t       ON c.conrelid = t.oid
+		JOIN pg_namespace n   ON t.relnamespace = n.oid
+		JOIN pg_attribute a   ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+		WHERE c.contype = 'c'
+		  AND n.nspname = 'public'
+		  AND array_length(c.conkey, 1) = 1`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query CHECK constraints: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]map[string][]string)
+	for rows.Next() {
+		var table, column, clause string
+		if err := rows.Scan(&table, &column, &clause); err != nil {
+			return nil, err
+		}
+		if vals := parsePostgresCheckValues(clause); len(vals) > 0 {
+			if m[table] == nil {
+				m[table] = make(map[string][]string)
+			}
+			m[table][column] = vals
+		}
+	}
+	return m, nil
+}
+
+// postgresRangeMap returns map[table][column]=rangeConstraint for CHECK (col >= N AND col <= M).
+func postgresRangeMap(db *sql.DB) (map[string]map[string]rangeConstraint, error) {
+	rows, err := db.Query(`
+		SELECT t.relname, a.attname, pg_get_constraintdef(c.oid)
+		FROM pg_constraint c
+		JOIN pg_class t       ON c.conrelid = t.oid
+		JOIN pg_namespace n   ON t.relnamespace = n.oid
+		JOIN pg_attribute a   ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+		WHERE c.contype = 'c'
+		  AND n.nspname = 'public'
+		  AND array_length(c.conkey, 1) = 1`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query range CHECK constraints: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]map[string]rangeConstraint)
+	for rows.Next() {
+		var table, column, clause string
+		if err := rows.Scan(&table, &column, &clause); err != nil {
+			return nil, err
+		}
+		if min, max, ok := parsePostgresCheckRange(clause); ok {
+			if m[table] == nil {
+				m[table] = make(map[string]rangeConstraint)
+			}
+			m[table][column] = rangeConstraint{Min: min, Max: max}
+		}
+	}
+	return m, nil
+}
+
+var (
+	pgArrayRe = regexp.MustCompile(`ARRAY\[([^\]]+)\]`)
+	pgValRe   = regexp.MustCompile(`'([^']+)'`)
+	// matches: (col >= N) AND (col <= M)  or  col >= N AND col <= M
+	pgRangeRe = regexp.MustCompile(`(?i)(\w+)\s*>=\s*(-?\d+).*?(\w+)\s*<=\s*(-?\d+)`)
+	// matches: col BETWEEN N AND M
+	pgBetweenRe = regexp.MustCompile(`(?i)(\w+)\s+BETWEEN\s+(-?\d+)\s+AND\s+(-?\d+)`)
+)
+
+// parsePostgresCheckRange extracts (min, max) from CHECK constraints like
+// "CHECK (((spice_level >= 0) AND (spice_level <= 5)))".
+func parsePostgresCheckRange(clause string) (min, max int64, ok bool) {
+	// Try BETWEEN first
+	if m := pgBetweenRe.FindStringSubmatch(clause); len(m) == 4 {
+		lo, err1 := strconv.ParseInt(m[2], 10, 64)
+		hi, err2 := strconv.ParseInt(m[3], 10, 64)
+		if err1 == nil && err2 == nil {
+			return lo, hi, true
+		}
+	}
+	// Try >= … AND <= …
+	if m := pgRangeRe.FindStringSubmatch(clause); len(m) == 5 {
+		lo, err1 := strconv.ParseInt(m[2], 10, 64)
+		hi, err2 := strconv.ParseInt(m[4], 10, 64)
+		if err1 == nil && err2 == nil {
+			return lo, hi, true
+		}
+	}
+	return 0, 0, false
+}
+
+// parsePostgresCheckValues extracts allowed values from a PostgreSQL CHECK constraint
+// definition. PostgreSQL normalizes "col IN ('a','b')" to
+// "CHECK ((col = ANY (ARRAY['a'::text, 'b'::text])))" so we look for ARRAY[...].
+func parsePostgresCheckValues(clause string) []string {
+	m := pgArrayRe.FindStringSubmatch(clause)
+	if len(m) < 2 {
+		return nil
+	}
+	var values []string
+	for _, v := range pgValRe.FindAllStringSubmatch(m[1], -1) {
+		values = append(values, v[1])
+	}
+	return values
 }
 
 func postgresEnumValues(db *sql.DB, typeName string) ([]string, error) {
