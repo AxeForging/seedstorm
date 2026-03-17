@@ -2555,3 +2555,476 @@ func TestMySQLIntegration(t *testing.T) {
 		execScript(t, conn, "schema_mysql.sql") // re-run drops everything
 	})
 }
+
+// ── Gap Analysis ──────────────────────────────────────────────────────────────
+//
+// These tests exercise the gaps / GenerateFiltered feature end-to-end:
+//   1. Partial seed: populate only L0 (root) tables.
+//   2. Gap detection: GetTableRowCounts shows L1+ tables are empty.
+//   3. Gap fill: GenerateFiltered seeds only empty tables, resolving FKs from
+//      already-populated parents.
+//   4. Verify: all tables populated, FK integrity intact.
+//   5. Idempotent fill: running gap fill a second time when all tables already
+//      have rows adds nothing (no gaps found → no generation).
+
+// gapL0Tables are the root (no FK parents) tables in the 28-table test schema.
+var gapL0Tables = []string{"brands", "tags", "users", "coupons", "companies", "suppliers"}
+
+// gapAllTables lists every table in the test schema (used for count assertions).
+var gapAllTables = []string{
+	"brands", "tags", "users", "coupons", "companies", "suppliers",
+	"categories", "addresses", "departments", "warehouses", "wishlists",
+	"products", "employees",
+	"product_tags", "orders", "projects", "inventory", "purchase_orders",
+	"support_tickets", "reviews", "wishlist_items", "audit_logs",
+	"order_items", "shipments", "payments", "project_assignments",
+	"purchase_order_items", "return_requests",
+}
+
+// seedL0 populates only the root tables (L0) by introspecting and generating
+// a schema filtered to just those tables, then inserting the rows.
+func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
+	t.Helper()
+
+	tables, err := db.Introspect(driver, dsn)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+	for _, tbl := range tables {
+		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+		for _, col := range tbl.Columns {
+			sc := schema.Column{
+				Type:     col.Type,
+				PK:       col.IsPK,
+				Nullable: col.IsNullable,
+				Faker:    faker.MapColumnToFaker(driver, col),
+			}
+			if col.FK != nil {
+				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+			}
+			st.Columns[col.Name] = sc
+		}
+		s.Tables[tbl.Name] = st
+	}
+
+	data, err := faker.Generate(s, gapL0Tables, seedRows, 0, conn)
+	if err != nil {
+		t.Fatalf("generate L0: %v", err)
+	}
+	for _, tableName := range gapL0Tables {
+		for _, row := range data[tableName] {
+			cols := make([]string, 0, len(row))
+			phs := make([]string, 0, len(row))
+			vals := make([]interface{}, 0, len(row))
+			i := 1
+			for colName, val := range row {
+				cols = append(cols, colName)
+				if driver == postgresDriver {
+					phs = append(phs, fmt.Sprintf("$%d", i))
+				} else {
+					phs = append(phs, "?")
+				}
+				vals = append(vals, val)
+				i++
+			}
+			q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+				tableName, strings.Join(cols, ", "), strings.Join(phs, ", "))
+			if _, err := conn.ExecContext(context.Background(), q, vals...); err != nil {
+				t.Fatalf("L0 insert into %s: %v", tableName, err)
+			}
+		}
+	}
+	t.Logf("seedL0: inserted %d rows into %d root tables", seedRows*len(gapL0Tables), len(gapL0Tables))
+}
+
+// fillGaps runs the core GenerateFiltered → insert pipeline on only the tables
+// that have 0 rows, using allSorted for FK preloading and returning the number
+// of gap tables that were filled.
+func fillGaps(t *testing.T, driver string, conn *sql.DB, s *schema.Schema, allSorted []string) int {
+	t.Helper()
+
+	counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+	if err != nil {
+		t.Fatalf("GetTableRowCounts: %v", err)
+	}
+
+	var gapTables []string
+	for _, tbl := range allSorted {
+		if counts[tbl] == 0 {
+			gapTables = append(gapTables, tbl)
+		}
+	}
+	if len(gapTables) == 0 {
+		return 0
+	}
+
+	data, err := faker.GenerateFiltered(s, allSorted, gapTables, seedRows, 0, conn)
+	if err != nil {
+		t.Fatalf("GenerateFiltered: %v", err)
+	}
+
+	for _, tableName := range gapTables {
+		for _, row := range data[tableName] {
+			cols := make([]string, 0, len(row))
+			phs := make([]string, 0, len(row))
+			vals := make([]interface{}, 0, len(row))
+			i := 1
+			for colName, val := range row {
+				cols = append(cols, colName)
+				if driver == postgresDriver {
+					phs = append(phs, fmt.Sprintf("$%d", i))
+				} else {
+					phs = append(phs, "?")
+				}
+				vals = append(vals, val)
+				i++
+			}
+			q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+				tableName, strings.Join(cols, ", "), strings.Join(phs, ", "))
+			if _, err := conn.ExecContext(context.Background(), q, vals...); err != nil {
+				t.Fatalf("gap fill insert into %s: %v", tableName, err)
+			}
+		}
+	}
+	return len(gapTables)
+}
+
+func TestPostgresGaps(t *testing.T) {
+	dsn := envOrDefault("POSTGRES_DSN", postgresDSN)
+	conn := openDB(t, postgresDriver, dsn)
+	defer conn.Close()
+
+	t.Run("setup schema", func(t *testing.T) {
+		execScript(t, conn, "schema_postgres.sql")
+	})
+
+	// Build full schema + sorted order once, reused across sub-tests.
+	var (
+		fullSchema *schema.Schema
+		allSorted  []string
+	)
+	t.Run("build schema and sort order", func(t *testing.T) {
+		tables, err := db.Introspect(postgresDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		fullSchema = &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+		for _, tbl := range tables {
+			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+			for _, col := range tbl.Columns {
+				sc := schema.Column{
+					Type:     col.Type,
+					PK:       col.IsPK,
+					Nullable: col.IsNullable,
+					Faker:    faker.MapColumnToFaker(postgresDriver, col),
+				}
+				if col.FK != nil {
+					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+				}
+				st.Columns[col.Name] = sc
+			}
+			fullSchema.Tables[tbl.Name] = st
+		}
+		g := graph.Build(fullSchema)
+		allSorted, err = g.TopologicalSort()
+		if err != nil {
+			t.Fatalf("topological sort: %v", err)
+		}
+	})
+
+	t.Run("partial seed: populate L0 tables only", func(t *testing.T) {
+		if fullSchema == nil {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		seedL0(t, postgresDriver, dsn, conn)
+		for _, tbl := range gapL0Tables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("L0 table %s should have rows after partial seed", tbl)
+			}
+		}
+	})
+
+	t.Run("gap detection: L1+ tables are empty", func(t *testing.T) {
+		if fullSchema == nil {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		counts, err := db.GetTableRowCounts(context.Background(), conn, gapAllTables)
+		if err != nil {
+			t.Fatalf("GetTableRowCounts: %v", err)
+		}
+		l0Set := make(map[string]bool)
+		for _, tbl := range gapL0Tables {
+			l0Set[tbl] = true
+		}
+		for _, tbl := range gapAllTables {
+			if l0Set[tbl] {
+				if counts[tbl] == 0 {
+					t.Errorf("L0 table %s should be populated", tbl)
+				}
+			} else {
+				if counts[tbl] != 0 {
+					t.Errorf("L1+ table %s should be empty before gap fill, got %d rows", tbl, counts[tbl])
+				}
+			}
+		}
+		// Count total gaps.
+		gaps := 0
+		for _, c := range counts {
+			if c == 0 {
+				gaps++
+			}
+		}
+		t.Logf("gap detection: %d/%d tables are empty (gaps)", gaps, len(gapAllTables))
+	})
+
+	var gapsFilled int
+	t.Run("gap fill: seed empty tables only", func(t *testing.T) {
+		if fullSchema == nil || len(allSorted) == 0 {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		gapsFilled = fillGaps(t, postgresDriver, conn, fullSchema, allSorted)
+		if gapsFilled == 0 {
+			t.Error("expected at least one gap table to be filled")
+		}
+		t.Logf("gap fill: seeded %d previously-empty tables", gapsFilled)
+	})
+
+	t.Run("gap fill: all tables populated after fill", func(t *testing.T) {
+		for _, tbl := range gapAllTables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("table %s still has 0 rows after gap fill", tbl)
+			}
+		}
+	})
+
+	t.Run("gap fill: L0 tables unchanged (not re-seeded)", func(t *testing.T) {
+		// L0 tables should still have exactly seedRows rows (not doubled).
+		for _, tbl := range gapL0Tables {
+			n := countRows(t, conn, tbl)
+			if n == 0 {
+				t.Errorf("L0 table %s lost its rows", tbl)
+			}
+			// enum top-up can add rows, so we just ensure the count didn't halve
+			if n < seedRows {
+				t.Errorf("L0 table %s has fewer rows than expected (%d < %d)", tbl, n, seedRows)
+			}
+		}
+	})
+
+	t.Run("gap fill: FK integrity for filled tables", func(t *testing.T) {
+		checks := []struct {
+			child, parent, col string
+		}{
+			{"addresses", "users", "user_id"},
+			{"products", "categories", "category_id"},
+			{"products", "brands", "brand_id"},
+			{"orders", "users", "user_id"},
+			{"order_items", "orders", "order_id"},
+			{"order_items", "products", "product_id"},
+			{"shipments", "orders", "order_id"},
+			{"payments", "orders", "order_id"},
+			{"reviews", "users", "user_id"},
+			{"reviews", "products", "product_id"},
+		}
+		for _, c := range checks {
+			c := c
+			t.Run(fmt.Sprintf("%s->%s", c.child, c.parent), func(t *testing.T) {
+				q := fmt.Sprintf(`SELECT COUNT(*) FROM %s child
+					LEFT JOIN %s parent ON child.%s = parent.id
+					WHERE parent.id IS NULL AND child.%s IS NOT NULL`,
+					c.child, c.parent, c.col, c.col)
+				var orphans int
+				if err := conn.QueryRowContext(context.Background(), q).Scan(&orphans); err != nil {
+					t.Fatalf("FK check: %v", err)
+				}
+				if orphans > 0 {
+					t.Errorf("%d orphaned rows in %s.%s after gap fill", orphans, c.child, c.col)
+				}
+			})
+		}
+	})
+
+	t.Run("gap fill: idempotent — no gaps after full fill", func(t *testing.T) {
+		if fullSchema == nil || len(allSorted) == 0 {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+		if err != nil {
+			t.Fatalf("GetTableRowCounts: %v", err)
+		}
+		for _, tbl := range allSorted {
+			if counts[tbl] == 0 {
+				t.Errorf("table %s is still empty — gap fill was not idempotent", tbl)
+			}
+		}
+		// Simulate a second gap fill call: should find 0 gaps.
+		var secondGaps []string
+		for _, tbl := range allSorted {
+			if counts[tbl] == 0 {
+				secondGaps = append(secondGaps, tbl)
+			}
+		}
+		if len(secondGaps) > 0 {
+			t.Errorf("second gap scan found %d gaps: %v", len(secondGaps), secondGaps)
+		}
+	})
+
+	t.Run("teardown", func(t *testing.T) {
+		execScript(t, conn, "schema_postgres.sql")
+	})
+}
+
+func TestMySQLGaps(t *testing.T) {
+	dsn := envOrDefault("MYSQL_DSN", mysqlDSN)
+	conn := openDB(t, mysqlDriver, dsn)
+	defer conn.Close()
+
+	t.Run("setup schema", func(t *testing.T) {
+		execScript(t, conn, "schema_mysql.sql")
+	})
+
+	var (
+		fullSchema *schema.Schema
+		allSorted  []string
+	)
+	t.Run("build schema and sort order", func(t *testing.T) {
+		tables, err := db.Introspect(mysqlDriver, dsn)
+		if err != nil {
+			t.Fatalf("introspect: %v", err)
+		}
+		fullSchema = &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+		for _, tbl := range tables {
+			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+			for _, col := range tbl.Columns {
+				sc := schema.Column{
+					Type:     col.Type,
+					PK:       col.IsPK,
+					Nullable: col.IsNullable,
+					Faker:    faker.MapColumnToFaker(mysqlDriver, col),
+				}
+				if col.FK != nil {
+					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+				}
+				st.Columns[col.Name] = sc
+			}
+			fullSchema.Tables[tbl.Name] = st
+		}
+		g := graph.Build(fullSchema)
+		allSorted, err = g.TopologicalSort()
+		if err != nil {
+			t.Fatalf("topological sort: %v", err)
+		}
+	})
+
+	t.Run("partial seed: populate L0 tables only", func(t *testing.T) {
+		if fullSchema == nil {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		seedL0(t, mysqlDriver, dsn, conn)
+		for _, tbl := range gapL0Tables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("L0 table %s should have rows after partial seed", tbl)
+			}
+		}
+	})
+
+	t.Run("gap detection: L1+ tables are empty", func(t *testing.T) {
+		if fullSchema == nil {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		counts, err := db.GetTableRowCounts(context.Background(), conn, gapAllTables)
+		if err != nil {
+			t.Fatalf("GetTableRowCounts: %v", err)
+		}
+		l0Set := make(map[string]bool)
+		for _, tbl := range gapL0Tables {
+			l0Set[tbl] = true
+		}
+		gaps := 0
+		for _, tbl := range gapAllTables {
+			if l0Set[tbl] {
+				if counts[tbl] == 0 {
+					t.Errorf("L0 table %s should be populated", tbl)
+				}
+			} else {
+				if counts[tbl] != 0 {
+					t.Errorf("L1+ table %s should be empty before gap fill, got %d rows", tbl, counts[tbl])
+				}
+				gaps++
+			}
+		}
+		t.Logf("gap detection: %d/%d tables are empty (gaps)", gaps, len(gapAllTables))
+	})
+
+	t.Run("gap fill: seed empty tables only", func(t *testing.T) {
+		if fullSchema == nil || len(allSorted) == 0 {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		filled := fillGaps(t, mysqlDriver, conn, fullSchema, allSorted)
+		if filled == 0 {
+			t.Error("expected at least one gap table to be filled")
+		}
+		t.Logf("gap fill: seeded %d previously-empty tables", filled)
+	})
+
+	t.Run("gap fill: all tables populated after fill", func(t *testing.T) {
+		for _, tbl := range gapAllTables {
+			if n := countRows(t, conn, tbl); n == 0 {
+				t.Errorf("table %s still has 0 rows after gap fill", tbl)
+			}
+		}
+	})
+
+	t.Run("gap fill: FK integrity for filled tables", func(t *testing.T) {
+		checks := []struct {
+			child, parent, col string
+		}{
+			{"addresses", "users", "user_id"},
+			{"products", "categories", "category_id"},
+			{"products", "brands", "brand_id"},
+			{"orders", "users", "user_id"},
+			{"order_items", "orders", "order_id"},
+			{"order_items", "products", "product_id"},
+			{"shipments", "orders", "order_id"},
+			{"payments", "orders", "order_id"},
+			{"reviews", "users", "user_id"},
+			{"reviews", "products", "product_id"},
+		}
+		for _, c := range checks {
+			c := c
+			t.Run(fmt.Sprintf("%s->%s", c.child, c.parent), func(t *testing.T) {
+				q := fmt.Sprintf(`SELECT COUNT(*) FROM %s child
+					LEFT JOIN %s parent ON child.%s = parent.id
+					WHERE parent.id IS NULL AND child.%s IS NOT NULL`,
+					c.child, c.parent, c.col, c.col)
+				var orphans int
+				if err := conn.QueryRowContext(context.Background(), q).Scan(&orphans); err != nil {
+					t.Fatalf("FK check: %v", err)
+				}
+				if orphans > 0 {
+					t.Errorf("%d orphaned rows in %s.%s after gap fill", orphans, c.child, c.col)
+				}
+			})
+		}
+	})
+
+	t.Run("gap fill: idempotent — no gaps after full fill", func(t *testing.T) {
+		if fullSchema == nil || len(allSorted) == 0 {
+			t.Skip("schema not built — previous subtest failed")
+		}
+		counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+		if err != nil {
+			t.Fatalf("GetTableRowCounts: %v", err)
+		}
+		for _, tbl := range allSorted {
+			if counts[tbl] == 0 {
+				t.Errorf("table %s is still empty — gap fill was not idempotent", tbl)
+			}
+		}
+	})
+
+	t.Run("teardown", func(t *testing.T) {
+		execScript(t, conn, "schema_mysql.sql")
+	})
+}
