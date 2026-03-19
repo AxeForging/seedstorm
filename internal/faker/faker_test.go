@@ -279,6 +279,27 @@ func TestGenerateStandardRows_exhaustedPKSpace_returnsError(t *testing.T) {
 	}
 }
 
+func TestGenerateEnumRows_exhaustedPKSpace_returnsError(t *testing.T) {
+	// Junction table with both columns as PK+FK. With 1 PK in each parent the
+	// only composite key is (1,1). Requesting 2 rows per enum value must fail
+	// rather than silently inserting a duplicate.
+	tbl := schema.Table{
+		Columns: map[string]schema.Column{
+			"a_id":   {Type: "integer", PK: true, FK: "a.id"},
+			"b_id":   {Type: "integer", PK: true, FK: "b.id"},
+			"status": {Type: "varchar", Faker: "randomstring(active,closed)"},
+		},
+	}
+	data := map[string][]map[string]interface{}{"junc": nil}
+	pks := map[string][]interface{}{"a": {1}, "b": {1}}
+
+	// 2 enum rows per value but only 1 unique combo → must error.
+	err := generateEnumRows(data, pks, tbl, "junc", "status", []string{"active", "closed"}, 2)
+	if err == nil {
+		t.Fatal("expected error when composite PK space is exhausted in generateEnumRows, got nil")
+	}
+}
+
 func TestTopUpEnumCoverage_noCollisionWithExistingRows(t *testing.T) {
 	// Simulate a junction table that also carries an enum column.
 	// Existing row occupies (1,1); top-up must not generate another (1,1).

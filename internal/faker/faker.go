@@ -192,12 +192,28 @@ func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs ma
 }
 
 func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int) error {
+	seenKeys := make(map[string]bool)
 	for _, enumVal := range enumVals {
 		v := enumVal
 		for i := 0; i < enumRows; i++ {
-			row, err := generateRow(table, tableName, generatedPKs, &v, enumCol)
-			if err != nil {
-				return err
+			var row map[string]interface{}
+			generated := false
+			for attempt := 0; attempt < 200; attempt++ {
+				var err error
+				row, err = generateRow(table, tableName, generatedPKs, &v, enumCol)
+				if err != nil {
+					return err
+				}
+				key := compositePKKey(row, table)
+				if !seenKeys[key] {
+					seenKeys[key] = true
+					generated = true
+					break
+				}
+				rollbackLastRowPKs(generatedPKs, tableName, table)
+			}
+			if !generated {
+				return fmt.Errorf("could not generate unique composite PK after 200 attempts for table %s (enum=%s, FK pool too small?)", tableName, enumVal)
 			}
 			data[tableName] = append(data[tableName], row)
 		}

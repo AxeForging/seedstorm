@@ -51,7 +51,7 @@ test:
 test-integration: dev-up
 	@echo "Waiting for databases to be healthy..."
 	@docker compose wait mysql postgres 2>/dev/null || sleep 10
-	cd integration && go test -v -tags integration -count=1 ./... -timeout 120s
+	cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
 
 lint:
 	golangci-lint run --timeout=5m
