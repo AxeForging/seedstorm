@@ -257,3 +257,55 @@ func TestGenerate_noEnumColumns_rowCountUnchanged(t *testing.T) {
 		t.Errorf("expected exactly 10 rows, got %d", len(data["users"]))
 	}
 }
+
+// ── composite PK collision handling ──────────────────────────────────────────
+
+func TestGenerateStandardRows_exhaustedPKSpace_returnsError(t *testing.T) {
+	// Junction table: both columns are PK+FK. With only 1 PK in each parent,
+	// the only possible composite key is (1,1). Requesting 2 rows must fail
+	// with an error rather than silently inserting a duplicate.
+	tbl := schema.Table{
+		Columns: map[string]schema.Column{
+			"a_id": {Type: "integer", PK: true, FK: "a.id"},
+			"b_id": {Type: "integer", PK: true, FK: "b.id"},
+		},
+	}
+	data := map[string][]map[string]interface{}{"junc": nil}
+	pks := map[string][]interface{}{"a": {1}, "b": {1}}
+
+	// 2 rows requested but only 1 unique composite key possible → must error.
+	if err := generateStandardRows(data, pks, tbl, "junc", 2); err == nil {
+		t.Fatal("expected error when composite PK space is exhausted, got nil")
+	}
+}
+
+func TestTopUpEnumCoverage_noCollisionWithExistingRows(t *testing.T) {
+	// Simulate a junction table that also carries an enum column.
+	// Existing row occupies (1,1); top-up must not generate another (1,1).
+	tbl := schema.Table{
+		Columns: map[string]schema.Column{
+			"a_id":   {Type: "integer", PK: true, FK: "a.id"},
+			"b_id":   {Type: "integer", PK: true, FK: "b.id"},
+			"status": {Type: "varchar", Faker: "randomstring(active,closed)"},
+		},
+	}
+	existing := map[string]interface{}{"a_id": 1, "b_id": 1, "status": "active"}
+	data := map[string][]map[string]interface{}{"junc": {existing}}
+	// Two PKs in each parent → combinations: (1,1),(1,2),(2,1),(2,2)
+	pks := map[string][]interface{}{"a": {1, 2}, "b": {1, 2}, "junc": {}}
+
+	enumCols := findAllEnumColumns(tbl)
+	if err := topUpEnumCoverage(data, pks, tbl, "junc", enumCols, 1); err != nil {
+		t.Fatalf("topUpEnumCoverage: %v", err)
+	}
+
+	// Verify no duplicate composite PKs in the result.
+	seen := make(map[string]int)
+	for _, row := range data["junc"] {
+		key := compositePKKey(row, tbl)
+		seen[key]++
+		if seen[key] > 1 {
+			t.Errorf("duplicate composite PK found: %s", key)
+		}
+	}
+}

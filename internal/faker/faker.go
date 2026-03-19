@@ -143,6 +143,13 @@ const maxEnumTopUpValues = 12
 // Columns with more than maxEnumTopUpValues values are skipped: large pools
 // are AI example lists, not true enums, and top-up would inflate row counts.
 func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int) error {
+	// Seed seenKeys from already-generated rows so top-up rows don't collide on
+	// composite PKs (e.g., junction tables that also carry an enum column).
+	seenKeys := make(map[string]bool, len(data[tableName]))
+	for _, row := range data[tableName] {
+		seenKeys[compositePKKey(row, table)] = true
+	}
+
 	for colName, vals := range enumCols {
 		if len(vals) > maxEnumTopUpValues {
 			continue
@@ -157,9 +164,24 @@ func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs ma
 			need := minRows - counts[val]
 			for i := 0; i < need; i++ {
 				v := val
-				row, err := generateRow(table, tableName, generatedPKs, &v, colName)
-				if err != nil {
-					return err
+				var row map[string]interface{}
+				generated := false
+				for attempt := 0; attempt < 200; attempt++ {
+					var err error
+					row, err = generateRow(table, tableName, generatedPKs, &v, colName)
+					if err != nil {
+						return err
+					}
+					key := compositePKKey(row, table)
+					if !seenKeys[key] {
+						seenKeys[key] = true
+						generated = true
+						break
+					}
+					rollbackLastRowPKs(generatedPKs, tableName, table)
+				}
+				if !generated {
+					return fmt.Errorf("could not generate unique PK for enum top-up (table %s, %s=%s)", tableName, colName, val)
 				}
 				data[tableName] = append(data[tableName], row)
 				counts[val]++
@@ -187,6 +209,7 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 	seenKeys := make(map[string]bool) // guards composite PK uniqueness
 	for i := 0; i < rows; i++ {
 		var row map[string]interface{}
+		generated := false
 		for attempt := 0; attempt < 200; attempt++ {
 			var err error
 			row, err = generateRow(table, tableName, generatedPKs, nil, "")
@@ -196,11 +219,15 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 			key := compositePKKey(row, table)
 			if !seenKeys[key] {
 				seenKeys[key] = true
+				generated = true
 				break
 			}
 			// Collision detected — discard the PK values just appended and retry.
 			// Roll back the PKs that were added for this row.
 			rollbackLastRowPKs(generatedPKs, tableName, table)
+		}
+		if !generated {
+			return fmt.Errorf("could not generate a unique composite PK after 200 attempts for table %s (FK pool too small?)", tableName)
 		}
 		data[tableName] = append(data[tableName], row)
 	}

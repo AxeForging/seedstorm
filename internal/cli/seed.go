@@ -124,6 +124,8 @@ Use --dry-run to print SQL statements without executing them.`,
 
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
+				fmt.Print(graph.RenderPlan(s, sortedTables, rows))
+				fmt.Println("--- SQL ---")
 			}
 
 			// Truncate tables before seeding
