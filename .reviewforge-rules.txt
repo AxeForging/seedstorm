@@ -1,0 +1,139 @@
+# seedstorm — Code Review Rules
+# Enforce these standards on every PR to prevent regressions and keep the codebase consistent.
+
+## Project Type & Stack
+
+Go CLI tool (urfave/cli v3) that seeds PostgreSQL and MySQL databases with realistic fake data.
+It introspects live schemas, resolves FK insertion order via topological sort, generates fake rows
+with gofakeit, and inserts them. Optional AI enrichment via Gemini rewrites faker hints for
+domain-specific realism.
+
+Key dependencies: gofakeit v6 (fake data), pgx v5 + go-sql-driver/mysql (DB drivers),
+zerolog (logging), goccy/go-yaml (schema parsing), google.golang.org/genai (Gemini).
+
+## Architecture
+
+```
+cmd/seedstorm/main.go       # Binary entry point
+internal/app/app.go         # Wires all CLI commands
+internal/cli/               # One file per command; all commands registered in root.go
+internal/db/                # Schema introspection, constraint parsing, truncate, row counts
+internal/faker/faker.go     # Generate / GenerateFiltered — core data generation engine
+internal/faker/mapper.go    # Column name → faker hint heuristics
+internal/graph/graph.go     # Dependency graph: Build, TopologicalSort, RenderPlan
+internal/ai/ai.go           # Gemini enrichment
+internal/schema/schema.go   # Schema YAML types and loader
+integration/                # Integration tests (build tag: integration) against real DBs
+```
+
+## Standards to Enforce
+
+### README must stay in sync
+
+**Any PR that adds, removes, or changes a flag, command, or output format MUST update README.md.**
+This is a hard requirement — flag changes without README updates must be flagged as a blocker.
+
+Specifically:
+- New flag → add row to the flag table for that command
+- Removed or renamed flag → update table and examples
+- New command → full section with description, usage examples, flag table, and sample output
+- Changed output format (dry-run plan, gaps report, etc.) → update sample output block
+- Integration test timeout changed → update the direct `go test … --timeout` example in README
+
+### Tests are mandatory
+
+Every PR must include tests for new logic. Flag this as a blocker if missing.
+
+- **Unit tests** — new functions in `internal/` with non-trivial logic need a `*_test.go` alongside.
+  This includes: new faker generation paths, graph functions, constraint parsers, AI prompt builders,
+  mapper heuristics, and any new helpers.
+- **Integration tests** — new commands or DB-touching behaviour must be covered in
+  `integration/integration_test.go` (build tag `integration`). The 28-table schema covers deep FK
+  chains, junction tables, near-cycles, enums, and constraints.
+- A PR adding a new `--flag` that changes generation behaviour without tests is incomplete.
+
+### Composite PK safety
+
+All data generation paths must include composite PK collision detection. Flag any new generation
+function that is missing this.
+
+Every generation loop must:
+1. Maintain a `seenKeys map[string]bool` (keyed by `compositePKKey(row, table)`)
+2. Retry up to 200 attempts per row
+3. Call `rollbackLastRowPKs` on collision
+4. Return a descriptive error if 200 attempts are exhausted (never silently append a duplicate)
+
+The three existing paths are `generateStandardRows`, `generateEnumRows`, and `topUpEnumCoverage`.
+Any new generation path must follow the same pattern.
+
+### GenerateFiltered vs Generate
+
+`Generate` is the standard path (all tables). `GenerateFiltered(allTables, targetTables)` preloads
+PKs from `allTables` but generates rows only for `targetTables`. This is used by the `gaps` command
+to seed empty tables while resolving FKs against already-populated parents.
+
+- Do NOT change the signature of `Generate` — it delegates to `GenerateFiltered`.
+- Do NOT bypass `GenerateFiltered` for partial-seeding use cases — always use it.
+
+### Adding a new command
+
+A PR adding a new command is incomplete without all of the following:
+1. Command file at `internal/cli/<name>.go` with `<name>Cmd() *cli.Command`
+2. Registered in `internal/cli/root.go`
+3. Full README section: description, examples, flag table, sample output
+4. Unit tests for non-trivial internal logic
+5. Integration tests for any DB interaction
+
+### FK ordering and nullable FKs
+
+- `graph.Build` excludes nullable FK columns from edges (they break near-cycles). If reviewing
+  changes to the graph, verify that nullable FKs are still skipped.
+- Self-referential FKs are also excluded — the column is seeded as NULL for the first row.
+- Any change that adds edges for nullable or self-referential FKs is almost certainly a regression.
+
+### Dry-run output
+
+`seed --dry-run` prints `graph.RenderPlan(...)` (the seed plan tree) followed by INSERT SQL.
+If a PR changes the plan (e.g. adds/removes tables from the sort), verify RenderPlan still
+reflects the actual insertion order and that the README sample output is updated.
+
+### Enum top-up
+
+`topUpEnumCoverage` guarantees every enum value (via `randomstring(...)` faker) appears at least
+`--rows` times, independently per column. Pools larger than `maxEnumTopUpValues` (12) are skipped
+to avoid row explosion for AI-generated example lists. Flag any change that alters this threshold
+without a clear justification.
+
+## Common Anti-Patterns to Catch
+
+1. **Flag added without README update** — hard blocker.
+2. **New generation path without collision detection** — hard blocker.
+3. **Changing `Generate` signature** — breaks all callers; use `GenerateFiltered` instead.
+4. **Nullable FK added as a graph edge** — breaks near-cycle resolution; flag as a regression.
+5. **SQL built with string interpolation** — must use parameterised queries (`$1`/`?` placeholders).
+6. **Missing error wrapping** — `fmt.Errorf("context: %w", err)` pattern required for all wrapped errors.
+7. **Unit tests calling real DB** — unit tests must pass with `db = nil`; DB calls belong in integration tests.
+8. **Hard-coded table names in generic helpers** — helpers in `faker/` and `graph/` must be schema-agnostic.
+9. **`go test ./...` without build tag** — integration tests use `//go:build integration`; never drop that tag.
+10. **Skipping `rollbackLastRowPKs` after collision** — leaving stale PKs in `generatedPKs` corrupts the counter for subsequent rows.
+
+## Security
+
+- All DB queries must use parameterised placeholders (`$N` for Postgres, `?` for MySQL). Never interpolate user-supplied values or table/column names from untrusted sources directly into SQL strings. The `//nolint:gosec` comment is acceptable only for table/column names sourced from the introspected schema (trusted DB metadata).
+- DSN values must come from flags or environment variables — never hardcoded in source.
+
+## PR Sign-off Checklist
+
+- [ ] PR title follows Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, …)
+- [ ] New or changed flags → README flag table updated
+- [ ] New command → full README section added
+- [ ] Changed output format → README sample output updated
+- [ ] Unit tests added for new logic in `internal/`
+- [ ] Integration tests added for new DB behaviour
+- [ ] New generation paths include composite PK collision detection (seenKeys + 200-retry + error)
+- [ ] No nullable or self-referential FK edges added to the graph
+- [ ] All SQL uses parameterised placeholders
+- [ ] `go test ./internal/...` passes
+- [ ] `go test -tags integration ./...` passes (requires `make dev-up`)
+- [ ] `go build ./...` succeeds
+- [ ] `golangci-lint run` clean
