@@ -16,14 +16,29 @@ import (
 // Generate produces fake data rows for each table, respecting FK ordering.
 // If db is non-nil, existing PKs are read so FKs can reference them.
 func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, db *sql.DB) (map[string][]map[string]interface{}, error) {
+	return GenerateFiltered(s, sortedTables, sortedTables, rows, enumRows, db)
+}
+
+// GenerateFiltered is like Generate but separates the two roles of sortedTables:
+//   - allTables: the full set of tables used to pre-load existing PKs from the
+//     database (so FK columns in targetTables can reference already-populated
+//     parent tables).
+//   - targetTables: the subset of tables for which fake rows are actually
+//     generated (must be in topological order).
+//
+// Use this when you only want to seed a subset of tables (e.g. empty ones)
+// while still being able to resolve FK references to already-populated parents.
+func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, db *sql.DB) (map[string][]map[string]interface{}, error) {
 	data := make(map[string][]map[string]interface{})
 	generatedPKs := make(map[string][]interface{})
 
 	if db != nil {
-		if err := queryExistingPKs(db, sortedTables, s.Tables, generatedPKs); err != nil {
+		if err := queryExistingPKs(db, allTables, s.Tables, generatedPKs); err != nil {
 			return nil, err
 		}
 	}
+
+	sortedTables := targetTables
 
 	for _, tableName := range sortedTables {
 		table := s.Tables[tableName]

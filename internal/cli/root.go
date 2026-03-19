@@ -13,6 +13,7 @@ func Commands() []*cli.Command {
 		introspectCmd(),
 		enrichCmd(),
 		seedCmd(),
+		gapsCmd(),
 		generateCmd(),
 		exportCmd(),
 		versionCmd(),
