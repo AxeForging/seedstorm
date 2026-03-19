@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
@@ -90,4 +91,64 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	}
 
 	return sorted, nil
+}
+
+// RenderPlan returns a formatted seed-plan string showing the FK-safe insertion
+// order and, per table, which parent tables it depends on (hard dependencies
+// listed first, nullable/optional ones marked with "?").
+func RenderPlan(s *schema.Schema, sortedTables []string, rows int) string {
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "\n=== Dry Run — Seed Plan (%d tables, %d rows each) ===\n\n", len(sortedTables), rows)
+
+	// Calculate column widths.
+	numWidth := len(fmt.Sprintf("%d", len(sortedTables)))
+	tableWidth := 0
+	for _, t := range sortedTables {
+		if len(t) > tableWidth {
+			tableWidth = len(t)
+		}
+	}
+
+	fmt.Fprintf(&sb, "  %-*s  %-*s  %s\n", numWidth, "#", tableWidth, "Table", "Depends On")
+	fmt.Fprintf(&sb, "  %s\n", strings.Repeat("─", numWidth+2+tableWidth+2+40))
+
+	for i, tableName := range sortedTables {
+		table := s.Tables[tableName]
+
+		// Collect hard and nullable FK parent tables (deduplicated).
+		seen := make(map[string]bool)
+		var hard, nullable []string
+		for _, col := range table.Columns {
+			if col.FK == "" {
+				continue
+			}
+			parts := strings.SplitN(col.FK, ".", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			ref := parts[0]
+			if ref == tableName || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			if col.Nullable {
+				nullable = append(nullable, ref+"?")
+			} else {
+				hard = append(hard, ref)
+			}
+		}
+		sort.Strings(hard)
+		sort.Strings(nullable)
+
+		deps := "—"
+		if all := append(hard, nullable...); len(all) > 0 {
+			deps = strings.Join(all, ", ")
+		}
+
+		fmt.Fprintf(&sb, "  %-*d  %-*s  %s\n", numWidth, i+1, tableWidth, tableName, deps)
+	}
+
+	fmt.Fprintln(&sb)
+	return sb.String()
 }

@@ -11,7 +11,8 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 - **Automatic enum coverage** — after standard row generation, every enum value is guaranteed to appear at least `--rows` times; each column is handled independently so multi-enum tables (e.g. `status` + `priority`) get full coverage without a cartesian product
 - **AI enrichment** — Gemini reads your full schema and rewrites faker hints for business-meaningful data (`product.name` → `productname`, `order.notes` → `sentence`, etc.); supply `--prompt` for a domain hint so the AI has richer context
 - **Truncate before seeding** — `--truncate` clears all tables in FK-safe order before inserting; prompts for confirmation unless `--yes` is passed
-- **Dry-run mode** — prints INSERT SQL without touching the database
+- **Dry-run mode** — prints a formatted seed plan (table order + FK dependencies) followed by INSERT SQL, without touching the database
+- **Gap analysis** — `gaps` command shows which tables are empty vs. populated with row counts and FK context; `--fill` seeds only the empty tables, leaving existing data untouched
 - **Generate without inserting** — export fake data as YAML, JSON, or SQL
 - **Pretty logs** — colored, timestamped zerolog output at each pipeline step
 
@@ -21,6 +22,7 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 1. introspect  →  schema.yaml           discover schema from live DB
 2. ai-enrich   →  schema.enriched.yaml  AI-powered semantic faker mapping
 3. seed        →  database              insert FK-ordered fake rows
+4. gaps        →  report / --fill       detect and fill unpopulated tables
 ```
 
 ---
@@ -157,7 +159,7 @@ seedstorm seed \
   --schema schema.yaml \
   --rows 50
 
-# Dry-run: print SQL without executing
+# Dry-run: print seed plan + SQL without executing
 seedstorm seed \
   --db postgres \
   --dsn "postgres://user:pass@localhost/mydb" \
@@ -180,9 +182,67 @@ seedstorm seed \
 | `--rows` / `-r` | `100` | Rows per table |
 | `--enum-rows` | `0` | Rows per enum value (0 = use `--rows`) |
 | `--disable-fk` | false | Skip FK ordering |
-| `--dry-run` / `-n` | false | Print SQL, do not execute |
+| `--dry-run` / `-n` | false | Print seed plan + SQL, do not execute |
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
+
+---
+
+### `gaps`
+
+Connects to the database, queries row counts for every table in the schema, and prints a gap analysis report. Use `--fill` to seed only the empty tables — already-populated tables are never touched.
+
+```bash
+# Show which tables are empty
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml
+
+# Fill empty tables with 50 rows each (prompts for confirmation)
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --fill --rows 50
+
+# Preview SQL without executing
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --fill --dry-run
+
+# Skip confirmation prompt
+seedstorm gaps ... --fill --yes
+```
+
+Sample output (gap analysis report):
+
+```
+Gap Analysis
+────────────────────────────────────────────────────────────
+  Table                    Rows  Status
+  ───────────────────────  ────  ────────────────────────────────────────
+  brands                    100  populated
+  users                     100  populated
+  categories                  0  EMPTY → would seed 50 rows
+  products                    0  EMPTY → would seed 50 rows  [FK → categories (0 rows, filling), brands (100 rows)]
+  orders                      0  EMPTY → would seed 50 rows  [FK → users (100 rows)]
+
+  Gaps: 3 table(s) empty · Would seed: 150 rows total
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema` / `-s` | `schema.yaml` | Schema file |
+| `--db` / `$SEEDSTORM_DB` | `postgres` | Database type |
+| `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
+| `--rows` / `-r` | `100` | Rows per empty table (when `--fill` is set) |
+| `--enum-rows` | `0` | Rows per enum value for empty enum tables (0 = use `--rows`) |
+| `--fill` | false | Seed all empty tables |
+| `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
+| `--yes` / `-y` | false | Skip confirmation prompt |
 
 ---
 
@@ -388,7 +448,7 @@ make dev-up
 make test-integration
 
 # Or directly
-cd integration && go test -v -tags integration -count=1 ./... -timeout 120s
+cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
 ```
 
 Expected output:
