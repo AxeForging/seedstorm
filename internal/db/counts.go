@@ -9,12 +9,12 @@ import (
 // GetTableRowCounts queries SELECT COUNT(*) for each table and returns a
 // map of table name → row count. Tables that cannot be queried return 0 and
 // the error is surfaced immediately.
-func GetTableRowCounts(ctx context.Context, conn *sql.DB, tableNames []string) (map[string]int64, error) {
+func GetTableRowCounts(ctx context.Context, conn *sql.DB, dbType string, tableNames []string) (map[string]int64, error) {
 	counts := make(map[string]int64, len(tableNames))
 	for _, tableName := range tableNames {
 		var n int64
 		//nolint:gosec
-		row := conn.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName))
+		row := conn.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", QuoteIdent(tableName, dbType)))
 		if err := row.Scan(&n); err != nil {
 			return nil, fmt.Errorf("count rows in %s: %w", tableName, err)
 		}

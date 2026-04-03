@@ -118,7 +118,7 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 	}
 
 	// 4. Generate data
-	data, err := faker.Generate(s, sortedTables, seedRows, 0, conn)
+	data, err := faker.Generate(s, sortedTables, seedRows, 0, conn, driver)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -2608,7 +2608,7 @@ func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
 		s.Tables[tbl.Name] = st
 	}
 
-	data, err := faker.Generate(s, gapL0Tables, seedRows, 0, conn)
+	data, err := faker.Generate(s, gapL0Tables, seedRows, 0, conn, driver)
 	if err != nil {
 		t.Fatalf("generate L0: %v", err)
 	}
@@ -2644,7 +2644,7 @@ func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
 func fillGaps(t *testing.T, driver string, conn *sql.DB, s *schema.Schema, allSorted []string) int {
 	t.Helper()
 
-	counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+	counts, err := db.GetTableRowCounts(context.Background(), conn, driver, allSorted)
 	if err != nil {
 		t.Fatalf("GetTableRowCounts: %v", err)
 	}
@@ -2659,7 +2659,7 @@ func fillGaps(t *testing.T, driver string, conn *sql.DB, s *schema.Schema, allSo
 		return 0
 	}
 
-	data, err := faker.GenerateFiltered(s, allSorted, gapTables, seedRows, 0, conn)
+	data, err := faker.GenerateFiltered(s, allSorted, gapTables, seedRows, 0, conn, driver)
 	if err != nil {
 		t.Fatalf("GenerateFiltered: %v", err)
 	}
@@ -2749,7 +2749,7 @@ func TestPostgresGaps(t *testing.T) {
 		if fullSchema == nil {
 			t.Skip("schema not built — previous subtest failed")
 		}
-		counts, err := db.GetTableRowCounts(context.Background(), conn, gapAllTables)
+		counts, err := db.GetTableRowCounts(context.Background(), conn, postgresDriver, gapAllTables)
 		if err != nil {
 			t.Fatalf("GetTableRowCounts: %v", err)
 		}
@@ -2849,7 +2849,7 @@ func TestPostgresGaps(t *testing.T) {
 		if fullSchema == nil || len(allSorted) == 0 {
 			t.Skip("schema not built — previous subtest failed")
 		}
-		counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+		counts, err := db.GetTableRowCounts(context.Background(), conn, postgresDriver, allSorted)
 		if err != nil {
 			t.Fatalf("GetTableRowCounts: %v", err)
 		}
@@ -2933,7 +2933,7 @@ func TestMySQLGaps(t *testing.T) {
 		if fullSchema == nil {
 			t.Skip("schema not built — previous subtest failed")
 		}
-		counts, err := db.GetTableRowCounts(context.Background(), conn, gapAllTables)
+		counts, err := db.GetTableRowCounts(context.Background(), conn, mysqlDriver, gapAllTables)
 		if err != nil {
 			t.Fatalf("GetTableRowCounts: %v", err)
 		}
@@ -3013,7 +3013,7 @@ func TestMySQLGaps(t *testing.T) {
 		if fullSchema == nil || len(allSorted) == 0 {
 			t.Skip("schema not built — previous subtest failed")
 		}
-		counts, err := db.GetTableRowCounts(context.Background(), conn, allSorted)
+		counts, err := db.GetTableRowCounts(context.Background(), conn, mysqlDriver, allSorted)
 		if err != nil {
 			t.Fatalf("GetTableRowCounts: %v", err)
 		}

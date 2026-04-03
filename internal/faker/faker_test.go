@@ -185,7 +185,7 @@ func TestGenerate_enumTopUp_singleColumn(t *testing.T) {
 		},
 	}
 	const wantRows = 5
-	data, err := Generate(s, []string{"orders"}, wantRows, 0, nil)
+	data, err := Generate(s, []string{"orders"}, wantRows, 0, nil, "pgx")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestGenerate_enumTopUp_multipleColumns(t *testing.T) {
 		},
 	}
 	const wantRows = 3
-	data, err := Generate(s, []string{"tickets"}, wantRows, 0, nil)
+	data, err := Generate(s, []string{"tickets"}, wantRows, 0, nil, "pgx")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestGenerate_noEnumColumns_rowCountUnchanged(t *testing.T) {
 			},
 		},
 	}
-	data, err := Generate(s, []string{"users"}, 10, 0, nil)
+	data, err := Generate(s, []string{"users"}, 10, 0, nil, "pgx")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

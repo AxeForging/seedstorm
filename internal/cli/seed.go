@@ -148,7 +148,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			// Generate data
 			start := time.Now()
 			log.Info().Int("rows", rows).Msg("Generating fake data")
-			data, err := faker.Generate(s, sortedTables, rows, enumRows, dbConn)
+			data, err := faker.Generate(s, sortedTables, rows, enumRows, dbConn, dbType)
 			if err != nil {
 				return fmt.Errorf("data generation failed: %w", err)
 			}
@@ -202,7 +202,7 @@ func buildInsert(tableName string, row map[string]interface{}, dbType string) (s
 
 	i := 1
 	for colName, val := range row {
-		columns = append(columns, colName)
+		columns = append(columns, quoteIdent(colName, dbType))
 		if dbType == "pgx" {
 			placeholders = append(placeholders, fmt.Sprintf("$%d", i))
 		} else {
@@ -214,7 +214,7 @@ func buildInsert(tableName string, row map[string]interface{}, dbType string) (s
 
 	query := fmt.Sprintf(
 		"INSERT INTO %s (%s) VALUES (%s)",
-		tableName,
+		quoteIdent(tableName, dbType),
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
 	)
