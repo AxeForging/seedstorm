@@ -298,6 +298,18 @@ seedstorm completion fish  >> ~/.config/fish/completions/seedstorm.fish
 
 ---
 
+## Examples
+
+See **[EXAMPLES.md](EXAMPLES.md)** for complete end-to-end walkthroughs:
+
+- **Basic seeding** (no AI) — introspect, seed, verify
+- **AI-enriched seeding** — introspect, ai-enrich with domain context, seed domain-realistic data
+- **Partial seeding with gaps** — seed some tables, use `gaps` to fill the rest
+- **Reproducible generation** — use `--seed` for deterministic output
+- **Dry-run inspection** — preview the seed plan and SQL before executing
+
+---
+
 ## Schema YAML Format
 
 The schema file produced by `introspect` (and consumed by `seed`/`generate`) looks like:
