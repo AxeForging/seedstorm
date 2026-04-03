@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/logging"
@@ -13,6 +14,39 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/googleai"
 )
+
+const maxRetries = 3
+
+// retryBaseDelay is the base delay for exponential backoff. Tests override this
+// to avoid slow waits.
+var retryBaseDelay = time.Second
+
+// generateWithRetry wraps an LLM call with exponential backoff.
+func generateWithRetry(ctx context.Context, llm llms.Model, prompt, label string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+		if err == nil {
+			return answer, nil
+		}
+		lastErr = err
+		if attempt < maxRetries-1 {
+			delay := time.Duration(1<<uint(attempt)) * retryBaseDelay
+			logging.Log.Warn().
+				Str("target", label).
+				Int("attempt", attempt+1).
+				Dur("retry_in", delay).
+				Err(err).
+				Msg("AI call failed — retrying")
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}
+	return "", fmt.Errorf("AI call failed after %d attempts for %s: %w", maxRetries, label, lastErr)
+}
 
 // EnrichFakerMappings uses Gemini to produce semantically meaningful faker mappings
 // for columns that lack one or have a generic fallback.
@@ -65,9 +99,9 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 		if len(toEnrich) == 1 {
 			col := toEnrich[0]
 			prompt := buildPrompt(tableName, col.name, col.colType, colContext, tableContext, appContext)
-			answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+			answer, err := generateWithRetry(ctx, llm, prompt, tableName+"."+col.name)
 			if err != nil {
-				return nil, "", fmt.Errorf("AI call failed for %s.%s: %w", tableName, col.name, err)
+				return nil, "", err
 			}
 			cleaned := cleanFakerString(answer)
 			if !faker.ValidFaker(cleaned) {
@@ -89,9 +123,9 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 
 		// Multiple columns → batch into a single prompt returning JSON
 		prompt := buildBatchPrompt(tableName, toEnrich, colContext, tableContext, appContext)
-		answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+		answer, err := generateWithRetry(ctx, llm, prompt, "batch:"+tableName)
 		if err != nil {
-			return nil, "", fmt.Errorf("AI batch call failed for table %s: %w", tableName, err)
+			return nil, "", err
 		}
 
 		mappings, err := parseBatchResponse(answer)
