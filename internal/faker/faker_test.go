@@ -32,6 +32,14 @@ func TestValidFaker_empty(t *testing.T) {
 	}
 }
 
+func TestValidFaker_valuesWithParentheses(t *testing.T) {
+	// AI-generated randomstring values can contain parentheses, e.g. "Coffee Beans (500g)"
+	f := "randomstring(Wireless Headphones,Coffee Beans (500g),Electric Kettle (1.7L))"
+	if !ValidFaker(f) {
+		t.Errorf("ValidFaker(%q) = false, want true — values with parens should work", f)
+	}
+}
+
 func TestValidFaker_unknown(t *testing.T) {
 	for _, f := range []string{"fulladdress", "fakefunction", "randomint(5)", "gibberish(x,y)"} {
 		if ValidFaker(f) {

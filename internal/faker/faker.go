@@ -413,8 +413,8 @@ func ValidFaker(faker string) bool {
 }
 
 var (
-	reParens = regexp.MustCompile(`\(([^)]+)\)`)
-	reArgs   = regexp.MustCompile(`^(\w+)\(([^)]*)\)$`)
+	reParens = regexp.MustCompile(`\((.+)\)`)
+	reArgs   = regexp.MustCompile(`^(\w+)\((.*)\)$`)
 )
 
 func generate(fakerStr string) (interface{}, error) {
