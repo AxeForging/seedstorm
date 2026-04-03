@@ -88,17 +88,21 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 			continue
 		}
 
-		// Build column context
+		// Build column context with existing fakers for sibling awareness
 		colNames := make([]string, 0, len(table.Columns))
-		for colName := range table.Columns {
+		siblingFakers := make(map[string]string)
+		for colName, col := range table.Columns {
 			colNames = append(colNames, colName)
+			if col.Faker != "" {
+				siblingFakers[colName] = col.Faker
+			}
 		}
 		colContext := strings.Join(colNames, ", ")
 
 		// Single column → use the original per-column prompt (simpler, no JSON parsing)
 		if len(toEnrich) == 1 {
 			col := toEnrich[0]
-			prompt := buildPrompt(tableName, col.name, col.colType, colContext, tableContext, appContext)
+			prompt := buildPrompt(tableName, col.name, col.colType, colContext, tableContext, appContext, siblingFakers)
 			answer, err := generateWithRetry(ctx, llm, prompt, tableName+"."+col.name)
 			if err != nil {
 				return nil, "", err
@@ -237,10 +241,24 @@ func shouldEnrich(faker, appContext string) bool {
 // appContext is an optional free-text hint about the application domain (may be empty).
 // When appContext is provided and the column is a string type, the AI is also allowed
 // to return randomstring(val1,val2,...) with domain-specific values.
-func buildPrompt(tableName, colName, colType, siblingCols, allTables, appContext string) string {
+func buildPrompt(tableName, colName, colType, siblingCols, allTables, appContext string, siblingFakers map[string]string) string {
 	domainLine := ""
 	if appContext != "" {
 		domainLine = fmt.Sprintf("- Application domain / context: %s\n", appContext)
+	}
+
+	// Build sibling constraint context so the AI knows what other columns already resolve to
+	constraintContext := ""
+	if len(siblingFakers) > 0 {
+		var lines []string
+		for name, faker := range siblingFakers {
+			if name != colName && faker != "" {
+				lines = append(lines, fmt.Sprintf("  %s → %s", name, faker))
+			}
+		}
+		if len(lines) > 0 {
+			constraintContext = fmt.Sprintf("- Sibling column mappings (already assigned):\n%s\n", strings.Join(lines, "\n"))
+		}
 	}
 
 	domainRules := ""
@@ -280,7 +298,7 @@ Database context:
 - Columns in this table: %s
 - Column name: %s
 - Column type: %s
-%s
+%s%s
 Rules:
 - %s
 - Use lowercase, no "gofakeit." prefix
@@ -288,7 +306,7 @@ Rules:
 - CRITICAL: match return type to column type. If column type contains "char", "text", or "varchar" → use a string-returning function NOT number() or price()
 - Choose based on what the column SEMANTICALLY represents in a %s table context
 %s
-Return only the faker:`, allTables, tableName, siblingCols, colName, colType, domainLine, returnLine, tableName, domainRules)
+Return only the faker:`, allTables, tableName, siblingCols, colName, colType, domainLine, constraintContext, returnLine, tableName, domainRules)
 }
 
 // isStringType returns true if the DB column type is a string-like type.

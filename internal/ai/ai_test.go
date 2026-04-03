@@ -104,7 +104,7 @@ func TestGenerateWithRetry_respectsContextCancellation(t *testing.T) {
 }
 
 func TestBuildPrompt_WithAppContext(t *testing.T) {
-	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "TacoShop")
+	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "TacoShop", nil)
 	if !strings.Contains(prompt, "TacoShop") {
 		t.Errorf("expected prompt to contain app context 'TacoShop', got:\n%s", prompt)
 	}
@@ -114,7 +114,7 @@ func TestBuildPrompt_WithAppContext(t *testing.T) {
 }
 
 func TestBuildPrompt_WithoutAppContext(t *testing.T) {
-	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "")
+	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "", nil)
 	if strings.Contains(prompt, "Application domain") {
 		t.Errorf("expected prompt to omit 'Application domain' line when context is empty, got:\n%s", prompt)
 	}
@@ -125,7 +125,7 @@ func TestBuildPrompt_WithoutAppContext(t *testing.T) {
 
 func TestBuildPrompt_DomainValuesOption_StringColumn(t *testing.T) {
 	// varchar + appContext → randomstring option with 20-30 values guidance should appear
-	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "Mexican taco shop")
+	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "Mexican taco shop", nil)
 	if !strings.Contains(prompt, "randomstring(") {
 		t.Errorf("expected prompt to contain randomstring domain-values option for varchar+appContext, got:\n%s", prompt)
 	}
@@ -139,7 +139,7 @@ func TestBuildPrompt_DomainValuesOption_StringColumn(t *testing.T) {
 
 func TestBuildPrompt_DomainValuesOption_NonStringColumn(t *testing.T) {
 	// integer + appContext → randomstring option should NOT appear (wrong type)
-	prompt := buildPrompt("products", "stock", "integer", "id,name,stock", "products,users", "TacoShop")
+	prompt := buildPrompt("products", "stock", "integer", "id,name,stock", "products,users", "TacoShop", nil)
 	if strings.Contains(prompt, "DOMAIN VALUES OPTION") {
 		t.Errorf("expected randomstring domain-values option to be omitted for non-string column")
 	}
@@ -190,6 +190,41 @@ func TestParseBatchResponse_invalidJSON(t *testing.T) {
 	_, err := parseBatchResponse("not json at all")
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+// ── Sibling faker context ───────────────────────────────────────────────────
+
+func TestBuildPrompt_SiblingFakerContext(t *testing.T) {
+	siblings := map[string]string{
+		"email":  "email",
+		"status": "randomstring(active,inactive,suspended)",
+		"age":    "number(18,90)",
+	}
+	prompt := buildPrompt("users", "bio", "text", "id,email,status,age,bio", "users,orders", "", siblings)
+	if !strings.Contains(prompt, "Sibling column mappings") {
+		t.Error("expected prompt to contain sibling context section")
+	}
+	if !strings.Contains(prompt, "email → email") {
+		t.Error("expected prompt to show email sibling mapping")
+	}
+	if !strings.Contains(prompt, "randomstring(active,inactive,suspended)") {
+		t.Error("expected prompt to show status constraint values")
+	}
+}
+
+func TestBuildPrompt_SiblingContext_ExcludesCurrentColumn(t *testing.T) {
+	siblings := map[string]string{
+		"name": "word", // current column being enriched — should be excluded
+		"age":  "number(18,90)",
+	}
+	prompt := buildPrompt("users", "name", "varchar", "id,name,age", "users", "", siblings)
+	// Should NOT show "name → word" since that's the column being enriched
+	if strings.Contains(prompt, "name → word") {
+		t.Error("prompt should not include the current column in sibling context")
+	}
+	if !strings.Contains(prompt, "age → number(18,90)") {
+		t.Error("expected prompt to show age sibling mapping")
 	}
 }
 
