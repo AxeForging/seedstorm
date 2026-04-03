@@ -185,6 +185,7 @@ seedstorm seed \
 | `--dry-run` / `-n` | false | Print seed plan + SQL, do not execute |
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
+| `--batch-size` | `100` | Number of rows per INSERT statement (batched multi-row VALUES) |
 
 ---
 
@@ -243,6 +244,7 @@ Gap Analysis
 | `--fill` | false | Seed all empty tables |
 | `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
 | `--yes` / `-y` | false | Skip confirmation prompt |
+| `--batch-size` | `100` | Number of rows per INSERT statement (batched multi-row VALUES) |
 
 ---
 

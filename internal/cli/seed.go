@@ -72,6 +72,11 @@ Use --dry-run to print SQL statements without executing them.`,
 				Aliases: []string{"y"},
 				Usage:   "Skip confirmation prompt (use with --truncate)",
 			},
+			&cli.IntFlag{
+				Name:  "batch-size",
+				Usage: "Number of rows per INSERT statement (batched multi-row VALUES)",
+				Value: 100,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -84,6 +89,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			dryRun := cmd.Bool("dry-run")
 			truncate := cmd.Bool("truncate")
 			yes := cmd.Bool("yes")
+			batchSize := cmd.Int("batch-size")
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
@@ -162,14 +168,21 @@ Use --dry-run to print SQL statements without executing them.`,
 					Int("rows", len(tableRows)).
 					Msg("Seeding table")
 
-				for _, row := range tableRows {
-					query, values := buildInsert(tableName, row, dbType)
-					if dryRun {
+				if dryRun {
+					for _, row := range tableRows {
+						query, _ := buildInsert(tableName, row, dbType)
 						fmt.Println(query)
-						continue
 					}
-					if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
-						return fmt.Errorf("insert into %s failed: %w", tableName, err)
+				} else {
+					for i := 0; i < len(tableRows); i += batchSize {
+						end := i + batchSize
+						if end > len(tableRows) {
+							end = len(tableRows)
+						}
+						query, values := buildBatchInsert(tableName, tableRows[i:end], dbType)
+						if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
+							return fmt.Errorf("insert into %s failed: %w", tableName, err)
+						}
 					}
 				}
 				totalRows += len(tableRows)
@@ -193,30 +206,4 @@ Use --dry-run to print SQL statements without executing them.`,
 			return nil
 		},
 	}
-}
-
-func buildInsert(tableName string, row map[string]interface{}, dbType string) (string, []interface{}) {
-	columns := make([]string, 0, len(row))
-	placeholders := make([]string, 0, len(row))
-	values := make([]interface{}, 0, len(row))
-
-	i := 1
-	for colName, val := range row {
-		columns = append(columns, quoteIdent(colName, dbType))
-		if dbType == "pgx" {
-			placeholders = append(placeholders, fmt.Sprintf("$%d", i))
-		} else {
-			placeholders = append(placeholders, "?")
-		}
-		values = append(values, val)
-		i++
-	}
-
-	query := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s)",
-		quoteIdent(tableName, dbType),
-		strings.Join(columns, ", "),
-		strings.Join(placeholders, ", "),
-	)
-	return query, values
 }
