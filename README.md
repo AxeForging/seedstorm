@@ -2,6 +2,29 @@
 
 Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI enrichment. Works with MySQL 8+ and PostgreSQL 13+.
 
+## Table of Contents
+
+- [Features](#features)
+- [Workflow](#workflow)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Commands](#commands)
+  - [`introspect`](#introspect) — discover schema from a live DB
+  - [`ai-enrich`](#ai-enrich) — AI-powered semantic faker mapping
+  - [`seed`](#seed) — generate and insert fake data
+  - [`gaps`](#gaps) — find and fill empty tables
+  - [`generate`](#generate) — generate data without a DB connection
+  - [`export`](#export) — convert data between formats
+  - [`version`](#version) / [`completion`](#completion)
+- [Examples](EXAMPLES.md) — end-to-end walkthroughs
+- [Schema YAML Format](#schema-yaml-format)
+- [Local Development](#local-development)
+- [Testing](#testing)
+- [Environment Variables](#environment-variables)
+- [Makefile Targets](#makefile-targets)
+
+---
+
 ## Features
 
 - **Schema self-discovery** — introspects tables, columns, types, PKs, FKs, enum values, UNIQUE constraints, and CHECK constraints from a live database; no manual schema editing required
