@@ -1,9 +1,11 @@
 package faker
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/brianvoe/gofakeit/v6"
 )
 
 // ── ValidFaker ───────────────────────────────────────────────────────────────
@@ -410,6 +412,83 @@ func TestGenerate_uuidPK_FKReference(t *testing.T) {
 		if !parentIDs[pid] {
 			t.Errorf("child references non-existent parent UUID %s", pid)
 		}
+	}
+}
+
+// ── reproducible seed ────────────────────────────────────────────────────────
+
+func TestGenerate_reproducibleWithSeed(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"products": {
+				Columns: map[string]schema.Column{
+					"id":    {Type: "integer", PK: true},
+					"name":  {Type: "varchar", Faker: "productname"},
+					"price": {Type: "numeric", Faker: "price(1,1000)"},
+					"email": {Type: "varchar", Faker: "email"},
+				},
+			},
+		},
+	}
+
+	// Generate twice with same seed
+	gofakeit.Seed(12345)
+	data1, err := Generate(s, []string{"products"}, 10, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate run 1: %v", err)
+	}
+
+	gofakeit.Seed(12345)
+	data2, err := Generate(s, []string{"products"}, 10, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate run 2: %v", err)
+	}
+
+	if len(data1["products"]) != len(data2["products"]) {
+		t.Fatalf("row count mismatch: %d vs %d", len(data1["products"]), len(data2["products"]))
+	}
+
+	// Compare every cell — with deterministic column iteration order via sorted keys
+	for i := range data1["products"] {
+		row1 := data1["products"][i]
+		row2 := data2["products"][i]
+		for col, v1 := range row1 {
+			v2 := row2[col]
+			if fmt.Sprintf("%v", v1) != fmt.Sprintf("%v", v2) {
+				t.Errorf("row %d col %q: %v != %v", i, col, v1, v2)
+			}
+		}
+	}
+}
+
+func TestGenerate_differentSeedsDifferentOutput(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"items": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "integer", PK: true},
+					"name": {Type: "varchar", Faker: "name"},
+				},
+			},
+		},
+	}
+
+	gofakeit.Seed(111)
+	data1, _ := Generate(s, []string{"items"}, 5, 0, nil, "pgx")
+
+	gofakeit.Seed(222)
+	data2, _ := Generate(s, []string{"items"}, 5, 0, nil, "pgx")
+
+	// At least one row should differ
+	different := false
+	for i := range data1["items"] {
+		if fmt.Sprintf("%v", data1["items"][i]["name"]) != fmt.Sprintf("%v", data2["items"][i]["name"]) {
+			different = true
+			break
+		}
+	}
+	if !different {
+		t.Error("expected different seeds to produce different data, but output was identical")
 	}
 }
 
