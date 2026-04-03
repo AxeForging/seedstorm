@@ -207,6 +207,39 @@ seedstorm gaps \
   --fill --rows 50 --yes
 ```
 
+Or use interactive mode to visually pick which empty tables to fill:
+
+```bash
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --interactive
+```
+
+<details>
+<summary>Gaps interactive walkthrough</summary>
+
+The gaps TUI shows all tables with their current row counts. Empty tables are pre-selected for filling, populated tables are shown for context. Select/deselect which empties to fill, configure rows, review, then execute or dry-run.
+
+```
+  seedstorm gaps interactive  ● Tables  ○ Config  ○ Review  ○ Execute
+
+  Select empty tables to fill
+
+    [✓] users (50 rows)           ← populated, shown for context
+    [✓] orders                    ← empty, selected to fill
+    [✓] order_items               → orders
+    [ ] audit_logs                → users  (deselected — skip this one)
+
+  3 of 4 tables selected
+  ↑/↓ navigate • space toggle • enter confirm • q quit
+```
+
+Auto-dependency resolution works the same as `seed -i` — selecting a child auto-selects its required parents.
+
+</details>
+
 ---
 
 ## 4. Reproducible Generation
@@ -455,7 +488,7 @@ All existing CLI flags still work without `--interactive` — scripts and CI are
 
 ---
 
-## 7. MySQL Workflow
+## 9. MySQL Workflow
 
 seedstorm works identically with MySQL — just change `--db` and the DSN format.
 
@@ -482,7 +515,42 @@ seedstorm seed \
 
 ---
 
-## 7. Export Formats
+## 7. Generate with Interactive Mode
+
+Use interactive mode to visually select tables, pick output format, and preview generated data — no flags to memorize.
+
+```bash
+seedstorm generate --schema schema.yaml --interactive
+```
+
+<details>
+<summary>Generate interactive walkthrough</summary>
+
+A 3-step wizard: **Tables → Config → Generate**
+
+**Step 1 — Table picker:** Same as `seed -i` — select which tables to include.
+
+**Step 2 — Config:** Set rows, choose format (yaml/json/sql with `←`/`→`), and optionally set an output file path.
+
+```
+  seedstorm generate interactive  ✓ Tables  ● Config  ○ Generate
+
+  Configure generation
+
+  ▸ Rows per table: [10]
+    Format: [yaml]  json   sql
+    Output file: [data.json]
+
+  tab/↑↓ navigate • ←→/space cycle format • enter confirm • esc back • q quit
+```
+
+**Step 3 — Generate:** Shows a scrollable preview of the generated data per table with sample values. If an output file was set, the data is written to it.
+
+</details>
+
+---
+
+## 8. Export Formats
 
 Generate data without a database connection and export to different formats.
 
