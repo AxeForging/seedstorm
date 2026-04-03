@@ -270,7 +270,53 @@ INSERT INTO "tags" ("id", "name") VALUES ($1, $2);
 
 ---
 
-## 6. MySQL Workflow
+## 6. Interactive Mode
+
+Launch a TUI wizard to visually select tables, configure options, and review before executing.
+
+```bash
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --interactive
+```
+
+<details>
+<summary>Interactive TUI walkthrough</summary>
+
+**Step 1 — Table picker:** Navigate with arrow keys, space to toggle, `a` for all/none. FK dependencies shown inline. Selecting a child table auto-selects its required parents (shown with `●`).
+
+```
+  seedstorm interactive  ● Tables  ○ Config  ○ Review  ○ Execute
+
+  Select tables to seed
+
+  ▸ [✓] tags                    
+    [✓] users                   
+    [✓] companies               
+    [●] categories              → (auto-selected: needed by products)
+    [ ] audit_logs              → users
+    [✓] products                → categories, brands
+    [✓] orders                  → users, coupons
+
+  5 of 28 tables selected
+  ↑/↓ navigate • space toggle • a all • n none • enter confirm • q quit
+```
+
+**Step 2 — Config:** Set rows per table, batch size, and truncate toggle.
+
+**Step 3 — Review:** See the full seed plan with table order and dependencies. Press `enter` to execute, `d` for dry-run, `b` to go back.
+
+**Step 4 — Execute:** Progress display with spinner, then summary of seeded rows per table.
+
+</details>
+
+All existing CLI flags still work without `--interactive` — scripts and CI are unaffected.
+
+---
+
+## 7. MySQL Workflow
 
 seedstorm works identically with MySQL — just change `--db` and the DSN format.
 

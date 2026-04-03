@@ -14,6 +14,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/urfave/cli/v3"
 )
@@ -83,6 +84,11 @@ Use --dry-run to print SQL statements without executing them.`,
 				Usage: "Random seed for reproducible data generation (0 = random)",
 				Value: 0,
 			},
+			&cli.BoolFlag{
+				Name:    "interactive",
+				Aliases: []string{"i"},
+				Usage:   "Launch interactive TUI to select tables and configure seeding",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -107,6 +113,10 @@ Use --dry-run to print SQL statements without executing them.`,
 			s, err := schema.Load(schemaPath)
 			if err != nil {
 				return err
+			}
+
+			if cmd.Bool("interactive") {
+				return tui.Run(ctx, s, dbType, dsn, rows, batchSize, enumRows, truncate)
 			}
 
 			// Resolve seed order

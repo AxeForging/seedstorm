@@ -93,6 +93,28 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	return sorted, nil
 }
 
+// Parents returns the tables that `table` has hard (non-nullable) FK dependencies on.
+func (g *Graph) Parents(table string) []string {
+	var parents []string
+	for parent, children := range g.edges {
+		for _, child := range children {
+			if child == table {
+				parents = append(parents, parent)
+			}
+		}
+	}
+	sort.Strings(parents)
+	return parents
+}
+
+// Children returns the tables that depend on `table` via hard (non-nullable) FKs.
+func (g *Graph) Children(table string) []string {
+	children := make([]string, len(g.edges[table]))
+	copy(children, g.edges[table])
+	sort.Strings(children)
+	return children
+}
+
 // RenderPlan returns a formatted seed-plan string showing the FK-safe insertion
 // order and, per table, which parent tables it depends on (hard dependencies
 // listed first, nullable/optional ones marked with "?").
