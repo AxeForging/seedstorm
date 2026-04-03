@@ -2,6 +2,18 @@
 
 End-to-end walkthroughs for common seedstorm workflows. All examples assume local databases via `make dev-up` (MySQL 8 + PostgreSQL 15).
 
+## Table of Contents
+
+1. [Basic Seeding (no AI)](#1-basic-seeding-no-ai) — introspect, seed, verify
+2. [AI-Enriched Seeding](#2-ai-enriched-seeding) — domain-aware data with Gemini
+3. [Partial Seeding with Gaps](#3-partial-seeding-with-gaps) — fill only empty tables
+4. [Reproducible Generation](#4-reproducible-generation) — deterministic output with `--seed`
+5. [Dry-Run Inspection](#5-dry-run-inspection) — preview plan and SQL before executing
+6. [Interactive Mode (seed)](#6-interactive-mode) — TUI wizard for table selection and seeding
+7. [MySQL Workflow](#7-mysql-workflow) — same commands, different DSN format
+8. [Interactive Mode (generate)](#8-generate-with-interactive-mode) — TUI wizard for data generation
+9. [Export Formats](#9-export-formats) — JSON, SQL, YAML, CSV output
+
 ---
 
 ## 1. Basic Seeding (no AI)
@@ -488,7 +500,7 @@ All existing CLI flags still work without `--interactive` — scripts and CI are
 
 ---
 
-## 9. MySQL Workflow
+## 7. MySQL Workflow
 
 seedstorm works identically with MySQL — just change `--db` and the DSN format.
 
@@ -515,7 +527,7 @@ seedstorm seed \
 
 ---
 
-## 7. Generate with Interactive Mode
+## 8. Generate with Interactive Mode
 
 Use interactive mode to visually select tables, pick output format, and preview generated data — no flags to memorize.
 
@@ -550,7 +562,7 @@ A 3-step wizard: **Tables → Config → Generate**
 
 ---
 
-## 8. Export Formats
+## 9. Export Formats
 
 Generate data without a database connection and export to different formats.
 
