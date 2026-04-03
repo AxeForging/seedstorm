@@ -272,7 +272,7 @@ INSERT INTO "tags" ("id", "name") VALUES ($1, $2);
 
 ## 6. Interactive Mode
 
-Launch a TUI wizard to visually select tables, configure options, and review before executing.
+Launch a TUI wizard to visually select tables, configure options, review the plan, and execute — all without memorizing flags.
 
 ```bash
 seedstorm seed \
@@ -282,33 +282,172 @@ seedstorm seed \
   --interactive
 ```
 
-<details>
-<summary>Interactive TUI walkthrough</summary>
+The wizard has 4 steps with a breadcrumb at the top showing your progress. You can go back to any previous step with `b`.
 
-**Step 1 — Table picker:** Navigate with arrow keys, space to toggle, `a` for all/none. FK dependencies shown inline. Selecting a child table auto-selects its required parents (shown with `●`).
+<details>
+<summary>Step 1 — Table Picker</summary>
+
+Select which tables to seed. Tables are shown in FK-safe order with their dependencies. Selecting a child table **auto-selects its required parents** (shown with `●` — locked, can't be deselected while the child needs them).
 
 ```
   seedstorm interactive  ● Tables  ○ Config  ○ Review  ○ Execute
 
   Select tables to seed
 
-  ▸ [✓] tags                    
-    [✓] users                   
-    [✓] companies               
-    [●] categories              → (auto-selected: needed by products)
-    [ ] audit_logs              → users
-    [✓] products                → categories, brands
-    [✓] orders                  → users, coupons
+  ▸ [✓] tags
+    [✓] users
+    [✓] companies
+    [●] categories                → brands  (auto-selected: needed by products)
+    [ ] audit_logs                → users
+    [✓] products                  → categories, brands
+    [✓] orders                    → users, coupons
+    [ ] employees                 → departments
+    [✓] wishlists                 → users
 
-  5 of 28 tables selected
+  7 of 28 tables selected
   ↑/↓ navigate • space toggle • a all • n none • enter confirm • q quit
 ```
 
-**Step 2 — Config:** Set rows per table, batch size, and truncate toggle.
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | Navigate |
+| `space` | Toggle selected/deselected |
+| `a` | Select all / deselect all (toggles) |
+| `n` | Deselect all |
+| `enter` | Confirm and go to Config |
+| `q` / `esc` | Quit |
 
-**Step 3 — Review:** See the full seed plan with table order and dependencies. Press `enter` to execute, `d` for dry-run, `b` to go back.
+</details>
 
-**Step 4 — Execute:** Progress display with spinner, then summary of seeded rows per table.
+<details>
+<summary>Step 2 — Config</summary>
+
+Set seeding parameters. Tab between fields, space to toggle the truncate checkbox.
+
+```
+  seedstorm interactive  ✓ Tables  ● Config  ○ Review  ○ Execute
+
+  Configure seeding options
+
+  ▸ Rows per table: [50]
+    Batch size: [100]
+    Enum rows (0 = use rows): [0]
+    [ ] Truncate before seeding
+
+  tab/↑↓ navigate • space toggle • enter confirm • b back • q quit
+```
+
+| Field | What it controls |
+|-------|-----------------|
+| Rows per table | How many rows to generate for each selected table |
+| Batch size | Rows per INSERT statement (higher = faster, default 100) |
+| Enum rows | Rows per enum value for enum tables (0 = use rows count) |
+| Truncate | Delete all existing data before seeding (shows warning in review) |
+
+</details>
+
+<details>
+<summary>Step 3 — Review</summary>
+
+See the full seed plan before executing. Shows table order, FK dependencies, and all config values.
+
+```
+  seedstorm interactive  ✓ Tables  ✓ Config  ● Review  ○ Execute
+
+  Review seed plan
+
+  Tables:     7
+  Rows/table: 50
+  Batch size: 100
+
+  #  Table          Dependencies
+  ─────────────────────────────────────────
+  1  tags           —
+  2  users          —
+  3  companies      —
+  4  categories     brands
+  5  products       categories, brands
+  6  orders         users, coupons
+  7  wishlists      users
+
+  enter execute • d dry-run • b back • q quit
+```
+
+If truncate is enabled, you'll see a red warning: `Truncate: YES — all existing data will be deleted`.
+
+</details>
+
+<details>
+<summary>Step 4a — Dry Run (press <code>d</code> on Review)</summary>
+
+Preview what would be generated without touching the database. Shows each table with row count and a sample of the first row's data. Scrollable with arrow keys, sticky footer with totals.
+
+```
+  seedstorm interactive  ✓ Tables  ✓ Config  ✓ Review  ● Execute
+
+  Dry Run — Preview
+
+  Would generate 350 rows across 7 tables
+
+  tags                          50 rows
+    id=1  name=Technology  +0 more
+
+  users                         150 rows
+    created_at=2016-09-02  email=abc@example.com  first_name=Reina  +5 more
+
+  companies                     50 rows
+    id=1  industry=Finance  name=TechCorp  +3 more
+
+  products                      50 rows
+    id=1  name=Wireless Headphones  price=249.99  +4 more
+
+  ────────────────────────────────────────────────────────────
+  7 tables • 350 total rows  (scroll 21/21)
+  ↑/↓ scroll • q quit
+```
+
+</details>
+
+<details>
+<summary>Step 4b — Execute (press <code>enter</code> on Review)</summary>
+
+Seeds the database with a spinner during execution, then shows a per-table summary.
+
+```
+  seedstorm interactive  ✓ Tables  ✓ Config  ✓ Review  ● Execute
+
+  Seeding database
+
+  Seeding complete! 350 rows across 7 tables in 156ms
+
+    tags                           50 rows
+    users                          150 rows
+    companies                      50 rows
+    categories                     50 rows
+    products                       50 rows
+    orders                         50 rows
+    wishlists                      50 rows
+
+  q quit
+```
+
+</details>
+
+<details>
+<summary>Common workflows with interactive mode</summary>
+
+```bash
+# Seed only specific tables (select interactively)
+seedstorm seed --db postgres --dsn "..." --schema schema.yaml -i
+
+# Preview what AI-enriched data looks like before committing
+seedstorm seed --db postgres --dsn "..." --schema schema.enriched.yaml -i
+# → select tables → config → review → press 'd' for dry-run
+
+# Re-seed with truncate (interactive confirmation instead of --yes)
+seedstorm seed --db postgres --dsn "..." --schema schema.yaml -i
+# → select tables → config → enable truncate → review (shows warning) → execute
+```
 
 </details>
 
