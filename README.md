@@ -247,6 +247,7 @@ Gap Analysis
 | `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
 | `--yes` / `-y` | false | Skip confirmation prompt |
 | `--batch-size` | `100` | Number of rows per INSERT statement (batched multi-row VALUES) |
+| `--interactive` / `-i` | false | Launch interactive TUI to select empty tables and configure filling |
 
 ---
 
@@ -268,6 +269,7 @@ seedstorm generate --schema schema.yaml --rows 20 --format yaml
 | `--out` / `-o` | stdout | Output file (omit for stdout) |
 | `--db` | `postgres` | DB type (affects SQL placeholder style) |
 | `--seed` | `0` | Random seed for reproducible generation (0 = random) |
+| `--interactive` / `-i` | false | Launch interactive TUI to select tables and configure generation |
 
 ---
 

@@ -14,6 +14,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/urfave/cli/v3"
 )
 
@@ -75,6 +76,11 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Usage: "Number of rows per INSERT statement (batched multi-row VALUES)",
 				Value: 100,
 			},
+			&cli.BoolFlag{
+				Name:    "interactive",
+				Aliases: []string{"i"},
+				Usage:   "Launch interactive TUI to select empty tables and configure filling",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -118,6 +124,10 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			counts, err := db.GetTableRowCounts(ctx, dbConn, dbType, allSorted)
 			if err != nil {
 				return fmt.Errorf("row count scan failed: %w", err)
+			}
+
+			if cmd.Bool("interactive") {
+				return tui.RunGaps(ctx, s, dbType, dsn, counts, rows, batchSize, enumRows)
 			}
 
 			// Build FK parents map for display: table → []parent tables.

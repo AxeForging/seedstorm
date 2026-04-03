@@ -11,6 +11,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/goccy/go-yaml"
 	"github.com/urfave/cli/v3"
@@ -57,6 +58,11 @@ func generateCmd() *cli.Command {
 				Usage: "Random seed for reproducible data generation (0 = random)",
 				Value: 0,
 			},
+			&cli.BoolFlag{
+				Name:    "interactive",
+				Aliases: []string{"i"},
+				Usage:   "Launch interactive TUI to select tables and configure generation",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -76,6 +82,10 @@ func generateCmd() *cli.Command {
 			s, err := schema.Load(schemaPath)
 			if err != nil {
 				return err
+			}
+
+			if cmd.Bool("interactive") {
+				return tui.RunGenerate(ctx, s, dbType, format, outPath, rows)
 			}
 
 			log.Info().Msg("Building dependency graph")

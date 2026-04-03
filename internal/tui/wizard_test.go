@@ -59,6 +59,8 @@ func sendKey(m tea.Model, key string) tea.Model {
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
 	case "a":
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}
+	case "esc":
+		msg = tea.KeyMsg{Type: tea.KeyEscape}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
