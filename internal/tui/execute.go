@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,10 +28,18 @@ type seedDoneMsg struct {
 	err       error
 }
 
-// dryRunDoneMsg is sent when dry-run SQL generation completes.
+// dryRunDoneMsg is sent when dry-run generation completes.
 type dryRunDoneMsg struct {
-	sql string
-	err error
+	tables []dryRunTable
+	total  int
+	err    error
+}
+
+type dryRunTable struct {
+	name    string
+	rows    int
+	sample  map[string]interface{} // first row as preview
+	columns []string               // sorted column names
 }
 
 type executeModel struct {
@@ -42,11 +51,14 @@ type executeModel struct {
 	elapsed         time.Duration
 	done            bool
 	dryRun          bool
-	dryRunOutput    string
+	dryRunTables    []dryRunTable
+	dryRunTotal     int
+	dryRunScroll    int
 	err             error
 	quitting        bool
 	seededTables    []string
 	seededRows      map[string]int
+	height          int
 }
 
 func newExecute(totalTables int, dryRun bool) executeModel {
@@ -64,10 +76,21 @@ func newExecute(totalTables int, dryRun bool) executeModel {
 func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "q", "ctrl+c":
 			m.quitting = true
 			return m, nil
+		case "up", "k":
+			if m.dryRunScroll > 0 {
+				m.dryRunScroll--
+			}
+			return m, nil
+		case "down", "j":
+			m.dryRunScroll++
+			return m, nil
 		}
+	case tea.WindowSizeMsg:
+		m.height = msg.Height
 	case tableSeededMsg:
 		m.currentTable = msg.table
 		m.completedTables++
@@ -81,7 +104,8 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 		return m, nil
 	case dryRunDoneMsg:
 		m.done = true
-		m.dryRunOutput = msg.sql
+		m.dryRunTables = msg.tables
+		m.dryRunTotal = msg.total
 		m.err = msg.err
 		return m, nil
 	case spinner.TickMsg:
@@ -97,19 +121,81 @@ func (m executeModel) View() string {
 	var sb strings.Builder
 
 	if m.dryRun {
-		sb.WriteString(titleStyle.Render("Dry Run — SQL Output"))
+		sb.WriteString(titleStyle.Render("Dry Run — Preview"))
 		sb.WriteString("\n\n")
-		if m.done {
-			if m.err != nil {
-				sb.WriteString(errorStyle.Render(fmt.Sprintf("  Error: %v", m.err)))
-			} else {
-				sb.WriteString(m.dryRunOutput)
-			}
-			sb.WriteString("\n")
-			sb.WriteString(helpStyle.Render("  q quit"))
-		} else {
-			sb.WriteString(fmt.Sprintf("  %s Generating SQL...\n", m.spinner.View()))
+		if !m.done {
+			sb.WriteString(fmt.Sprintf("  %s Generating data...\n", m.spinner.View()))
+			return sb.String()
 		}
+		if m.err != nil {
+			sb.WriteString(errorStyle.Render(fmt.Sprintf("  Error: %v", m.err)))
+			sb.WriteString("\n\n")
+			sb.WriteString(helpStyle.Render("  q quit"))
+			return sb.String()
+		}
+
+		sb.WriteString(successStyle.Render(fmt.Sprintf("  Would generate %d rows across %d tables\n", m.dryRunTotal, len(m.dryRunTables))))
+		sb.WriteString("\n")
+
+		// Build all lines first, then apply scroll
+		var lines []string
+		for _, dt := range m.dryRunTables {
+			lines = append(lines, fmt.Sprintf("  %s  %s",
+				selectedStyle.Render(fmt.Sprintf("%-28s", dt.name)),
+				dimStyle.Render(fmt.Sprintf("%d rows", dt.rows))))
+
+			// Show sample row preview (first 3 columns)
+			if dt.sample != nil {
+				maxPreview := 3
+				if len(dt.columns) < maxPreview {
+					maxPreview = len(dt.columns)
+				}
+				var previews []string
+				for _, col := range dt.columns[:maxPreview] {
+					val := dt.sample[col]
+					valStr := fmt.Sprintf("%v", val)
+					if len(valStr) > 30 {
+						valStr = valStr[:27] + "..."
+					}
+					if val == nil {
+						valStr = "NULL"
+					}
+					previews = append(previews, dimStyle.Render(fmt.Sprintf("%s=%s", col, valStr)))
+				}
+				if len(dt.columns) > maxPreview {
+					previews = append(previews, dimStyle.Render(fmt.Sprintf("+%d more", len(dt.columns)-maxPreview)))
+				}
+				lines = append(lines, "    "+strings.Join(previews, "  "))
+			}
+			lines = append(lines, "")
+		}
+
+		// Scrollable view
+		visible := m.height - 10
+		if visible < 5 {
+			visible = 5
+		}
+		if m.dryRunScroll > len(lines)-visible {
+			m.dryRunScroll = len(lines) - visible
+		}
+		if m.dryRunScroll < 0 {
+			m.dryRunScroll = 0
+		}
+		end := m.dryRunScroll + visible
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for _, line := range lines[m.dryRunScroll:end] {
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+
+		if len(lines) > visible {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑/↓ scroll (%d-%d of %d lines)", m.dryRunScroll+1, end, len(lines))))
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString(helpStyle.Render("  ↑/↓ scroll • q quit"))
 		return sb.String()
 	}
 
@@ -193,7 +279,7 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 	}
 }
 
-// startDryRun returns a tea.Cmd that generates dry-run SQL output.
+// startDryRun returns a tea.Cmd that generates data and builds a summary.
 func startDryRun(s *seedParams) tea.Cmd {
 	return func() tea.Msg {
 		data, err := faker.Generate(s.schema, s.tables, s.rows, s.enumRows, nil, s.dbType)
@@ -201,15 +287,30 @@ func startDryRun(s *seedParams) tea.Cmd {
 			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}
 
-		var sb strings.Builder
+		var tables []dryRunTable
+		total := 0
 		for _, tableName := range s.tables {
-			for _, row := range data[tableName] {
-				query, _ := db.BuildInsert(tableName, row, s.dbType)
-				sb.WriteString(query)
-				sb.WriteString(";\n")
+			rows := data[tableName]
+			dt := dryRunTable{
+				name: tableName,
+				rows: len(rows),
 			}
+
+			// Sorted column names + first row sample
+			if len(rows) > 0 {
+				dt.sample = rows[0]
+				cols := make([]string, 0, len(rows[0]))
+				for c := range rows[0] {
+					cols = append(cols, c)
+				}
+				sort.Strings(cols)
+				dt.columns = cols
+			}
+
+			tables = append(tables, dt)
+			total += len(rows)
 		}
 
-		return dryRunDoneMsg{sql: sb.String()}
+		return dryRunDoneMsg{tables: tables, total: total}
 	}
 }
