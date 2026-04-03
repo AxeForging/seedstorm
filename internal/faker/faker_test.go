@@ -6,6 +6,38 @@ import (
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
+// ── ValidFaker ───────────────────────────────────────────────────────────────
+
+func TestValidFaker_knownBare(t *testing.T) {
+	for _, f := range []string{"email", "name", "uuid", "word", "datetime", "bool", "json"} {
+		if !ValidFaker(f) {
+			t.Errorf("ValidFaker(%q) = false, want true", f)
+		}
+	}
+}
+
+func TestValidFaker_knownParameterised(t *testing.T) {
+	for _, f := range []string{"number(1,100)", "price(10,500)", "randomstring(a,b,c)", "paragraph(2)"} {
+		if !ValidFaker(f) {
+			t.Errorf("ValidFaker(%q) = false, want true", f)
+		}
+	}
+}
+
+func TestValidFaker_empty(t *testing.T) {
+	if !ValidFaker("") {
+		t.Error("ValidFaker('') = false, want true")
+	}
+}
+
+func TestValidFaker_unknown(t *testing.T) {
+	for _, f := range []string{"fulladdress", "fakefunction", "randomint(5)", "gibberish(x,y)"} {
+		if ValidFaker(f) {
+			t.Errorf("ValidFaker(%q) = true, want false", f)
+		}
+	}
+}
+
 // makeEnumTable builds a minimal schema.Table with one or more enum columns.
 func makeEnumTable(enumCols map[string][]string) schema.Table {
 	cols := map[string]schema.Column{
@@ -322,7 +354,7 @@ func TestGenerate_uuidPKTable(t *testing.T) {
 			},
 		},
 	}
-	data, err := Generate(s, []string{"items"}, 5, 0, nil)
+	data, err := Generate(s, []string{"items"}, 5, 0, nil, "pgx")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -360,7 +392,7 @@ func TestGenerate_uuidPK_FKReference(t *testing.T) {
 			},
 		},
 	}
-	data, err := Generate(s, []string{"parents", "children"}, 3, 0, nil)
+	data, err := Generate(s, []string{"parents", "children"}, 3, 0, nil, "pgx")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

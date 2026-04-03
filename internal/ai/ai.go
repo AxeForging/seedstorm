@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/googleai"
@@ -17,6 +19,7 @@ import (
 // appContext is an optional free-text hint describing the application domain
 // (e.g. "TacoShop", "HR management system") that is injected into every prompt.
 func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContext string) (*schema.Schema, string, error) {
+	log := logging.Log
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, "", fmt.Errorf("GEMINI_API_KEY environment variable is not set")
@@ -56,8 +59,19 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 				return nil, "", fmt.Errorf("AI call failed for %s.%s: %w", tableName, colName, err)
 			}
 
+			cleaned := cleanFakerString(answer)
+			if !faker.ValidFaker(cleaned) {
+				log.Warn().
+					Str("table", tableName).
+					Str("column", colName).
+					Str("ai_response", cleaned).
+					Str("keeping", col.Faker).
+					Msg("AI returned unrecognised faker — keeping original")
+				continue
+			}
+
 			c := s.Tables[tableName].Columns[colName]
-			c.Faker = cleanFakerString(answer)
+			c.Faker = cleaned
 			tbl := s.Tables[tableName]
 			tbl.Columns[colName] = c
 			s.Tables[tableName] = tbl
