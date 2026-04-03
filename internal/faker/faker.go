@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/brianvoe/gofakeit/v6"
 )
@@ -367,6 +368,40 @@ func isStringColType(colType string) bool {
 		t == "clob" || t == "tinytext" || t == "mediumtext" || t == "longtext"
 }
 
+// knownFakers is the set of valid bare faker function names (no args).
+var knownFakers = map[string]bool{
+	"name": true, "firstname": true, "lastname": true, "username": true,
+	"email": true, "phone": true, "street": true, "city": true,
+	"state": true, "country": true, "zip": true, "url": true,
+	"uuid": true, "ipv4": true, "macaddress": true, "hexcolor": true,
+	"productname": true, "company": true, "jobtitle": true,
+	"latitude": true, "longitude": true, "bool": true, "float64": true,
+	"word": true, "sentence": true, "date": true, "time": true,
+	"datetime": true, "json": true,
+}
+
+// knownParamFakers is the set of valid faker functions that take arguments.
+var knownParamFakers = map[string]bool{
+	"number": true, "price": true, "randomstring": true,
+	"paragraph": true, "float64": true,
+}
+
+// ValidFaker reports whether a faker string is recognized by the generate engine.
+// Valid forms: known bare names, known parameterised calls, or empty string (nil output).
+func ValidFaker(faker string) bool {
+	s := strings.TrimSpace(faker)
+	if s == "" {
+		return true
+	}
+	if knownFakers[s] {
+		return true
+	}
+	if m := reArgs.FindStringSubmatch(s); m != nil {
+		return knownParamFakers[m[1]]
+	}
+	return false
+}
+
 var (
 	reParens = regexp.MustCompile(`\(([^)]+)\)`)
 	reArgs   = regexp.MustCompile(`^(\w+)\(([^)]*)\)$`)
@@ -479,7 +514,9 @@ func generate(fakerStr string) (interface{}, error) {
 	case "":
 		return nil, nil
 	default:
-		// Unknown faker: return a word as safe fallback
+		// Unknown faker: return a word as safe fallback but log a warning so
+		// users notice misconfigured or AI-generated faker strings.
+		logging.Log.Warn().Str("faker", s).Msg("Unknown faker function — falling back to random word")
 		return gofakeit.Word(), nil
 	}
 }
