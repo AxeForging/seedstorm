@@ -258,6 +258,129 @@ func TestGenerate_noEnumColumns_rowCountUnchanged(t *testing.T) {
 	}
 }
 
+// ── generatePK ───────────────────────────────────────────────────────────────
+
+func TestGeneratePK_integerType(t *testing.T) {
+	for _, colType := range []string{"integer", "int", "bigint", "smallint", "serial", "bigserial"} {
+		v, err := generatePK(colType, 5)
+		if err != nil {
+			t.Fatalf("generatePK(%q): %v", colType, err)
+		}
+		if v != 6 {
+			t.Errorf("generatePK(%q, 5) = %v, want 6", colType, v)
+		}
+	}
+}
+
+func TestGeneratePK_uuidType(t *testing.T) {
+	v, err := generatePK("uuid", 0)
+	if err != nil {
+		t.Fatalf("generatePK(uuid): %v", err)
+	}
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", v)
+	}
+	// UUID format: 8-4-4-4-12 hex chars
+	if len(s) != 36 || s[8] != '-' {
+		t.Errorf("expected UUID format, got %q", s)
+	}
+}
+
+func TestGeneratePK_varcharType(t *testing.T) {
+	v, err := generatePK("varchar", 0)
+	if err != nil {
+		t.Fatalf("generatePK(varchar): %v", err)
+	}
+	s, ok := v.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", v)
+	}
+	if len(s) != 36 {
+		t.Errorf("expected UUID-length string PK, got %q", s)
+	}
+}
+
+func TestGeneratePK_textType(t *testing.T) {
+	v, err := generatePK("text", 0)
+	if err != nil {
+		t.Fatalf("generatePK(text): %v", err)
+	}
+	if _, ok := v.(string); !ok {
+		t.Fatalf("expected string, got %T", v)
+	}
+}
+
+func TestGenerate_uuidPKTable(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"items": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "uuid", PK: true},
+					"name": {Type: "varchar", Faker: "word"},
+				},
+			},
+		},
+	}
+	data, err := Generate(s, []string{"items"}, 5, 0, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	seen := make(map[string]bool)
+	for _, row := range data["items"] {
+		id, ok := row["id"].(string)
+		if !ok {
+			t.Fatalf("expected string PK, got %T: %v", row["id"], row["id"])
+		}
+		if len(id) != 36 {
+			t.Errorf("expected UUID PK, got %q", id)
+		}
+		if seen[id] {
+			t.Errorf("duplicate UUID PK: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestGenerate_uuidPK_FKReference(t *testing.T) {
+	// Parent has UUID PK, child references it via FK — should get valid UUID references
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"parents": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "uuid", PK: true},
+					"name": {Type: "varchar", Faker: "word"},
+				},
+			},
+			"children": {
+				Columns: map[string]schema.Column{
+					"id":        {Type: "integer", PK: true},
+					"parent_id": {Type: "uuid", FK: "parents.id"},
+				},
+			},
+		},
+	}
+	data, err := Generate(s, []string{"parents", "children"}, 3, 0, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	// Collect parent UUIDs
+	parentIDs := make(map[string]bool)
+	for _, row := range data["parents"] {
+		parentIDs[row["id"].(string)] = true
+	}
+	// Every child's parent_id must reference an existing parent
+	for _, row := range data["children"] {
+		pid, ok := row["parent_id"].(string)
+		if !ok {
+			t.Fatalf("expected string FK, got %T", row["parent_id"])
+		}
+		if !parentIDs[pid] {
+			t.Errorf("child references non-existent parent UUID %s", pid)
+		}
+	}
+}
+
 // ── composite PK collision handling ──────────────────────────────────────────
 
 func TestGenerateStandardRows_exhaustedPKSpace_returnsError(t *testing.T) {

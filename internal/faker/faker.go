@@ -325,7 +325,7 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 		}
 	}
 	if col.PK {
-		return len(generatedPKs[tableName]) + 1, nil
+		return generatePK(col.Type, len(generatedPKs[tableName]))
 	}
 	val, err := generate(col.Faker)
 	if err != nil {
@@ -344,6 +344,21 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 		}
 	}
 	return val, nil
+}
+
+// generatePK returns an appropriate primary key value based on the column's DB type.
+// Sequential integers for numeric types, UUIDs for uuid/string types.
+func generatePK(colType string, existingCount int) (interface{}, error) {
+	t := strings.ToLower(colType)
+	switch {
+	case t == "uuid":
+		return gofakeit.UUID(), nil
+	case strings.Contains(t, "char") || strings.Contains(t, "text"):
+		return gofakeit.UUID(), nil
+	default:
+		// integer / serial / bigserial — sequential
+		return existingCount + 1, nil
+	}
 }
 
 func isStringColType(colType string) bool {
