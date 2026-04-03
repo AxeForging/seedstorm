@@ -109,7 +109,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 
 			// Query current row counts for all tables.
 			log.Info().Int("tables", len(allSorted)).Msg("Scanning tables")
-			counts, err := db.GetTableRowCounts(ctx, dbConn, allSorted)
+			counts, err := db.GetTableRowCounts(ctx, dbConn, dbType, allSorted)
 			if err != nil {
 				return fmt.Errorf("row count scan failed: %w", err)
 			}
@@ -160,7 +160,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 
 			// Generate data for gap tables only; allSorted is used internally to
 			// preload existing PKs from already-populated parent tables.
-			data, err := faker.GenerateFiltered(s, allSorted, gapTables, rows, enumRows, dbConn)
+			data, err := faker.GenerateFiltered(s, allSorted, gapTables, rows, enumRows, dbConn, dbType)
 			if err != nil {
 				return fmt.Errorf("data generation failed: %w", err)
 			}

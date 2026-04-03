@@ -9,14 +9,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/brianvoe/gofakeit/v6"
 )
 
 // Generate produces fake data rows for each table, respecting FK ordering.
-// If db is non-nil, existing PKs are read so FKs can reference them.
-func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, db *sql.DB) (map[string][]map[string]interface{}, error) {
-	return GenerateFiltered(s, sortedTables, sortedTables, rows, enumRows, db)
+// If conn is non-nil, existing PKs are read so FKs can reference them.
+// dbType is the driver name ("pgx" or "mysql") used to quote SQL identifiers.
+func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
+	return GenerateFiltered(s, sortedTables, sortedTables, rows, enumRows, conn, dbType)
 }
 
 // GenerateFiltered is like Generate but separates the two roles of sortedTables:
@@ -28,12 +30,12 @@ func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, db *s
 //
 // Use this when you only want to seed a subset of tables (e.g. empty ones)
 // while still being able to resolve FK references to already-populated parents.
-func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, db *sql.DB) (map[string][]map[string]interface{}, error) {
+func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
 	data := make(map[string][]map[string]interface{})
 	generatedPKs := make(map[string][]interface{})
 
-	if db != nil {
-		if err := queryExistingPKs(db, allTables, s.Tables, generatedPKs); err != nil {
+	if conn != nil {
+		if err := queryExistingPKs(conn, allTables, s.Tables, generatedPKs, dbType); err != nil {
 			return nil, err
 		}
 	}
@@ -67,14 +69,14 @@ func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, 
 	return data, nil
 }
 
-func queryExistingPKs(db *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}) error {
+func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string) error {
 	for _, tableName := range sortedTables {
 		table := tables[tableName]
 		for colName, col := range table.Columns {
 			if !col.PK {
 				continue
 			}
-			if err := scanPKs(db, tableName, colName, generatedPKs); err != nil {
+			if err := scanPKs(conn, tableName, colName, generatedPKs, dbType); err != nil {
 				return err
 			}
 		}
@@ -82,8 +84,8 @@ func queryExistingPKs(db *sql.DB, sortedTables []string, tables map[string]schem
 	return nil
 }
 
-func scanPKs(db *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}) error {
-	rows, err := db.Query(fmt.Sprintf("SELECT %s FROM %s", colName, tableName)) //nolint:gosec
+func scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) error {
+	rows, err := conn.Query(fmt.Sprintf("SELECT %s FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType))) //nolint:gosec
 	if err != nil {
 		return fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
 	}

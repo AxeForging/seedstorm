@@ -74,7 +74,7 @@ func generateCmd() *cli.Command {
 			}
 
 			log.Info().Int("rows", rows).Msg("Generating data")
-			data, err := faker.Generate(s, sortedTables, rows, 0, nil)
+			data, err := faker.Generate(s, sortedTables, rows, 0, nil, dbType)
 			if err != nil {
 				return fmt.Errorf("generation failed: %w", err)
 			}
