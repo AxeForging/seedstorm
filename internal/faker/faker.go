@@ -102,8 +102,7 @@ func scanPKs(db *sql.DB, tableName, colName string, generatedPKs map[string][]in
 func findEnumColumn(table schema.Table) (string, []string) {
 	for colName, col := range table.Columns {
 		if strings.HasPrefix(col.Faker, "randomstring(") {
-			re := regexp.MustCompile(`\(([^)]+)\)`)
-			if m := re.FindStringSubmatch(col.Faker); len(m) > 1 {
+			if m := reParens.FindStringSubmatch(col.Faker); len(m) > 1 {
 				return colName, strings.Split(m[1], ",")
 			}
 		}
@@ -114,11 +113,10 @@ func findEnumColumn(table schema.Table) (string, []string) {
 // findAllEnumColumns returns every column whose faker is a randomstring(...),
 // mapping column name → slice of enum values.
 func findAllEnumColumns(table schema.Table) map[string][]string {
-	re := regexp.MustCompile(`\(([^)]+)\)`)
 	result := make(map[string][]string)
 	for colName, col := range table.Columns {
 		if strings.HasPrefix(col.Faker, "randomstring(") {
-			if m := re.FindStringSubmatch(col.Faker); len(m) > 1 {
+			if m := reParens.FindStringSubmatch(col.Faker); len(m) > 1 {
 				vals := strings.Split(m[1], ",")
 				for i, v := range vals {
 					vals[i] = strings.TrimSpace(v)
@@ -352,7 +350,10 @@ func isStringColType(colType string) bool {
 		t == "clob" || t == "tinytext" || t == "mediumtext" || t == "longtext"
 }
 
-var reArgs = regexp.MustCompile(`^(\w+)\(([^)]*)\)$`)
+var (
+	reParens = regexp.MustCompile(`\(([^)]+)\)`)
+	reArgs   = regexp.MustCompile(`^(\w+)\(([^)]*)\)$`)
+)
 
 func generate(fakerStr string) (interface{}, error) {
 	s := strings.TrimSpace(fakerStr)
