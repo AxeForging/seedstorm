@@ -47,6 +47,54 @@ func TestBuildPrompt_DomainValuesOption_NonStringColumn(t *testing.T) {
 	}
 }
 
+// ── Batch prompt and response parsing ────────────────────────────────────────
+
+func TestBuildBatchPrompt_containsAllColumns(t *testing.T) {
+	cols := []enrichCol{
+		{name: "email", colType: "varchar"},
+		{name: "age", colType: "integer"},
+		{name: "bio", colType: "text"},
+	}
+	prompt := buildBatchPrompt("users", cols, "id,email,age,bio", "users,orders", "SaaS app")
+	for _, col := range cols {
+		if !strings.Contains(prompt, col.name) {
+			t.Errorf("expected prompt to contain column %q", col.name)
+		}
+	}
+	if !strings.Contains(prompt, "JSON") {
+		t.Error("expected prompt to mention JSON return format")
+	}
+}
+
+func TestParseBatchResponse_validJSON(t *testing.T) {
+	resp := `{"email": "email", "age": "number(18,90)", "bio": "paragraph(2)"}`
+	m, err := parseBatchResponse(resp)
+	if err != nil {
+		t.Fatalf("parseBatchResponse: %v", err)
+	}
+	if m["email"] != "email" || m["age"] != "number(18,90)" || m["bio"] != "paragraph(2)" {
+		t.Errorf("unexpected mapping: %v", m)
+	}
+}
+
+func TestParseBatchResponse_markdownFenced(t *testing.T) {
+	resp := "```json\n{\"name\": \"firstname\", \"city\": \"city\"}\n```"
+	m, err := parseBatchResponse(resp)
+	if err != nil {
+		t.Fatalf("parseBatchResponse: %v", err)
+	}
+	if m["name"] != "firstname" || m["city"] != "city" {
+		t.Errorf("unexpected mapping: %v", m)
+	}
+}
+
+func TestParseBatchResponse_invalidJSON(t *testing.T) {
+	_, err := parseBatchResponse("not json at all")
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
 func TestCleanFakerString(t *testing.T) {
 	tests := []struct {
 		in   string
