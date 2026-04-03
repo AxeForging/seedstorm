@@ -284,7 +284,17 @@ func rollbackLastRowPKs(generatedPKs map[string][]interface{}, tableName string,
 func generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
 	row := make(map[string]interface{})
 	var pksToAdd []interface{}
-	for colName, col := range table.Columns {
+
+	// Sort column names for deterministic iteration order — required for
+	// reproducible output when using --seed.
+	colNames := make([]string, 0, len(table.Columns))
+	for colName := range table.Columns {
+		colNames = append(colNames, colName)
+	}
+	sort.Strings(colNames)
+
+	for _, colName := range colNames {
+		col := table.Columns[colName]
 		val, err := generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
 		if err != nil {
 			return nil, fmt.Errorf("column %s: %w", colName, err)
