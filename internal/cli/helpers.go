@@ -12,11 +12,6 @@ func normalizeDBType(dbType string) string {
 	return dbType
 }
 
-// quoteIdent quotes a SQL identifier (table or column name).
-func quoteIdent(name, dbType string) string {
-	return db.QuoteIdent(name, dbType)
-}
-
 // buildInsert delegates to db.BuildInsert.
 func buildInsert(tableName string, row map[string]interface{}, dbType string) (string, []interface{}) {
 	return db.BuildInsert(tableName, row, dbType)
