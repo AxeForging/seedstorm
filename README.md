@@ -186,6 +186,7 @@ seedstorm seed \
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
 | `--batch-size` | `100` | Number of rows per INSERT statement (batched multi-row VALUES) |
+| `--seed` | `0` | Random seed for reproducible generation (0 = random) |
 
 ---
 
@@ -265,6 +266,7 @@ seedstorm generate --schema schema.yaml --rows 20 --format yaml
 | `--format` / `-f` | `yaml` | Output format: `yaml`, `json`, `sql` |
 | `--out` / `-o` | stdout | Output file (omit for stdout) |
 | `--db` | `postgres` | DB type (affects SQL placeholder style) |
+| `--seed` | `0` | Random seed for reproducible generation (0 = random) |
 
 ---
 

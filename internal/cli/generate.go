@@ -11,6 +11,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/brianvoe/gofakeit/v6"
 	"github.com/goccy/go-yaml"
 	"github.com/urfave/cli/v3"
 )
@@ -51,6 +52,11 @@ func generateCmd() *cli.Command {
 				Usage: "Database type for SQL output: mysql or postgres",
 				Value: "postgres",
 			},
+			&cli.IntFlag{
+				Name:  "seed",
+				Usage: "Random seed for reproducible data generation (0 = random)",
+				Value: 0,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -59,6 +65,12 @@ func generateCmd() *cli.Command {
 			format := cmd.String("format")
 			outPath := cmd.String("out")
 			dbType := normalizeDBType(cmd.String("db"))
+			seed := cmd.Int("seed")
+
+			if seed != 0 {
+				gofakeit.Seed(int64(seed))
+				log.Info().Int("seed", seed).Msg("Using fixed random seed")
+			}
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
