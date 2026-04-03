@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -38,47 +39,146 @@ func EnrichFakerMappings(ctx context.Context, s *schema.Schema, model, appContex
 	tableContext := strings.Join(tableNames, ", ")
 
 	for tableName, table := range s.Tables {
-		// Build column context for this table
+		// Collect enrichable columns for this table
+		var toEnrich []enrichCol
+		for colName, col := range table.Columns {
+			if col.PK || col.FK != "" {
+				continue
+			}
+			if !shouldEnrich(col.Faker, appContext) {
+				continue
+			}
+			toEnrich = append(toEnrich, enrichCol{name: colName, colType: col.Type})
+		}
+		if len(toEnrich) == 0 {
+			continue
+		}
+
+		// Build column context
 		colNames := make([]string, 0, len(table.Columns))
 		for colName := range table.Columns {
 			colNames = append(colNames, colName)
 		}
 		colContext := strings.Join(colNames, ", ")
 
-		for colName, col := range table.Columns {
-			if col.PK || col.FK != "" {
-				continue // managed by the seed engine
-			}
-			if !shouldEnrich(col.Faker, appContext) {
-				continue
-			}
-
-			prompt := buildPrompt(tableName, colName, col.Type, colContext, tableContext, appContext)
+		// Single column → use the original per-column prompt (simpler, no JSON parsing)
+		if len(toEnrich) == 1 {
+			col := toEnrich[0]
+			prompt := buildPrompt(tableName, col.name, col.colType, colContext, tableContext, appContext)
 			answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
 			if err != nil {
-				return nil, "", fmt.Errorf("AI call failed for %s.%s: %w", tableName, colName, err)
+				return nil, "", fmt.Errorf("AI call failed for %s.%s: %w", tableName, col.name, err)
 			}
-
 			cleaned := cleanFakerString(answer)
 			if !faker.ValidFaker(cleaned) {
 				log.Warn().
 					Str("table", tableName).
-					Str("column", colName).
+					Str("column", col.name).
 					Str("ai_response", cleaned).
-					Str("keeping", col.Faker).
 					Msg("AI returned unrecognised faker — keeping original")
 				continue
 			}
 
-			c := s.Tables[tableName].Columns[colName]
+			c := s.Tables[tableName].Columns[col.name]
 			c.Faker = cleaned
 			tbl := s.Tables[tableName]
-			tbl.Columns[colName] = c
+			tbl.Columns[col.name] = c
 			s.Tables[tableName] = tbl
+			continue
 		}
+
+		// Multiple columns → batch into a single prompt returning JSON
+		prompt := buildBatchPrompt(tableName, toEnrich, colContext, tableContext, appContext)
+		answer, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+		if err != nil {
+			return nil, "", fmt.Errorf("AI batch call failed for table %s: %w", tableName, err)
+		}
+
+		mappings, err := parseBatchResponse(answer)
+		if err != nil {
+			log.Warn().Str("table", tableName).Err(err).Msg("Failed to parse batch AI response — skipping table")
+			continue
+		}
+
+		tbl := s.Tables[tableName]
+		for _, col := range toEnrich {
+			if fakerVal, ok := mappings[col.name]; ok {
+				c := tbl.Columns[col.name]
+				c.Faker = cleanFakerString(fakerVal)
+				tbl.Columns[col.name] = c
+			}
+		}
+		s.Tables[tableName] = tbl
 	}
 
 	return s, model, nil
+}
+
+// enrichCol describes a column that should be sent to the AI for faker mapping.
+type enrichCol struct {
+	name    string
+	colType string
+}
+
+// buildBatchPrompt constructs a prompt that asks the AI for faker mappings for
+// multiple columns at once, returning a JSON object.
+func buildBatchPrompt(tableName string, cols []enrichCol, siblingCols, allTables, appContext string) string {
+	// Build column list for the prompt
+	var colLines []string
+	for _, col := range cols {
+		colLines = append(colLines, fmt.Sprintf("  - %s (type: %s)", col.name, col.colType))
+	}
+
+	domainLine := ""
+	if appContext != "" {
+		domainLine = fmt.Sprintf("- Application domain / context: %s\n", appContext)
+	}
+
+	domainRules := ""
+	if appContext != "" {
+		domainRules = `
+DOMAIN-AWARE RULES:
+- Infer what each column represents from its name and the application domain.
+- For NUMERIC columns: return realistic number(min,max) or price(min,max) ranges.
+- For STRING columns (char/text/varchar): return randomstring(val1,val2,...) with 20-30 domain-specific values for name/label columns, or paragraph(2) for long text.
+- Do NOT use randomstring for personal data (emails, names, phones) or UUIDs.`
+	}
+
+	return fmt.Sprintf(`You are a database seeding expert. Given multiple database columns, return the most appropriate gofakeit faker for each.
+
+Database context:
+- All tables: %s
+- Current table: %s
+- Columns in this table: %s
+%s
+Columns to map:
+%s
+
+Rules:
+- Use lowercase, no "gofakeit." prefix
+- Valid functions: name, firstname, lastname, email, phone, username, street, city, state, country, zip, url, uuid, company, jobtitle, productname, word, sentence, datetime, date, bool, ipv4, hexcolor, latitude, longitude, price(min,max), number(min,max), paragraph(n), randomstring(val1,val2,...)
+- CRITICAL: match return type to column type. If column type contains "char", "text", or "varchar" → use a string function, NOT number() or price()
+%s
+Return ONLY a JSON object mapping column name to faker. Example:
+{"column_name": "email", "other_column": "number(1,100)"}`,
+		allTables, tableName, siblingCols, domainLine,
+		strings.Join(colLines, "\n"), domainRules)
+}
+
+// parseBatchResponse extracts a column→faker JSON mapping from the AI response.
+func parseBatchResponse(answer string) (map[string]string, error) {
+	s := strings.TrimSpace(answer)
+	// Strip markdown code fences if present
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSpace(s)
+
+	var result map[string]string
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return nil, fmt.Errorf("invalid JSON in AI response: %w", err)
+	}
+	return result, nil
 }
 
 // shouldEnrich returns true if a column's faker mapping should be sent to the AI.
