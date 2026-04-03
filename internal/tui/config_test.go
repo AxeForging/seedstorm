@@ -46,6 +46,14 @@ func TestConfig_negativeValueFallsBack(t *testing.T) {
 	}
 }
 
+func TestConfig_batchSizeZeroClampedToOne(t *testing.T) {
+	c := newConfig(100, 100, 0, false)
+	c.fields[1].input.SetValue("0")
+	if c.BatchSize() != 1 {
+		t.Errorf("BatchSize(0) should clamp to 1 to prevent infinite loop, got %d", c.BatchSize())
+	}
+}
+
 func TestConfig_zeroIsValid(t *testing.T) {
 	c := newConfig(100, 100, 0, false)
 	c.fields[2].input.SetValue("0")

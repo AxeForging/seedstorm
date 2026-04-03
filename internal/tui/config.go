@@ -44,8 +44,14 @@ func makeNumericField(label string, value int) configField {
 	return configField{label: label, input: ti}
 }
 
-func (m configModel) Rows() int      { return m.intVal(0, 100) }
-func (m configModel) BatchSize() int { return m.intVal(1, 100) }
+func (m configModel) Rows() int { return m.intVal(0, 100) }
+func (m configModel) BatchSize() int {
+	v := m.intVal(1, 100)
+	if v < 1 {
+		return 1 // prevent infinite loop in batch insert
+	}
+	return v
+}
 func (m configModel) EnumRows() int  { return m.intVal(2, 0) }
 func (m configModel) Truncate() bool { return m.fields[3].toggled }
 

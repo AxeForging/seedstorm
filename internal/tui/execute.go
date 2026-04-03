@@ -25,6 +25,8 @@ type tableSeededMsg struct {
 type seedDoneMsg struct {
 	totalRows int
 	elapsed   time.Duration
+	tables    []string
+	rowsMap   map[string]int
 	err       error
 }
 
@@ -107,6 +109,9 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 		m.done = true
 		m.totalRows = msg.totalRows
 		m.elapsed = msg.elapsed
+		m.seededTables = msg.tables
+		m.seededRows = msg.rowsMap
+		m.completedTables = len(msg.tables)
 		m.err = msg.err
 		return m, nil
 	case dryRunDoneMsg:
@@ -256,6 +261,11 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
 
+		batchSize := s.batchSize
+		if batchSize < 1 {
+			batchSize = 1
+		}
+
 		conn, err := sql.Open(s.dbType, s.dsn)
 		if err != nil {
 			return seedDoneMsg{err: fmt.Errorf("failed to open connection: %w", err)}
@@ -278,11 +288,11 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 		}
 
 		totalRows := 0
+		rowsMap := make(map[string]int, len(s.tables))
 		for _, tableName := range s.tables {
 			tableRows := data[tableName]
-			// Batch insert
-			for i := 0; i < len(tableRows); i += s.batchSize {
-				end := i + s.batchSize
+			for i := 0; i < len(tableRows); i += batchSize {
+				end := i + batchSize
 				if end > len(tableRows) {
 					end = len(tableRows)
 				}
@@ -291,14 +301,15 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 					return seedDoneMsg{err: fmt.Errorf("insert into %s failed: %w", tableName, err)}
 				}
 			}
+			rowsMap[tableName] = len(tableRows)
 			totalRows += len(tableRows)
-			// Send progress — but since we're in a Cmd, we can't send intermediate
-			// messages. The progress will show after completion.
 		}
 
 		return seedDoneMsg{
 			totalRows: totalRows,
 			elapsed:   time.Since(start),
+			tables:    s.tables,
+			rowsMap:   rowsMap,
 		}
 	}
 }

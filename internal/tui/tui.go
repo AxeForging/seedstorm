@@ -34,6 +34,7 @@ type seedParams struct {
 
 // Model is the top-level TUI model orchestrating the wizard steps.
 type Model struct {
+	ctx       context.Context
 	step      step
 	schema    *schema.Schema
 	graph     *graph.Graph
@@ -72,6 +73,7 @@ func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows,
 	}
 
 	m := Model{
+		ctx:       ctx,
 		step:      stepPicker,
 		schema:    s,
 		graph:     g,
@@ -143,7 +145,7 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.picker.done {
 		// Run auto-dependency resolution
 		explicit := m.picker.explicitlySelected()
-		resolved, autoSelected := ResolveDeps(m.schema, m.graph, explicit, m.sortedAll)
+		resolved, autoSelected := ResolveDeps(m.graph, explicit, m.sortedAll)
 
 		// Update picker items to reflect auto-selections
 		for i := range m.picker.items {
@@ -233,7 +235,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.review.dryRun {
 			return m, tea.Batch(m.execute.spinner.Tick, startDryRun(params))
 		}
-		return m, tea.Batch(m.execute.spinner.Tick, startSeed(context.Background(), params))
+		return m, tea.Batch(m.execute.spinner.Tick, startSeed(m.ctx, params))
 	}
 
 	return m, cmd

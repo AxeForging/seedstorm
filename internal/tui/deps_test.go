@@ -27,7 +27,7 @@ func TestResolveDeps_linearChain(t *testing.T) {
 
 	// Select only C — should auto-select A and B
 	selected := map[string]bool{"c": true}
-	resolved, auto := ResolveDeps(s, g, selected, sorted)
+	resolved, auto := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 3 {
 		t.Fatalf("expected 3 tables, got %d: %v", len(resolved), resolved)
@@ -57,7 +57,7 @@ func TestResolveDeps_diamond(t *testing.T) {
 
 	// Select only D — should pull in C, A, B
 	selected := map[string]bool{"d": true}
-	resolved, auto := ResolveDeps(s, g, selected, sorted)
+	resolved, auto := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 4 {
 		t.Fatalf("expected 4 tables, got %d: %v", len(resolved), resolved)
@@ -77,7 +77,7 @@ func TestResolveDeps_nullableFK_notAutoSelected(t *testing.T) {
 	sorted, _ := g.TopologicalSort()
 
 	selected := map[string]bool{"b": true}
-	resolved, auto := ResolveDeps(s, g, selected, sorted)
+	resolved, auto := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 table, got %d: %v", len(resolved), resolved)
@@ -96,7 +96,7 @@ func TestResolveDeps_selfRef_noInfiniteLoop(t *testing.T) {
 	sorted, _ := g.TopologicalSort()
 
 	selected := map[string]bool{"cats": true}
-	resolved, auto := ResolveDeps(s, g, selected, sorted)
+	resolved, auto := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 table, got %d", len(resolved))
@@ -117,7 +117,7 @@ func TestResolveDeps_selectParent_noExtraChildren(t *testing.T) {
 	sorted, _ := g.TopologicalSort()
 
 	selected := map[string]bool{"a": true}
-	resolved, _ := ResolveDeps(s, g, selected, sorted)
+	resolved, _ := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 table (only a), got %d: %v", len(resolved), resolved)
@@ -135,7 +135,7 @@ func TestResolveDeps_preservesTopoOrder(t *testing.T) {
 
 	// Select z and x explicitly — y should be auto-selected, order should be x,y,z
 	selected := map[string]bool{"z": true, "x": true}
-	resolved, auto := ResolveDeps(s, g, selected, sorted)
+	resolved, auto := ResolveDeps(g, selected, sorted)
 
 	if len(resolved) != 3 {
 		t.Fatalf("expected 3 tables, got %d", len(resolved))
