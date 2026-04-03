@@ -17,7 +17,11 @@ import (
 
 const maxRetries = 3
 
-// generateWithRetry wraps an LLM call with exponential backoff (1s, 2s, 4s).
+// retryBaseDelay is the base delay for exponential backoff. Tests override this
+// to avoid slow waits.
+var retryBaseDelay = time.Second
+
+// generateWithRetry wraps an LLM call with exponential backoff.
 func generateWithRetry(ctx context.Context, llm llms.Model, prompt, label string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -27,7 +31,7 @@ func generateWithRetry(ctx context.Context, llm llms.Model, prompt, label string
 		}
 		lastErr = err
 		if attempt < maxRetries-1 {
-			delay := time.Duration(1<<uint(attempt)) * time.Second
+			delay := time.Duration(1<<uint(attempt)) * retryBaseDelay
 			logging.Log.Warn().
 				Str("target", label).
 				Int("attempt", attempt+1).

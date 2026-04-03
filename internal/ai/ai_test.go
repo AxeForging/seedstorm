@@ -1,9 +1,107 @@
 package ai
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tmc/langchaingo/llms"
 )
+
+// mockLLM implements llms.Model and fails failCount times before succeeding.
+type mockLLM struct {
+	calls     int
+	failCount int
+	answer    string
+}
+
+func (m *mockLLM) GenerateContent(_ context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.calls++
+	if m.calls <= m.failCount {
+		return nil, fmt.Errorf("transient error (call %d)", m.calls)
+	}
+	return &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{Content: m.answer}},
+	}, nil
+}
+
+func (m *mockLLM) Call(_ context.Context, _ string, _ ...llms.CallOption) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+// ── generateWithRetry ────────────────────────────────────────────────────────
+
+func TestGenerateWithRetry_succeedsFirstTry(t *testing.T) {
+	retryBaseDelay = time.Millisecond // fast tests
+	defer func() { retryBaseDelay = time.Second }()
+
+	m := &mockLLM{failCount: 0, answer: "email"}
+	result, err := generateWithRetry(context.Background(), m, "test", "users.email")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "email" {
+		t.Errorf("got %q, want %q", result, "email")
+	}
+	if m.calls != 1 {
+		t.Errorf("expected 1 call, got %d", m.calls)
+	}
+}
+
+func TestGenerateWithRetry_succeedsAfterRetries(t *testing.T) {
+	retryBaseDelay = time.Millisecond
+	defer func() { retryBaseDelay = time.Second }()
+
+	m := &mockLLM{failCount: 2, answer: "firstname"}
+	result, err := generateWithRetry(context.Background(), m, "test", "users.name")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "firstname" {
+		t.Errorf("got %q, want %q", result, "firstname")
+	}
+	if m.calls != 3 {
+		t.Errorf("expected 3 calls (2 failures + 1 success), got %d", m.calls)
+	}
+}
+
+func TestGenerateWithRetry_failsAfterMaxRetries(t *testing.T) {
+	retryBaseDelay = time.Millisecond
+	defer func() { retryBaseDelay = time.Second }()
+
+	m := &mockLLM{failCount: 10, answer: "never"}
+	_, err := generateWithRetry(context.Background(), m, "test", "users.bio")
+	if err == nil {
+		t.Fatal("expected error after max retries, got nil")
+	}
+	if !strings.Contains(err.Error(), "3 attempts") {
+		t.Errorf("error should mention 3 attempts: %v", err)
+	}
+	if m.calls != 3 {
+		t.Errorf("expected exactly 3 calls, got %d", m.calls)
+	}
+}
+
+func TestGenerateWithRetry_respectsContextCancellation(t *testing.T) {
+	retryBaseDelay = time.Second // real delay so cancellation triggers first
+	defer func() { retryBaseDelay = time.Second }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &mockLLM{failCount: 10, answer: "never"}
+
+	// Cancel immediately after the first failure's backoff starts
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := generateWithRetry(ctx, m, "test", "users.x")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
 
 func TestBuildPrompt_WithAppContext(t *testing.T) {
 	prompt := buildPrompt("products", "name", "varchar", "id,name,price", "products,users", "TacoShop")
