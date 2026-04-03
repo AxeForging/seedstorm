@@ -88,11 +88,12 @@ func (m tablePickerModel) Update(msg tea.Msg) (tablePickerModel, tea.Cmd) {
 }
 
 func (m tablePickerModel) visibleRows() int {
-	// Reserve lines for header + help
-	available := m.height - 8
-	if available < 5 {
-		available = 5
+	h := m.height
+	if h < 20 {
+		h = 40 // fallback if WindowSizeMsg hasn't arrived
 	}
+	// Reserve ~8 lines for header/breadcrumb + title + footer/help
+	available := h - 8
 	if available > len(m.items) {
 		available = len(m.items)
 	}

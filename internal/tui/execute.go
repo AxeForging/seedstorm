@@ -170,10 +170,14 @@ func (m executeModel) View() string {
 			lines = append(lines, "")
 		}
 
-		// Scrollable view
-		visible := m.height - 10
-		if visible < 5 {
-			visible = 5
+		// Scrollable view — header takes ~6 lines, footer ~2
+		h := m.height
+		if h < 20 {
+			h = 40 // fallback if WindowSizeMsg hasn't arrived yet
+		}
+		visible := h - 8
+		if visible > len(lines) {
+			visible = len(lines)
 		}
 		if m.dryRunScroll > len(lines)-visible {
 			m.dryRunScroll = len(lines) - visible
