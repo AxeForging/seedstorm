@@ -187,6 +187,7 @@ seedstorm seed \
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
 | `--batch-size` | `100` | Number of rows per INSERT statement (batched multi-row VALUES) |
 | `--seed` | `0` | Random seed for reproducible generation (0 = random) |
+| `--interactive` / `-i` | false | Launch interactive TUI to select tables and configure seeding |
 
 ---
 
