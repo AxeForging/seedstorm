@@ -196,26 +196,17 @@ func (m GapsModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.config.done {
 		selected := m.picker.selectedTables()
-		var tables []string
-		for _, t := range m.sortedAll {
-			cleanName := t
-			if selected[t] || selected[cleanTableName(t)] {
-				tables = append(tables, cleanName)
-			}
-		}
-		// Also include auto-resolved tables
 		cleanSelected := make(map[string]bool)
 		for name := range selected {
 			cleanSelected[cleanTableName(name)] = true
 		}
 		resolved, _ := ResolveDeps(m.graph, cleanSelected, m.sortedAll)
-		tables = resolved
 
 		parents := make(map[string][]string)
-		for _, t := range tables {
+		for _, t := range resolved {
 			parents[t] = m.graph.Parents(t)
 		}
-		m.review = newReview(tables, parents,
+		m.review = newReview(resolved, parents,
 			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), false)
 		m.step = gapsStepReview
 	}

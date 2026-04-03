@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -68,12 +69,11 @@ func newGenConfig(rows int, format, outPath string) genConfigModel {
 }
 
 func (m genConfigModel) Rows() int {
-	v := 0
-	fmt.Sscanf(strings.TrimSpace(m.rowsInput.Value()), "%d", &v)
-	if v < 1 {
+	n, err := strconv.Atoi(strings.TrimSpace(m.rowsInput.Value()))
+	if err != nil || n < 1 {
 		return 10
 	}
-	return v
+	return n
 }
 func (m genConfigModel) Format() string  { return genFormats[m.formatIdx] }
 func (m genConfigModel) OutPath() string { return strings.TrimSpace(m.outInput.Value()) }
