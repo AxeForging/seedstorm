@@ -43,6 +43,11 @@ to the desired output format. Supports sql, csv, and json.`,
 				Usage: "Database type for SQL output: mysql or postgres",
 				Value: "postgres",
 			},
+			&cli.IntFlag{
+				Name:  "batch-size",
+				Usage: "Number of rows per INSERT statement for SQL output",
+				Value: 100,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -50,6 +55,7 @@ to the desired output format. Supports sql, csv, and json.`,
 			format := cmd.String("format")
 			outPath := cmd.String("out")
 			dbType := normalizeDBType(cmd.String("db"))
+			batchSize := cmd.Int("batch-size")
 
 			log.Info().Str("path", dataPath).Msg("Loading data file")
 
@@ -79,8 +85,12 @@ to the desired output format. Supports sql, csv, and json.`,
 			default: // sql
 				var sb strings.Builder
 				for tableName, rows := range data {
-					for _, row := range rows {
-						query, _ := buildInsert(tableName, row, dbType)
+					for i := 0; i < len(rows); i += batchSize {
+						end := i + batchSize
+						if end > len(rows) {
+							end = len(rows)
+						}
+						query, _ := buildBatchInsert(tableName, rows[i:end], dbType)
 						sb.WriteString(query)
 						sb.WriteString(";\n")
 					}

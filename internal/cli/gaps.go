@@ -70,6 +70,11 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Aliases: []string{"y"},
 				Usage:   "Skip confirmation prompt (use with --fill)",
 			},
+			&cli.IntFlag{
+				Name:  "batch-size",
+				Usage: "Number of rows per INSERT statement (batched multi-row VALUES)",
+				Value: 100,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -81,6 +86,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			fill := cmd.Bool("fill")
 			dryRun := cmd.Bool("dry-run")
 			yes := cmd.Bool("yes")
+			batchSize := cmd.Int("batch-size")
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
@@ -173,14 +179,21 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 					Int("rows", len(tableRows)).
 					Msg("Seeding table")
 
-				for _, row := range tableRows {
-					query, values := buildInsert(tableName, row, dbType)
-					if dryRun {
+				if dryRun {
+					for _, row := range tableRows {
+						query, _ := buildInsert(tableName, row, dbType)
 						fmt.Println(query)
-						continue
 					}
-					if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
-						return fmt.Errorf("insert into %s failed: %w", tableName, err)
+				} else {
+					for i := 0; i < len(tableRows); i += batchSize {
+						end := i + batchSize
+						if end > len(tableRows) {
+							end = len(tableRows)
+						}
+						query, values := buildBatchInsert(tableName, tableRows[i:end], dbType)
+						if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
+							return fmt.Errorf("insert into %s failed: %w", tableName, err)
+						}
 					}
 				}
 				totalRows += len(tableRows)
