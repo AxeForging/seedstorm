@@ -423,6 +423,252 @@ func TestGenerate_uuidPK_FKReference(t *testing.T) {
 	}
 }
 
+// ── generate() faker type coverage ───────────────────────────────────────────
+
+func TestGenerate_allFakerTypes(t *testing.T) {
+	// Every supported faker type must produce a non-nil value of the right kind
+	tests := []struct {
+		faker   string
+		wantStr bool // true = string result expected, false = any non-nil
+	}{
+		{"name", true}, {"firstname", true}, {"lastname", true}, {"username", true},
+		{"email", true}, {"phone", true}, {"street", true}, {"city", true},
+		{"state", true}, {"country", true}, {"zip", true}, {"url", true},
+		{"uuid", true}, {"ipv4", true}, {"macaddress", true}, {"hexcolor", true},
+		{"productname", true}, {"company", true}, {"jobtitle", true},
+		{"word", true}, {"sentence", true}, {"date", true}, {"time", true},
+		{"json", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.faker, func(t *testing.T) {
+			val, err := generate(tt.faker)
+			if err != nil {
+				t.Fatalf("generate(%q): %v", tt.faker, err)
+			}
+			if val == nil {
+				t.Fatalf("generate(%q) returned nil", tt.faker)
+			}
+			if tt.wantStr {
+				if _, ok := val.(string); !ok {
+					t.Errorf("generate(%q) returned %T, want string", tt.faker, val)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerate_numericFakers(t *testing.T) {
+	val, err := generate("number(1,100)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := val.(int)
+	if !ok {
+		t.Fatalf("number() returned %T, want int", val)
+	}
+	if n < 1 || n > 100 {
+		t.Errorf("number(1,100) = %d, want 1-100", n)
+	}
+}
+
+func TestGenerate_priceFaker(t *testing.T) {
+	val, err := generate("price(10,500)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := val.(float64)
+	if !ok {
+		t.Fatalf("price() returned %T, want float64", val)
+	}
+	if f < 10 || f > 500 {
+		t.Errorf("price(10,500) = %f, want 10-500", f)
+	}
+}
+
+func TestGenerate_randomstringFaker(t *testing.T) {
+	val, err := generate("randomstring(apple,banana,cherry)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := val.(string)
+	if !ok {
+		t.Fatalf("randomstring() returned %T, want string", val)
+	}
+	if s != "apple" && s != "banana" && s != "cherry" {
+		t.Errorf("randomstring() = %q, want one of apple/banana/cherry", s)
+	}
+}
+
+func TestGenerate_randomstringWithParens(t *testing.T) {
+	val, err := generate("randomstring(Coffee (500g),Tea (250g))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := val.(string)
+	if !ok {
+		t.Fatalf("returned %T, want string", val)
+	}
+	if s != "Coffee (500g)" && s != "Tea (250g)" {
+		t.Errorf("got %q, want one of the values with parens", s)
+	}
+}
+
+func TestGenerate_paragraphFaker(t *testing.T) {
+	val, err := generate("paragraph(2)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := val.(string)
+	if !ok {
+		t.Fatalf("paragraph() returned %T, want string", val)
+	}
+	if len(s) < 20 {
+		t.Errorf("paragraph(2) too short: %q", s)
+	}
+}
+
+func TestGenerate_boolFaker(t *testing.T) {
+	val, err := generate("bool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := val.(bool); !ok {
+		t.Errorf("bool returned %T, want bool", val)
+	}
+}
+
+func TestGenerate_datetimeFaker(t *testing.T) {
+	val, err := generate("datetime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val == nil {
+		t.Fatal("datetime returned nil")
+	}
+	// datetime returns time.Time
+	if fmt.Sprintf("%T", val) != "time.Time" {
+		t.Errorf("datetime returned %T, want time.Time", val)
+	}
+}
+
+func TestGenerate_emptyFaker(t *testing.T) {
+	val, err := generate("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != nil {
+		t.Errorf("empty faker should return nil, got %v", val)
+	}
+}
+
+func TestGenerate_unknownFakerFallsBackToWord(t *testing.T) {
+	val, err := generate("notarealfunction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val == nil {
+		t.Fatal("unknown faker should return a fallback word, got nil")
+	}
+	if _, ok := val.(string); !ok {
+		t.Errorf("unknown faker fallback should be string, got %T", val)
+	}
+}
+
+func TestGenerate_float64Faker(t *testing.T) {
+	val, err := generate("float64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := val.(float64); !ok {
+		t.Errorf("float64 returned %T, want float64", val)
+	}
+}
+
+func TestGenerate_latitudeLongitude(t *testing.T) {
+	lat, err := generate("latitude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lng, err := generate("longitude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	latF, ok := lat.(float64)
+	if !ok {
+		t.Fatalf("latitude returned %T", lat)
+	}
+	lngF, ok := lng.(float64)
+	if !ok {
+		t.Fatalf("longitude returned %T", lng)
+	}
+	if latF < -90 || latF > 90 {
+		t.Errorf("latitude %f out of range", latF)
+	}
+	if lngF < -180 || lngF > 180 {
+		t.Errorf("longitude %f out of range", lngF)
+	}
+}
+
+// ── generateValue edge cases ────────────────────────────────────────────────
+
+func TestGenerateValue_FKReturnsExistingPK(t *testing.T) {
+	col := schema.Column{Type: "integer", FK: "users.id"}
+	pks := map[string][]interface{}{"users": {10, 20, 30}}
+	val, err := generateValue(col, "user_id", "orders", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := val.(int)
+	if v != 10 && v != 20 && v != 30 {
+		t.Errorf("FK value %d not in parent PKs [10,20,30]", v)
+	}
+}
+
+func TestGenerateValue_NullableFKWithNoParents(t *testing.T) {
+	col := schema.Column{Type: "integer", FK: "depts.id", Nullable: true}
+	pks := map[string][]interface{}{} // no parent PKs
+	val, err := generateValue(col, "dept_id", "employees", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != nil {
+		t.Errorf("nullable FK with no parents should be nil, got %v", val)
+	}
+}
+
+func TestGenerateValue_SelfRefFKReturnsNil(t *testing.T) {
+	col := schema.Column{Type: "integer", FK: "cats.id"}
+	pks := map[string][]interface{}{} // no PKs yet for self
+	val, err := generateValue(col, "parent_id", "cats", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != nil {
+		t.Errorf("self-ref FK with no PKs should be nil, got %v", val)
+	}
+}
+
+func TestGenerateValue_NonNullableFKWithNoParents_Errors(t *testing.T) {
+	col := schema.Column{Type: "integer", FK: "missing.id"}
+	pks := map[string][]interface{}{}
+	_, err := generateValue(col, "missing_id", "orders", pks, nil, "")
+	if err == nil {
+		t.Fatal("expected error for non-nullable FK with no parent PKs")
+	}
+}
+
+func TestGenerateValue_NumericCoercedToStringForVarchar(t *testing.T) {
+	col := schema.Column{Type: "varchar", Faker: "number(1,100)"}
+	pks := map[string][]interface{}{}
+	val, err := generateValue(col, "code", "items", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := val.(string); !ok {
+		t.Errorf("numeric value for varchar column should be coerced to string, got %T", val)
+	}
+}
+
 // ── reproducible seed ────────────────────────────────────────────────────────
 
 func TestGenerate_reproducibleWithSeed(t *testing.T) {

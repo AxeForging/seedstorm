@@ -299,6 +299,71 @@ func TestRenderPlan_rootHasDash(t *testing.T) {
 	}
 }
 
+// ── Parents / Children ──────────────────────────────────────────────────────
+
+func TestParents_returnsHardFKParents(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users":    {"id": {PK: true}},
+		"brands":   {"id": {PK: true}},
+		"products": {"id": {PK: true}, "brand_id": {FK: "brands.id"}, "user_id": {FK: "users.id"}},
+	})
+	g := Build(s)
+	parents := g.Parents("products")
+	if len(parents) != 2 {
+		t.Fatalf("expected 2 parents, got %d: %v", len(parents), parents)
+	}
+	// sorted alphabetically
+	if parents[0] != "brands" || parents[1] != "users" {
+		t.Errorf("expected [brands users], got %v", parents)
+	}
+}
+
+func TestParents_nullableFKNotIncluded(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users":  {"id": {PK: true}},
+		"orders": {"id": {PK: true}, "user_id": {FK: "users.id", Nullable: true}},
+	})
+	g := Build(s)
+	parents := g.Parents("orders")
+	if len(parents) != 0 {
+		t.Errorf("nullable FK should not appear in Parents, got %v", parents)
+	}
+}
+
+func TestParents_rootTableHasNone(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users": {"id": {PK: true}},
+	})
+	g := Build(s)
+	if parents := g.Parents("users"); len(parents) != 0 {
+		t.Errorf("root table should have no parents, got %v", parents)
+	}
+}
+
+func TestChildren_returnsDirectChildren(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users":  {"id": {PK: true}},
+		"orders": {"id": {PK: true}, "user_id": {FK: "users.id"}},
+		"posts":  {"id": {PK: true}, "user_id": {FK: "users.id"}},
+	})
+	g := Build(s)
+	children := g.Children("users")
+	if len(children) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(children), children)
+	}
+}
+
+func TestChildren_leafTableHasNone(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users":  {"id": {PK: true}},
+		"orders": {"id": {PK: true}, "user_id": {FK: "users.id"}},
+	})
+	g := Build(s)
+	if children := g.Children("orders"); len(children) != 0 {
+		t.Errorf("leaf table should have no children, got %v", children)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func posOf(sorted []string) map[string]int {
