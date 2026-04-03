@@ -54,6 +54,7 @@ type executeModel struct {
 	dryRunTables    []dryRunTable
 	dryRunTotal     int
 	dryRunScroll    int
+	dryRunLines     int // total line count for scroll clamping
 	err             error
 	quitting        bool
 	seededTables    []string
@@ -86,7 +87,13 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 			}
 			return m, nil
 		case "down", "j":
-			m.dryRunScroll++
+			maxScroll := m.dryRunLines - m.dryRunVisible()
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.dryRunScroll < maxScroll {
+				m.dryRunScroll++
+			}
 			return m, nil
 		}
 	case tea.WindowSizeMsg:
@@ -107,6 +114,8 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 		m.dryRunTables = msg.tables
 		m.dryRunTotal = msg.total
 		m.err = msg.err
+		// Pre-compute line count: each table = 3 lines (name + sample + blank)
+		m.dryRunLines = len(msg.tables) * 3
 		return m, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -115,6 +124,16 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// dryRunVisible returns how many content lines fit in the scrollable area.
+// Reserves space for: breadcrumb(2) + title(2) + summary(2) + footer(4) = ~10 lines.
+func (m executeModel) dryRunVisible() int {
+	h := m.height
+	if h < 20 {
+		h = 40
+	}
+	return h - 10
 }
 
 func (m executeModel) View() string {
@@ -134,17 +153,13 @@ func (m executeModel) View() string {
 			return sb.String()
 		}
 
-		sb.WriteString(successStyle.Render(fmt.Sprintf("  Would generate %d rows across %d tables\n", m.dryRunTotal, len(m.dryRunTables))))
-		sb.WriteString("\n")
-
-		// Build all lines first, then apply scroll
+		// Build all content lines
 		var lines []string
 		for _, dt := range m.dryRunTables {
 			lines = append(lines, fmt.Sprintf("  %s  %s",
 				selectedStyle.Render(fmt.Sprintf("%-28s", dt.name)),
 				dimStyle.Render(fmt.Sprintf("%d rows", dt.rows))))
 
-			// Show sample row preview (first 3 columns)
 			if dt.sample != nil {
 				maxPreview := 3
 				if len(dt.columns) < maxPreview {
@@ -170,35 +185,40 @@ func (m executeModel) View() string {
 			lines = append(lines, "")
 		}
 
-		// Scrollable view — header takes ~6 lines, footer ~2
-		h := m.height
-		if h < 20 {
-			h = 40 // fallback if WindowSizeMsg hasn't arrived yet
-		}
-		visible := h - 8
+		// Scrollable content area
+		visible := m.dryRunVisible()
 		if visible > len(lines) {
 			visible = len(lines)
 		}
-		if m.dryRunScroll > len(lines)-visible {
-			m.dryRunScroll = len(lines) - visible
+		scroll := m.dryRunScroll
+		maxScroll := len(lines) - visible
+		if maxScroll < 0 {
+			maxScroll = 0
 		}
-		if m.dryRunScroll < 0 {
-			m.dryRunScroll = 0
+		if scroll > maxScroll {
+			scroll = maxScroll
 		}
-		end := m.dryRunScroll + visible
+		if scroll < 0 {
+			scroll = 0
+		}
+		end := scroll + visible
 		if end > len(lines) {
 			end = len(lines)
 		}
-		for _, line := range lines[m.dryRunScroll:end] {
+		for _, line := range lines[scroll:end] {
 			sb.WriteString(line)
 			sb.WriteString("\n")
 		}
 
+		// ── Sticky footer — always visible ──
+		sb.WriteString("\n")
+		sb.WriteString(strings.Repeat("─", 60))
+		sb.WriteString("\n")
+		sb.WriteString(successStyle.Render(fmt.Sprintf("  %d tables • %d total rows", len(m.dryRunTables), m.dryRunTotal)))
 		if len(lines) > visible {
-			sb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑/↓ scroll (%d-%d of %d lines)", m.dryRunScroll+1, end, len(lines))))
-			sb.WriteString("\n")
+			sb.WriteString(dimStyle.Render(fmt.Sprintf("  (scroll %d/%d)", scroll+visible, len(lines))))
 		}
-
+		sb.WriteString("\n")
 		sb.WriteString(helpStyle.Render("  ↑/↓ scroll • q quit"))
 		return sb.String()
 	}
