@@ -1,3 +1,5 @@
 bin/
 dist/
 seedstorm
+docs/casts/
+docs/gifs/*.cast

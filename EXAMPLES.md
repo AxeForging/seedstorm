@@ -18,6 +18,13 @@ End-to-end walkthroughs for common seedstorm workflows. All examples assume loca
 
 ## 1. Basic Seeding (no AI)
 
+<details>
+<summary><strong>Demo</strong> — introspect + seed a 28-table schema</summary>
+
+<img src="docs/gifs/basic-seed.gif" alt="seedstorm introspect + seed" width="720" />
+
+</details>
+
 Introspect a live database, then seed it with 50 rows per table using automatic faker mapping.
 
 ```bash
@@ -173,6 +180,20 @@ Logistics           | 294827.33
 
 ## 3. Partial Seeding with Gaps
 
+<details>
+<summary><strong>Demo</strong> — find and fill empty tables</summary>
+
+<img src="docs/gifs/gaps.gif" alt="seedstorm gaps" width="720" />
+
+</details>
+
+<details>
+<summary><strong>Demo</strong> — gaps interactive mode</summary>
+
+<img src="docs/gifs/gaps-interactive.gif" alt="seedstorm gaps --interactive" width="720" />
+
+</details>
+
 Seed some tables first, then use `gaps` to find and fill empty tables without touching existing data.
 
 ```bash
@@ -256,6 +277,13 @@ Auto-dependency resolution works the same as `seed -i` — selecting a child aut
 
 ## 4. Reproducible Generation
 
+<details>
+<summary><strong>Demo</strong> — generate with --seed for deterministic output</summary>
+
+<img src="docs/gifs/generate.gif" alt="seedstorm generate" width="720" />
+
+</details>
+
 Use `--seed` for deterministic output — same schema + same seed = identical data every time.
 
 ```bash
@@ -275,6 +303,13 @@ Useful for:
 ---
 
 ## 5. Dry-Run Inspection
+
+<details>
+<summary><strong>Demo</strong> — preview seed plan and SQL without executing</summary>
+
+<img src="docs/gifs/seed-dry-run.gif" alt="seedstorm seed --dry-run" width="720" />
+
+</details>
 
 Preview the seed plan (table ordering + FK dependencies) and generated SQL before executing anything.
 
@@ -316,6 +351,13 @@ INSERT INTO "tags" ("id", "name") VALUES ($1, $2);
 ---
 
 ## 6. Interactive Mode
+
+<details>
+<summary><strong>Demo</strong> — TUI wizard for table selection, config, review, and dry-run</summary>
+
+<img src="docs/gifs/seed-interactive.gif" alt="seedstorm seed --interactive" width="720" />
+
+</details>
 
 Launch a TUI wizard to visually select tables, configure options, review the plan, and execute — all without memorizing flags.
 
@@ -529,6 +571,13 @@ seedstorm seed \
 
 ## 8. Generate with Interactive Mode
 
+<details>
+<summary><strong>Demo</strong> — TUI wizard for offline data generation</summary>
+
+<img src="docs/gifs/generate-interactive.gif" alt="seedstorm generate --interactive" width="720" />
+
+</details>
+
 Use interactive mode to visually select tables, pick output format, and preview generated data — no flags to memorize.
 
 ```bash
@@ -563,6 +612,13 @@ A 3-step wizard: **Tables → Config → Generate**
 ---
 
 ## 9. Export Formats
+
+<details>
+<summary><strong>Demo</strong> — generate YAML, then export to CSV, SQL, and JSON</summary>
+
+<img src="docs/gifs/export.gif" alt="seedstorm export" width="720" />
+
+</details>
 
 Generate data without a database connection and export to different formats.
 
