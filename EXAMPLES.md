@@ -71,6 +71,13 @@ What you get without AI:
 
 ## 2. AI-Enriched Seeding
 
+<details>
+<summary><strong>Demo</strong> — AI-enrich a schema with Gemini, then seed with domain-realistic data</summary>
+
+<img src="docs/gifs/ai-enrich.gif" alt="seedstorm ai-enrich" width="720" />
+
+</details>
+
 Add Gemini enrichment for domain-aware data. The AI reads your full schema and generates realistic values based on what each column *means* in context.
 
 ```bash
