@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -55,9 +56,13 @@ func execScript(t *testing.T, conn *sql.DB, path string) {
 	if err != nil {
 		t.Fatalf("read script %s: %v", path, err)
 	}
+	execSQL(t, conn, string(raw))
+}
+
+func execSQL(t *testing.T, conn *sql.DB, body string) {
+	t.Helper()
 	// Split on ; and execute each statement
-	stmts := strings.Split(string(raw), ";")
-	for _, stmt := range stmts {
+	for _, stmt := range strings.Split(body, ";") {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -66,6 +71,62 @@ func execScript(t *testing.T, conn *sql.DB, path string) {
 			t.Fatalf("exec statement [%.80s...]: %v", stmt, err)
 		}
 	}
+}
+
+// execMySQLSchema loads schema_mysql.sql, downgrading any 8.0-only DDL shapes
+// when the server doesn't support them, and executes the result. This keeps a
+// single source of truth for the modern schema while still exercising the
+// same table structure on MySQL 5.7.
+func execMySQLSchema(t *testing.T, conn *sql.DB, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read script %s: %v", path, err)
+	}
+	sql := string(raw)
+	// DEFAULT (<expr>) — functional column defaults — requires MySQL 8.0.13+.
+	// We key off CHECK_CONSTRAINTS support (8.0.16+) as the single
+	// "is this a modern MySQL?" probe for the test matrix.
+	if !mysqlHasCheckSupport(t, conn) {
+		sql = stripMySQLFunctionalDefaults(sql)
+	}
+	execSQL(t, conn, sql)
+}
+
+// stripMySQLFunctionalDefaults removes `DEFAULT (<expr>)` clauses from a DDL
+// script. seedstorm provides a value for every column at INSERT time, so the
+// default itself is never exercised during seeding — dropping it on older
+// MySQL preserves table shape without changing seeding behaviour.
+func stripMySQLFunctionalDefaults(sqlText string) string {
+	return reMySQLFuncDefault.ReplaceAllString(sqlText, "")
+}
+
+// Matches the two functional defaults used in the test schema. Kept explicit
+// rather than a generic `DEFAULT (...)` matcher because balanced parens (e.g.
+// `UUID()` inside the outer `DEFAULT (...)`) would require a non-regular
+// matcher — and an explicit allow-list makes it obvious what we're downgrading.
+var reMySQLFuncDefault = regexp.MustCompile(`(?i)\s+DEFAULT\s+\(UUID\(\)\)`)
+
+// mysqlHasCheckSupport reports whether this MySQL server exposes
+// information_schema.CHECK_CONSTRAINTS (MySQL 8.0.16+). Used to skip
+// CHECK-dependent subtests on older servers where seedstorm can't introspect
+// the constraint even though the DDL parses successfully.
+func mysqlHasCheckSupport(t *testing.T, conn *sql.DB) bool {
+	t.Helper()
+	var one int
+	err := conn.QueryRowContext(context.Background(), `
+		SELECT 1
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = 'information_schema'
+		  AND TABLE_NAME   = 'CHECK_CONSTRAINTS'
+		LIMIT 1`).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("probe CHECK_CONSTRAINTS support: %v", err)
+	}
+	return true
 }
 
 func countRows(t *testing.T, conn *sql.DB, table string) int {
@@ -1381,7 +1442,7 @@ func TestMySQLIntegration(t *testing.T) {
 	defer conn.Close()
 
 	t.Run("setup schema", func(t *testing.T) {
-		execScript(t, conn, "schema_mysql.sql")
+		execMySQLSchema(t, conn, "schema_mysql.sql")
 	})
 
 	var data map[string][]map[string]interface{}
@@ -2329,7 +2390,16 @@ func TestMySQLIntegration(t *testing.T) {
 		t.Error("coupons.code column not found in introspection result")
 	})
 
+	hasCheck := mysqlHasCheckSupport(t, conn)
+	skipIfNoCheck := func(t *testing.T) {
+		t.Helper()
+		if !hasCheck {
+			t.Skip("MySQL server does not expose information_schema.CHECK_CONSTRAINTS (requires 8.0.16+)")
+		}
+	}
+
 	t.Run("constraint: users.role CHECK values detected", func(t *testing.T) {
+		skipIfNoCheck(t)
 		tables, err := db.Introspect(mysqlDriver, dsn)
 		if err != nil {
 			t.Fatalf("introspect: %v", err)
@@ -2363,6 +2433,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("constraint: users.role gets randomstring faker (CHECK)", func(t *testing.T) {
+		skipIfNoCheck(t)
 		tables, err := db.Introspect(mysqlDriver, dsn)
 		if err != nil {
 			t.Fatalf("introspect: %v", err)
@@ -2386,6 +2457,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("constraint: users.role values all within CHECK set after seed", func(t *testing.T) {
+		skipIfNoCheck(t)
 		var bad int
 		if err := conn.QueryRowContext(context.Background(),
 			"SELECT COUNT(*) FROM users WHERE role NOT IN ('admin', 'user', 'guest')").Scan(&bad); err != nil {
@@ -2419,6 +2491,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("constraint: products.rating detected as range CHECK", func(t *testing.T) {
+		skipIfNoCheck(t)
 		tables, err := db.Introspect(mysqlDriver, dsn)
 		if err != nil {
 			t.Fatalf("introspect: %v", err)
@@ -2446,6 +2519,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("constraint: products.rating gets number faker (range CHECK)", func(t *testing.T) {
+		skipIfNoCheck(t)
 		tables, err := db.Introspect(mysqlDriver, dsn)
 		if err != nil {
 			t.Fatalf("introspect: %v", err)
@@ -2468,6 +2542,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("constraint: products.rating values within range after seed", func(t *testing.T) {
+		skipIfNoCheck(t)
 		var bad int
 		if err := conn.QueryRowContext(context.Background(),
 			"SELECT COUNT(*) FROM products WHERE rating < 1 OR rating > 5").Scan(&bad); err != nil {
@@ -2552,7 +2627,7 @@ func TestMySQLIntegration(t *testing.T) {
 	})
 
 	t.Run("teardown", func(t *testing.T) {
-		execScript(t, conn, "schema_mysql.sql") // re-run drops everything
+		execMySQLSchema(t, conn, "schema_mysql.sql") // re-run drops everything
 	})
 }
 
@@ -2881,7 +2956,7 @@ func TestMySQLGaps(t *testing.T) {
 	defer conn.Close()
 
 	t.Run("setup schema", func(t *testing.T) {
-		execScript(t, conn, "schema_mysql.sql")
+		execMySQLSchema(t, conn, "schema_mysql.sql")
 	})
 
 	var (
@@ -3025,6 +3100,6 @@ func TestMySQLGaps(t *testing.T) {
 	})
 
 	t.Run("teardown", func(t *testing.T) {
-		execScript(t, conn, "schema_mysql.sql")
+		execMySQLSchema(t, conn, "schema_mysql.sql")
 	})
 }
