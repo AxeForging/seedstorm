@@ -516,7 +516,25 @@ Expected output:
 
 ### CI
 
-All tests (unit, integration, lint, structlint) run automatically on every PR via GitHub Actions with MySQL 8 and PostgreSQL 15 service containers. No infrastructure needed in CI.
+All tests (unit, integration, lint, structlint) run automatically on every PR via GitHub Actions. The integration job runs as a matrix across the supported database versions (below), so every PR exercises each pair.
+
+### Supported database versions
+
+The integration suite is run against these combinations on every PR:
+
+| Postgres | MySQL |
+|----------|-------|
+| 13-alpine | 8.0 |
+| 15-alpine | 8.0 |
+| 17-alpine | 8.4 |
+
+Locally, override the image tag via env vars when bringing the stack up:
+
+```bash
+POSTGRES_VERSION=17-alpine MYSQL_VERSION=8.4 make dev-up
+```
+
+Defaults are `postgres:15-alpine` and `mysql:8.0`. MySQL 8.0.16+ is required for CHECK constraint introspection.
 
 ---
 
