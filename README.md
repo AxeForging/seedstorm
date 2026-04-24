@@ -522,11 +522,12 @@ All tests (unit, integration, lint, structlint) run automatically on every PR vi
 
 The integration suite is run against these combinations on every PR:
 
-| Postgres | MySQL |
-|----------|-------|
-| 13-alpine | 8.0 |
-| 15-alpine | 8.0 |
-| 17-alpine | 8.4 |
+| Postgres | MySQL | Notes |
+|----------|-------|-------|
+| 13-alpine | 5.7 | CHECK-constraint subtests skipped (5.7 does not expose `information_schema.CHECK_CONSTRAINTS`) |
+| 13-alpine | 8.0 | |
+| 15-alpine | 8.0 | default |
+| 17-alpine | 8.4 | |
 
 Locally, override the image tag via env vars when bringing the stack up:
 
@@ -534,7 +535,7 @@ Locally, override the image tag via env vars when bringing the stack up:
 POSTGRES_VERSION=17-alpine MYSQL_VERSION=8.4 make dev-up
 ```
 
-Defaults are `postgres:15-alpine` and `mysql:8.0`. MySQL 8.0.16+ is required for CHECK constraint introspection.
+Defaults are `postgres:15-alpine` and `mysql:8.0`. CHECK-constraint introspection requires MySQL 8.0.16+; on older servers the column's CHECK clause is ignored rather than failing the run.
 
 ---
 

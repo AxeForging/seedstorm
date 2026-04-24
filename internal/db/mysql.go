@@ -42,14 +42,25 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 		return nil, err
 	}
 
-	checkMap, err := mysqlCheckMap(db, dbName)
+	// CHECK constraint introspection requires MySQL 8.0.16+, which is when
+	// information_schema.CHECK_CONSTRAINTS was introduced. On 5.7 and earlier
+	// we skip these maps; CHECK clauses are parsed as syntax but not enforced
+	// or stored in metadata on those versions.
+	var checkMap map[string]map[string][]string
+	var rangeMap map[string]map[string]rangeConstraint
+	supportsCheck, err := mysqlSupportsCheckConstraints(db)
 	if err != nil {
 		return nil, err
 	}
-
-	rangeMap, err := mysqlRangeMap(db, dbName)
-	if err != nil {
-		return nil, err
+	if supportsCheck {
+		checkMap, err = mysqlCheckMap(db, dbName)
+		if err != nil {
+			return nil, err
+		}
+		rangeMap, err = mysqlRangeMap(db, dbName)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var tables []Table
@@ -62,6 +73,25 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 	}
 
 	return tables, nil
+}
+
+// mysqlSupportsCheckConstraints reports whether the server exposes
+// information_schema.CHECK_CONSTRAINTS. Introduced in MySQL 8.0.16.
+func mysqlSupportsCheckConstraints(db *sql.DB) (bool, error) {
+	var one int
+	err := db.QueryRow(`
+		SELECT 1
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = 'information_schema'
+		  AND TABLE_NAME   = 'CHECK_CONSTRAINTS'
+		LIMIT 1`).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to probe CHECK_CONSTRAINTS support: %w", err)
+	}
+	return true, nil
 }
 
 func mysqlFKMap(db *sql.DB, dbName string) (map[string]map[string]*ForeignKey, error) {
