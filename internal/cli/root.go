@@ -16,6 +16,7 @@ func Commands() []*cli.Command {
 		gapsCmd(),
 		generateCmd(),
 		exportCmd(),
+		serveCmd(),
 		versionCmd(),
 		completionCmd(),
 	}

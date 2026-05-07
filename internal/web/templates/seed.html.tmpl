@@ -1,0 +1,33 @@
+{{define "content"}}
+<section class="card stack">
+  <h1>Seed</h1>
+  <p class="muted">Generates fake data and inserts into the connected database.</p>
+  <form id="run-form" data-endpoint="/api/seed" class="grid-2">
+    <label class="field">
+      <span class="field-label">Rows per table</span>
+      <input name="rows" type="number" value="100" min="1">
+    </label>
+    <label class="field">
+      <span class="field-label">Batch size</span>
+      <input name="batchSize" type="number" value="100" min="1">
+    </label>
+    <label class="field">
+      <span class="field-label">Enum rows (per value, 0 = use rows)</span>
+      <input name="enumRows" type="number" value="0" min="0">
+    </label>
+    <label class="field row inline">
+      <input name="disableFK" type="checkbox"> Disable FK ordering
+    </label>
+    <label class="field row inline">
+      <input name="truncate" type="checkbox"> Truncate tables first
+    </label>
+    <label class="field row inline">
+      <input name="dryRun" type="checkbox"> Dry run (don't write)
+    </label>
+    <div class="span-2 actions">
+      <button class="btn-primary" type="submit">Run seed</button>
+    </div>
+  </form>
+  {{template "joblog" .}}
+</section>
+{{end}}

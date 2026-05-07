@@ -1,0 +1,93 @@
+{{define "content"}}
+<section class="workspace">
+  <aside class="ws-rail">
+    <header class="ws-rail-head">
+      <h2>Workspace</h2>
+      <p class="muted small">Click tables in the graph to select. Non-nullable parents auto-lock.</p>
+    </header>
+
+    <div class="ws-toolbar">
+      <button class="btn-ghost" data-act="all">All</button>
+      <button class="btn-ghost" data-act="empty">Empty</button>
+      <button class="btn-ghost" data-act="none">None</button>
+      <button class="btn-ghost" data-act="invert">Invert</button>
+      <button class="btn-ghost" data-act="refresh" title="Refresh row counts">↻</button>
+    </div>
+
+    <div class="ws-tabs">
+      <button class="ws-tab active" data-tab="selected">Selected</button>
+      <button class="ws-tab" data-tab="detail">Table</button>
+      <button class="ws-tab" data-tab="logs">Logs</button>
+    </div>
+
+    <div class="ws-tab-body" data-tab="selected">
+      <div class="ws-counter">
+        <span id="ws-count-selected">0</span> selected ·
+        <span id="ws-count-auto">0</span> auto-locked ·
+        <span id="ws-count-total">0</span> total
+      </div>
+      <ol class="ws-selected-list" id="ws-selected-list"></ol>
+      <p class="muted small empty-hint" id="ws-selected-empty">Nothing selected — click tables in the graph or hit <kbd>All</kbd>.</p>
+    </div>
+
+    <div class="ws-tab-body" data-tab="detail" hidden>
+      <div id="ws-detail">
+        <p class="muted small empty-hint">Right-click a table or use the info button to inspect its columns.</p>
+      </div>
+    </div>
+
+    <div class="ws-tab-body" data-tab="logs" hidden>
+      <div class="row spread">
+        <span class="status-pill" id="job-status">idle</span>
+        <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
+      </div>
+      <pre class="job-log" id="job-log"></pre>
+      <div id="job-result"></div>
+    </div>
+  </aside>
+
+  <div class="ws-canvas-wrap">
+    <div id="cy" class="ws-canvas"></div>
+    <div class="ws-legend muted small">
+      <span><i class="dot dot-sel"></i> selected</span>
+      <span><i class="dot dot-auto"></i> auto-locked parent</span>
+      <span><i class="dot dot-empty"></i> empty</span>
+      <span><i class="dot dot-pop"></i> populated</span>
+      <span><i class="line line-solid"></i> hard FK</span>
+      <span><i class="line line-dashed"></i> nullable FK</span>
+    </div>
+  </div>
+
+  <footer class="ws-actionbar">
+    <div class="ws-mode" role="tablist">
+      <button class="ws-mode-pill active" data-mode="seed">Seed</button>
+      <button class="ws-mode-pill" data-mode="gaps">Fill empty</button>
+      <button class="ws-mode-pill" data-mode="generate">Generate (no DB write)</button>
+    </div>
+    <div class="ws-config">
+      <label class="field-tight">
+        <span>Rows</span>
+        <input id="cfg-rows" type="number" value="20" min="1">
+      </label>
+      <label class="field-tight">
+        <span>Batch</span>
+        <input id="cfg-batch" type="number" value="100" min="1">
+      </label>
+      <label class="field-tight">
+        <span>Enum/value</span>
+        <input id="cfg-enum" type="number" value="0" min="0">
+      </label>
+      <label class="field-tight inline">
+        <input id="cfg-truncate" type="checkbox"> truncate
+      </label>
+      <label class="field-tight inline">
+        <input id="cfg-dryrun"   type="checkbox"> dry-run
+      </label>
+      <label class="field-tight inline">
+        <input id="cfg-disablefk" type="checkbox"> disable FK
+      </label>
+    </div>
+    <button class="btn-primary" id="ws-run">Run</button>
+  </footer>
+</section>
+{{end}}

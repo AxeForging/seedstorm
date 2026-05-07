@@ -1,0 +1,24 @@
+{{define "content"}}
+<section class="card stack">
+  <h1>Generate</h1>
+  <p class="muted">Generates fake rows from the live schema without writing to the database. Result is downloadable.</p>
+  <form id="run-form" data-endpoint="/api/generate" class="grid-2">
+    <label class="field">
+      <span class="field-label">Rows per table</span>
+      <input name="rows" type="number" value="10" min="1">
+    </label>
+    <label class="field">
+      <span class="field-label">Format</span>
+      <select name="format">
+        <option value="yaml">yaml</option>
+        <option value="json">json</option>
+        <option value="sql">sql</option>
+      </select>
+    </label>
+    <div class="span-2 actions">
+      <button class="btn-primary" type="submit">Generate</button>
+    </div>
+  </form>
+  {{template "joblog" .}}
+</section>
+{{end}}

@@ -1,0 +1,30 @@
+{{define "content"}}
+<section class="card stack">
+  <h1>Export</h1>
+  <p class="muted">Convert a generated data YAML payload to SQL, CSV, or JSON.</p>
+  <form id="run-form" data-endpoint="/api/export" class="stack">
+    <label class="field">
+      <span class="field-label">Data YAML</span>
+      <textarea name="dataYaml" rows="14" placeholder="paste output from Generate (yaml)…" required></textarea>
+    </label>
+    <div class="row">
+      <label class="field">
+        <span class="field-label">Format</span>
+        <select name="format">
+          <option value="sql">sql</option>
+          <option value="csv">csv</option>
+          <option value="json">json</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Batch size</span>
+        <input name="batchSize" type="number" value="100" min="1">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" type="submit">Export</button>
+    </div>
+  </form>
+  {{template "joblog" .}}
+</section>
+{{end}}

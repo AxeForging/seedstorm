@@ -1,0 +1,79 @@
+{{define "content"}}
+<section class="card stack">
+  <h1>Connect to a database</h1>
+  <p class="muted">seedstorm holds the password only in memory. Non-secret fields can be saved as a preset in your browser.</p>
+
+  <div class="row">
+    <label class="field">
+      <span class="field-label">Saved presets</span>
+      <select id="preset-picker">
+        <option value="">— none —</option>
+      </select>
+    </label>
+    <button class="btn-ghost" id="preset-delete" type="button" disabled>Delete preset</button>
+  </div>
+
+  <form method="post" action="/connect" id="connect-form" class="grid-2">
+    <label class="field">
+      <span class="field-label">DB type</span>
+      <select name="dbType" required>
+        <option value="postgres">postgres</option>
+        <option value="mysql">mysql</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">SSL mode (postgres)</span>
+      <select name="ssl">
+        <option value="disable">disable</option>
+        <option value="require">require</option>
+        <option value="verify-ca">verify-ca</option>
+        <option value="verify-full">verify-full</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Host</span>
+      <input name="host" value="localhost" required>
+    </label>
+    <label class="field">
+      <span class="field-label">Port</span>
+      <input name="port" type="number" value="5432" required>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Database</span>
+      <input name="dbName" required>
+    </label>
+    <label class="field">
+      <span class="field-label">User</span>
+      <input name="user" required>
+    </label>
+
+    <label class="field span-2">
+      <span class="field-label">Password</span>
+      <span class="input-eye">
+        <input name="password" id="conn-password" type="password" autocomplete="off">
+        <button type="button" id="toggle-password" class="eye-btn" aria-label="Reveal password" data-revealed="false">
+          <span class="eye-icon" aria-hidden="true">👁‍🗨</span>
+        </button>
+      </span>
+    </label>
+
+    <label class="field span-2">
+      <span class="field-label">Save preset as</span>
+      <span class="row inline">
+        <input id="preset-name" placeholder="leave blank to skip saving" style="flex:1;">
+        <label class="field-tight inline" title="Saved unencrypted in this browser's localStorage. Only do this on machines you trust.">
+          <input id="preset-include-pw" type="checkbox" checked>
+          include password
+        </label>
+      </span>
+      <span class="muted small">Presets are saved in your browser's localStorage. Passwords stay obfuscated until you click 👁.</span>
+    </label>
+
+    <div class="span-2 actions">
+      <button class="btn-primary" type="submit">Connect</button>
+    </div>
+  </form>
+</section>
+{{end}}

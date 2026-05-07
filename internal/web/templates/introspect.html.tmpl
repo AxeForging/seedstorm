@@ -1,0 +1,48 @@
+{{define "content"}}
+<section class="card stack">
+  <header class="row spread">
+    <h1>Introspection · {{len .Data}} tables</h1>
+    <div class="row">
+      <input id="table-filter" placeholder="filter tables…" class="input-sm">
+      <a class="btn-ghost" href="/introspect?refresh=1">Refresh</a>
+    </div>
+  </header>
+  <div class="tables-grid" id="tables-grid">
+    {{range .Data}}
+    <details class="table-card" data-name="{{.Name}}">
+      <summary>
+        <span class="table-name">{{.Name}}</span>
+        <span class="muted">{{len .Columns}} columns</span>
+      </summary>
+      <table class="cols">
+        <thead>
+          <tr><th>Column</th><th>Type</th><th>Constraints</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          {{range .Columns}}
+          <tr>
+            <td>
+              <code>{{.Name}}</code>
+              {{if .IsPK}}<span class="badge pk">PK</span>{{end}}
+              {{if .FK}}<span class="badge fk">FK → {{.FK.TableName}}.{{.FK.ColumnName}}</span>{{end}}
+              {{if .Unique}}<span class="badge uq">UNIQUE</span>{{end}}
+            </td>
+            <td><span class="type">{{.Type}}</span></td>
+            <td>
+              {{if .IsNullable}}<span class="muted">nullable</span>{{else}}<span class="badge nn">NOT NULL</span>{{end}}
+            </td>
+            <td class="muted">
+              {{if .EnumValues}}enum: {{range $i, $v := .EnumValues}}{{if $i}}, {{end}}{{$v}}{{end}}{{end}}
+              {{if .CheckValues}}check IN ({{range $i, $v := .CheckValues}}{{if $i}}, {{end}}{{$v}}{{end}}){{end}}
+              {{if .CheckMin}}min={{.CheckMin}}{{end}}
+              {{if .CheckMax}} max={{.CheckMax}}{{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </details>
+    {{end}}
+  </div>
+</section>
+{{end}}
