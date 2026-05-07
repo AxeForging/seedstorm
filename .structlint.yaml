@@ -8,6 +8,7 @@ dir_structure:
     - ".github/**"
     - "bin/**"
     - "dist/**"
+    - "docs/**"
   requiredPaths:
     - "cmd/seedstorm/main.go"
     - "internal/app/app.go"
@@ -32,6 +33,7 @@ file_naming_pattern:
     - "*.md"
     - "*.txt"
     - "*.sql"
+    - "*.gif"
     - "README*"
     - "LICENSE*"
     - "Makefile"
