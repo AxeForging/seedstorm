@@ -20,6 +20,7 @@ dir_structure:
     - "internal/graph/graph.go"
     - "internal/ai/ai.go"
     - "internal/logging/logging.go"
+    - "internal/web/server.go"
     - "Makefile"
     - "go.mod"
 
@@ -34,6 +35,9 @@ file_naming_pattern:
     - "*.txt"
     - "*.sql"
     - "*.gif"
+    - "*.js"
+    - "*.css"
+    - "*.tmpl"
     - "README*"
     - "LICENSE*"
     - "Makefile"

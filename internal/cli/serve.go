@@ -37,7 +37,7 @@ fields can be saved as named presets in the browser's localStorage.`,
 				return fmt.Errorf("init web server: %w", err)
 			}
 			log.Info().Str("addr", addr).Msg("seedstorm web UI listening")
-			fmt.Fprintf(cmd.Writer, "\n  Open http://%s in your browser.\n\n", addr)
+			_, _ = fmt.Fprintf(cmd.Writer, "\n  Open http://%s in your browser.\n\n", addr)
 			if err := s.ListenAndServe(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return err
 			}
