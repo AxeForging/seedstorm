@@ -113,10 +113,13 @@ body {
   background: transparent; border: none; cursor: pointer;
   padding: 4px 8px; border-radius: 4px;
   color: var(--muted);
-  font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .eye-btn:hover { color: var(--text); background: var(--panel-2); }
-.eye-btn[data-revealed="true"] .eye-icon { filter: hue-rotate(60deg) brightness(1.4); }
+.eye-btn .eye-icon { display: block; }
+.eye-btn .eye-icon-open { display: none; }
+.eye-btn[data-revealed="true"] .eye-icon-open { display: block; color: var(--accent, currentColor); }
+.eye-btn[data-revealed="true"] .eye-icon-closed { display: none; }
 
 .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 .card {
