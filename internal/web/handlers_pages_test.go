@@ -75,7 +75,7 @@ func TestServer_protectedPagesRedirectToConnect(t *testing.T) {
 			return http.ErrUseLastResponse
 		},
 	}
-	for _, p := range []string{"/seed", "/gaps", "/generate", "/enrich", "/export", "/introspect", "/graph"} {
+	for _, p := range []string{"/generate", "/enrich", "/export"} {
 		res, err := client.Get(srv.URL + p)
 		if err != nil {
 			t.Fatalf("GET %s: %v", p, err)

@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}} · seedstorm</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
-  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js" defer></script>
-  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js" defer></script>
-  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js" defer></script>
+  <script src="/static/lib/htmx.min.js" defer></script>
+  <script src="/static/lib/cytoscape.min.js" defer></script>
+  <script src="/static/lib/dagre.min.js" defer></script>
+  <script src="/static/lib/cytoscape-dagre.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body data-active="{{.Active}}">
@@ -73,8 +73,9 @@
 {{define "joblog"}}
 <div class="job-panel" id="job-panel" hidden>
   <div class="row spread">
-    <div>
+    <div class="row">
       <span class="status-pill" id="job-status">idle</span>
+      <span class="muted small" id="job-elapsed"></span>
       <span class="muted" id="job-name"></span>
     </div>
     <div class="row">

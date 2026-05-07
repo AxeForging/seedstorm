@@ -80,11 +80,28 @@
   }
 
   // ── shared job streaming ──────────────────────────────────────────────
+  let elapsedTimer = null;
+  function startElapsed() {
+    const el = document.getElementById("job-elapsed");
+    if (!el) return;
+    const start = Date.now();
+    el.textContent = "0.0s";
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    elapsedTimer = setInterval(() => {
+      const s = (Date.now() - start) / 1000;
+      el.textContent = s < 60 ? s.toFixed(1) + "s" : (s / 60).toFixed(1) + "m";
+    }, 100);
+  }
+  function stopElapsed() {
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+  }
   function setStatus(status) {
     const pill = document.getElementById("job-status");
     if (!pill) return;
     pill.textContent = status;
     pill.className = "status-pill " + status;
+    if (status === "running") startElapsed();
+    else stopElapsed();
   }
   function appendLog(text) {
     const log = document.getElementById("job-log");

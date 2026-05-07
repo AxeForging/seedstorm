@@ -116,55 +116,6 @@ func (s *Server) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.sessions.fromRequest(r)
-	if err != nil {
-		http.Redirect(w, r, "/connect", http.StatusSeeOther)
-		return
-	}
-	force := r.URL.Query().Get("refresh") == "1"
-	tables, ierr := sess.RawTables()
-	if ierr != nil {
-		s.render(w, r, "introspect", pageData{
-			Title: "Introspect", Active: "introspect", Error: ierr.Error(),
-		})
-		return
-	}
-	if force {
-		// Refresh the cached schema.Schema mirror as well.
-		_, _ = sess.Schema(true)
-	}
-	s.render(w, r, "introspect", pageData{
-		Title:  "Introspect",
-		Active: "introspect",
-		Data:   tables,
-	})
-}
-
-func (s *Server) handleGraphPage(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.sessions.fromRequest(r); err != nil {
-		http.Redirect(w, r, "/connect", http.StatusSeeOther)
-		return
-	}
-	s.render(w, r, "graph", pageData{Title: "Dependency Graph", Active: "graph"})
-}
-
-func (s *Server) handleSeedPage(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.sessions.fromRequest(r); err != nil {
-		http.Redirect(w, r, "/connect", http.StatusSeeOther)
-		return
-	}
-	s.render(w, r, "seed", pageData{Title: "Seed", Active: "seed"})
-}
-
-func (s *Server) handleGapsPage(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.sessions.fromRequest(r); err != nil {
-		http.Redirect(w, r, "/connect", http.StatusSeeOther)
-		return
-	}
-	s.render(w, r, "gaps", pageData{Title: "Gaps", Active: "gaps"})
-}
-
 func (s *Server) handleGeneratePage(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.sessions.fromRequest(r); err != nil {
 		http.Redirect(w, r, "/connect", http.StatusSeeOther)

@@ -229,10 +229,30 @@ textarea { font-family: var(--mono); font-size: 12px; }
   font-size: 11px; font-weight: 600; text-transform: uppercase;
   background: #2e3a4a; color: var(--muted);
 }
-.status-pill.running { background: rgba(124,158,255,0.18); color: var(--accent); }
+.status-pill.running {
+  background: rgba(124,158,255,0.18); color: var(--accent);
+  position: relative; padding-left: 22px;
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+.status-pill.running::before {
+  content: ""; position: absolute; left: 8px; top: 50%;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  animation: status-dot 1.0s ease-in-out infinite;
+  transform: translateY(-50%);
+}
 .status-pill.done    { background: rgba(95,210,142,0.18); color: var(--ok); }
 .status-pill.failed  { background: rgba(255,123,123,0.18); color: var(--err); }
 .status-pill.canceled { background: rgba(255,204,102,0.18); color: var(--warn); }
+
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124,158,255,0); }
+  50%       { box-shadow: 0 0 0 4px rgba(124,158,255,0.15); }
+}
+@keyframes status-dot {
+  0%, 100% { opacity: 0.4; transform: translateY(-50%) scale(0.8); }
+  50%       { opacity: 1.0; transform: translateY(-50%) scale(1.1); }
+}
 
 .job-log {
   max-height: 360px;

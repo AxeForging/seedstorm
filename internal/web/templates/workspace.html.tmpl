@@ -38,7 +38,10 @@
 
     <div class="ws-tab-body" data-tab="logs" hidden>
       <div class="row spread">
-        <span class="status-pill" id="job-status">idle</span>
+        <div class="row">
+          <span class="status-pill" id="job-status">idle</span>
+          <span class="muted small" id="job-elapsed"></span>
+        </div>
         <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
       </div>
       <pre class="job-log" id="job-log"></pre>
