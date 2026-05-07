@@ -1,0 +1,256 @@
+# Command Reference
+
+Every seedstorm command, with all flags and examples.
+
+## Table of Contents
+
+- [`introspect`](#introspect) — discover schema from a live DB
+- [`ai-enrich`](#ai-enrich) — AI-powered semantic faker mapping
+- [`seed`](#seed) — generate and insert fake data
+- [`gaps`](#gaps) — find and fill empty tables
+- [`generate`](#generate) — generate data without a DB connection
+- [`export`](#export) — convert data between formats
+- [`version`](#version) / [`completion`](#completion)
+
+---
+
+## `introspect`
+
+Connects to a database and outputs a `schema.yaml` with all tables, columns, types, PKs, FKs, enum values, UNIQUE constraints, and CHECK constraints.
+
+```bash
+# PostgreSQL
+seedstorm introspect \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost:5432/mydb" \
+  --out schema.yaml
+
+# MySQL
+seedstorm introspect \
+  --db mysql \
+  --dsn "user:pass@tcp(localhost:3306)/mydb" \
+  --out schema.yaml
+
+# Via env vars
+SEEDSTORM_DB=postgres SEEDSTORM_DSN="postgres://..." seedstorm introspect
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db` / `$SEEDSTORM_DB` | `postgres` | Database type: `postgres` or `mysql` |
+| `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
+| `--out` / `-o` | `schema.yaml` | Output file path |
+
+---
+
+## `ai-enrich`
+
+Sends the schema to Gemini and rewrites `faker` hints with domain-aware generators based on table and column names.
+
+```bash
+GEMINI_API_KEY=xxx seedstorm ai-enrich \
+  --schema schema.yaml \
+  --out schema.enriched.yaml
+
+# Supply an application domain hint for richer AI context
+GEMINI_API_KEY=xxx seedstorm ai-enrich \
+  --schema schema.yaml \
+  --prompt "HR management system" \
+  --out schema.enriched.yaml
+
+# Use a specific model
+GEMINI_API_KEY=xxx seedstorm ai-enrich \
+  --schema schema.yaml \
+  --model gemini-2.5-flash \
+  --out schema.enriched.yaml
+```
+
+The `--prompt` hint is injected into every Gemini call as `Application domain / context: <hint>`, helping the model choose more realistic fakers. For example, with `--prompt "TacoShop"`:
+- `products.name` → `productname` instead of `word`
+- `orders.delivery_address` → `street` instead of `sentence`
+- `categories.name` → `productname` (food category) instead of `word`
+
+<img src="gifs/ai-enrich.gif" alt="ai-enrich demo" width="720" />
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema` / `-s` | `schema.yaml` | Input schema file |
+| `--out` / `-o` | `schema.enriched.yaml` | Output enriched schema |
+| `--model` / `-m` / `$SEEDSTORM_AI_MODEL` | `gemini-2.5-flash` | Gemini model to use |
+| `--prompt` | — | Optional application domain hint (e.g. `"TacoShop"`, `"HR management system"`) |
+
+---
+
+## `seed`
+
+Reads a schema, generates fake data, and inserts it into the database in FK-safe order.
+
+```bash
+# Seed 50 rows per table
+seedstorm seed \
+  --db mysql \
+  --dsn "root:pass@tcp(localhost:3306)/mydb" \
+  --schema schema.yaml \
+  --rows 50
+
+# Dry-run: print seed plan + SQL without executing
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --dry-run
+
+# Seed enum tables with N rows per enum value
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --enum-rows 10
+
+# Interactive TUI — pick tables, configure options, review, then seed
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --interactive
+```
+
+<img src="gifs/seed-interactive.gif" alt="seed interactive TUI demo" width="720" />
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema` / `-s` | `schema.yaml` | Schema file |
+| `--db` / `$SEEDSTORM_DB` | `postgres` | Database type |
+| `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
+| `--rows` / `-r` | `100` | Rows per table |
+| `--enum-rows` | `0` | Rows per enum value (0 = use `--rows`) |
+| `--disable-fk` | false | Skip FK ordering |
+| `--dry-run` / `-n` | false | Print seed plan + SQL, do not execute |
+| `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
+| `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
+| `--batch-size` | `100` | Number of rows per INSERT statement |
+| `--seed` | `0` | Random seed for reproducible generation (0 = random) |
+| `--interactive` / `-i` | false | Launch interactive TUI |
+
+---
+
+## `gaps`
+
+Connects to the database, queries row counts for every table in the schema, and prints a gap analysis report. Use `--fill` to seed only the empty tables — already-populated tables are never touched.
+
+```bash
+# Show which tables are empty
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml
+
+# Fill empty tables with 50 rows each
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --fill --rows 50
+
+# Preview SQL without executing
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://user:pass@localhost/mydb" \
+  --schema schema.yaml \
+  --fill --dry-run
+
+# Interactive TUI
+seedstorm gaps \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --interactive
+```
+
+Sample output (gap analysis report):
+
+```
+Gap Analysis
+────────────────────────────────────────────────────────────
+  Table                    Rows  Status
+  ───────────────────────  ────  ────────────────────────────────────────
+  brands                    100  populated
+  users                     100  populated
+  categories                  0  EMPTY → would seed 50 rows
+  products                    0  EMPTY → would seed 50 rows  [FK → categories (0 rows, filling), brands (100 rows)]
+  orders                      0  EMPTY → would seed 50 rows  [FK → users (100 rows)]
+
+  Gaps: 3 table(s) empty · Would seed: 150 rows total
+```
+
+<img src="gifs/gaps.gif" alt="gaps demo" width="720" />
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema` / `-s` | `schema.yaml` | Schema file |
+| `--db` / `$SEEDSTORM_DB` | `postgres` | Database type |
+| `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
+| `--rows` / `-r` | `100` | Rows per empty table (when `--fill` is set) |
+| `--enum-rows` | `0` | Rows per enum value for empty enum tables (0 = use `--rows`) |
+| `--fill` | false | Seed all empty tables |
+| `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
+| `--yes` / `-y` | false | Skip confirmation prompt |
+| `--batch-size` | `100` | Number of rows per INSERT statement |
+| `--interactive` / `-i` | false | Launch interactive TUI |
+
+---
+
+## `generate`
+
+Generates fake data without connecting to a database. Outputs YAML, JSON, or SQL.
+
+```bash
+seedstorm generate --schema schema.yaml --rows 10 --format json --out data.json
+seedstorm generate --schema schema.yaml --rows 5  --format sql  --db postgres
+seedstorm generate --schema schema.yaml --rows 20 --format yaml
+
+# Interactive TUI
+seedstorm generate --schema schema.yaml --interactive
+```
+
+<img src="gifs/generate.gif" alt="generate demo" width="720" />
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema` / `-s` | `schema.yaml` | Schema file |
+| `--rows` / `-r` | `100` | Rows per table |
+| `--format` / `-f` | `yaml` | Output format: `yaml`, `json`, `sql` |
+| `--out` / `-o` | stdout | Output file (omit for stdout) |
+| `--db` | `postgres` | DB type (affects SQL placeholder style) |
+| `--seed` | `0` | Random seed for reproducible generation (0 = random) |
+| `--interactive` / `-i` | false | Launch interactive TUI |
+
+---
+
+## `export`
+
+Converts a previously generated data file to another format.
+
+```bash
+seedstorm export --data data.yaml --format sql --out seed.sql
+seedstorm export --data data.yaml --format csv --out data.csv
+```
+
+<img src="gifs/export.gif" alt="export demo" width="720" />
+
+---
+
+## `version`
+
+```bash
+seedstorm version
+# version: v1.2.0  commit: abc1234  date: 2026-01-15  builtBy: goreleaser
+```
+
+## `completion`
+
+```bash
+seedstorm completion bash  >> ~/.bashrc
+seedstorm completion zsh   >> ~/.zshrc
+seedstorm completion fish  >> ~/.config/fish/completions/seedstorm.fish
+```
