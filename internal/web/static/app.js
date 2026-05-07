@@ -103,25 +103,133 @@
     if (status === "running") startElapsed();
     else stopElapsed();
   }
+
+  // Phase accordion: each emitted "phase" event opens a new <details> block.
+  // Log lines append into the current phase; lines emitted before any phase
+  // event land in an implicit "log" phase so older flows keep working.
+  const phases = { container: null, current: null, started: 0, defaultLabel: "log" };
+
+  function resetPhases() {
+    const c = document.getElementById("job-phases");
+    if (c) c.innerHTML = "";
+    phases.container = c;
+    phases.current = null;
+    phases.started = 0;
+    const wrap = document.getElementById("job-progress-wrap");
+    if (wrap) wrap.hidden = true;
+    const label = document.getElementById("job-progress-label");
+    if (label) label.textContent = "";
+    const bar = document.getElementById("job-progress");
+    if (bar) bar.value = 0;
+  }
+  function startPhase(name) {
+    if (!phases.container) phases.container = document.getElementById("job-phases");
+    if (!phases.container) return null;
+    if (phases.current) {
+      phases.current.dataset.state = "done";
+      phases.current.removeAttribute("open");
+      const dur = ((Date.now() - Number(phases.current.dataset.startedAt)) / 1000).toFixed(1);
+      const meta = phases.current.querySelector(".job-phase-dur");
+      if (meta) meta.textContent = dur + "s";
+    }
+    const det = document.createElement("details");
+    det.className = "job-phase";
+    det.dataset.phase = name;
+    det.dataset.state = "running";
+    det.dataset.startedAt = Date.now();
+    det.open = true;
+    det.innerHTML =
+      '<summary>' +
+        '<span class="job-phase-dot" aria-hidden="true"></span>' +
+        '<span class="job-phase-name"></span>' +
+        '<span class="job-phase-meta muted small">' +
+          '<span class="job-phase-count">0 lines</span>' +
+          ' · <span class="job-phase-dur">…</span>' +
+        '</span>' +
+      '</summary>' +
+      '<pre class="job-phase-log"></pre>';
+    det.querySelector(".job-phase-name").textContent = name;
+    phases.container.appendChild(det);
+    phases.current = det;
+    phases.started++;
+    return det;
+  }
+  function ensurePhase() {
+    if (phases.current) return phases.current;
+    return startPhase(phases.defaultLabel);
+  }
   function appendLog(text) {
-    const log = document.getElementById("job-log");
-    if (!log) return;
-    log.textContent += text + "\n";
-    log.scrollTop = log.scrollHeight;
+    const det = ensurePhase();
+    if (!det) return;
+    const pre = det.querySelector(".job-phase-log");
+    pre.textContent += text + "\n";
+    const counter = det.querySelector(".job-phase-count");
+    if (counter) {
+      const n = (pre.textContent.match(/\n/g) || []).length;
+      counter.textContent = n + (n === 1 ? " line" : " lines");
+    }
+    if (det.open) pre.scrollTop = pre.scrollHeight;
+  }
+  function setProgress(done, total, label) {
+    const wrap = document.getElementById("job-progress-wrap");
+    const bar = document.getElementById("job-progress");
+    const lab = document.getElementById("job-progress-label");
+    if (!wrap || !bar || !lab) return;
+    wrap.hidden = false;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    bar.value = pct;
+    bar.max = 100;
+    const phase = phases.current ? phases.current.dataset.phase : "";
+    const tail = label ? " · " + label : "";
+    lab.textContent = (phase ? phase + " · " : "") + done + " / " + total + tail;
+  }
+  function finalizeLastPhase(status) {
+    if (!phases.current) return;
+    phases.current.dataset.state = (status === "done") ? "ok" : status;
+    const meta = phases.current.querySelector(".job-phase-dur");
+    if (meta) {
+      const dur = ((Date.now() - Number(phases.current.dataset.startedAt)) / 1000).toFixed(1);
+      meta.textContent = dur + "s";
+    }
+  }
+
+  // Parse the SSE data prefix `[seq] payload` so we can route by event type
+  // without losing the seq counter (currently unused by the UI but logged).
+  function stripSeq(s) {
+    const m = /^\[(\d+)\]\s?(.*)$/.exec(s);
+    return m ? m[2] : s;
   }
   function streamJob(jobId, jobName, hooks) {
-    const log = document.getElementById("job-log");
     const cancel = document.getElementById("job-cancel");
     setStatus("running");
-    if (log) log.textContent = "";
+    resetPhases();
     if (cancel) {
       cancel.disabled = false;
       cancel.onclick = () => fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
     }
+    const expandAll = document.getElementById("job-expand-all");
+    if (expandAll) {
+      expandAll.onclick = () => {
+        const open = expandAll.dataset.open === "true";
+        document.querySelectorAll(".job-phase").forEach((d) => { d.open = !open; });
+        expandAll.dataset.open = (!open).toString();
+      };
+    }
     const es = new EventSource(`/api/jobs/${jobId}/stream`);
     es.addEventListener("log", (e) => {
-      appendLog(e.data);
-      hooks?.onLog?.(e.data);
+      const text = stripSeq(e.data);
+      appendLog(text);
+      hooks?.onLog?.(text);
+    });
+    es.addEventListener("phase", (e) => {
+      const text = stripSeq(e.data);
+      startPhase(text);
+    });
+    es.addEventListener("progress", (e) => {
+      // payload: `[seq] done/total label`
+      const m = /^\[\d+\]\s?(\d+)\/(\d+)\s?(.*)$/.exec(e.data);
+      if (!m) return;
+      setProgress(Number(m[1]), Number(m[2]), m[3]);
     });
     es.addEventListener("status", (e) => setStatus(e.data));
     es.addEventListener("error", (e) => {
@@ -132,6 +240,7 @@
       if (cancel) cancel.disabled = true;
       fetch(`/api/jobs/${jobId}`).then(r => r.json()).then((j) => {
         setStatus(j.status);
+        finalizeLastPhase(j.status);
         hooks?.onEnd?.(j);
       });
     });
@@ -144,7 +253,7 @@
     if (!form) return;
     const endpoint = form.dataset.endpoint;
     document.getElementById("job-clear")?.addEventListener("click", () => {
-      document.getElementById("job-log").textContent = "";
+      resetPhases();
       document.getElementById("job-result").innerHTML = "";
     });
     form.addEventListener("submit", async (ev) => {
@@ -166,8 +275,8 @@
         body: JSON.stringify(payload),
       });
       const j = await res.json();
-      if (!res.ok) { appendLog("ERROR: " + (j.error || res.statusText)); return; }
       document.getElementById("job-panel").hidden = false;
+      if (!res.ok) { resetPhases(); appendLog("ERROR: " + (j.error || res.statusText)); return; }
       streamJob(j.id, j.name, {
         onEnd: (job) => {
           const r = job.result || {};
@@ -551,7 +660,7 @@
       cfg.format = "yaml";
     }
     activateTab("logs");
-    document.getElementById("job-log").textContent = "";
+    resetPhases();
     document.getElementById("job-result").innerHTML = "";
     if (ws.cy) ws.cy.nodes().removeClass("seeding done failed");
 

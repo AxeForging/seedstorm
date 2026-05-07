@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 )
@@ -15,7 +14,7 @@ func startRun[T any](
 	w http.ResponseWriter,
 	r *http.Request,
 	jobName string,
-	runner func(ctx context.Context, sess *Session, req T, log io.Writer) (map[string]any, error),
+	runner func(ctx context.Context, sess *Session, req T, jc JobControl) (map[string]any, error),
 ) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -33,8 +32,8 @@ func startRun[T any](
 			return
 		}
 	}
-	job := s.jobs.Start(context.Background(), jobName, func(ctx context.Context, log io.Writer) (map[string]any, error) {
-		return runner(ctx, sess, req, log)
+	job := s.jobs.Start(context.Background(), jobName, func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		return runner(ctx, sess, req, jc)
 	})
 	writeJSON(w, http.StatusAccepted, jobView(job))
 }

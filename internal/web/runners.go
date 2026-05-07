@@ -18,7 +18,8 @@ import (
 )
 
 // jobLogger returns a zerolog.Logger that writes structured lines into the
-// job's log stream via the provided io.Writer.
+// job's log stream via the provided io.Writer. Runners receive a JobControl
+// (which embeds io.Writer) so they can also call Phase() and Progress().
 func jobLogger(w io.Writer) zerolog.Logger {
 	cw := zerolog.ConsoleWriter{
 		Out:          w,
@@ -48,14 +49,15 @@ type SeedRequest struct {
 	Tables    []string `json:"tables,omitempty"`
 }
 
-func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, w io.Writer) (map[string]any, error) {
-	log := jobLogger(w)
+func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
 	if req.Rows <= 0 {
 		req.Rows = 100
 	}
 	if req.BatchSize <= 0 {
 		req.BatchSize = 100
 	}
+	jc.Phase("build")
 	sc, err := sess.Schema(false)
 	if err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
@@ -101,6 +103,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, w 
 	conn := sess.Conn()
 
 	if req.Truncate && !req.DryRun {
+		jc.Phase("truncate")
 		log.Info().Int("tables", len(targetTables)).Msg("Truncating tables")
 		if err := db.Truncate(ctx, conn, sess.DBType, targetTables); err != nil {
 			return nil, fmt.Errorf("truncate: %w", err)
@@ -109,6 +112,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, w 
 	}
 
 	start := time.Now()
+	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Msg("Generating fake data")
 	connArg := conn
 	if req.DryRun {
@@ -121,8 +125,9 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, w 
 		return nil, fmt.Errorf("generation: %w", err)
 	}
 
+	jc.Phase("insert")
 	totalRows := 0
-	for _, tableName := range targetTables {
+	for idx, tableName := range targetTables {
 		tableRows := data[tableName]
 		log.Info().Str("table", tableName).Int("rows", len(tableRows)).Msg("Seeding table")
 		if !req.DryRun {
@@ -138,8 +143,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, w 
 			}
 		}
 		totalRows += len(tableRows)
+		jc.Progress(idx+1, len(targetTables), tableName)
 	}
 	elapsed := time.Since(start).Round(time.Millisecond)
+	jc.Phase("done")
 	log.Info().
 		Int("tables", len(targetTables)).
 		Int("total_rows", totalRows).
@@ -170,14 +177,15 @@ type GapsRequest struct {
 	Tables    []string `json:"tables,omitempty"`
 }
 
-func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, w io.Writer) (map[string]any, error) {
-	log := jobLogger(w)
+func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
 	if req.Rows <= 0 {
 		req.Rows = 100
 	}
 	if req.BatchSize <= 0 {
 		req.BatchSize = 100
 	}
+	jc.Phase("build")
 	sc, err := sess.Schema(false)
 	if err != nil {
 		return nil, err
@@ -189,6 +197,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, w 
 	}
 
 	conn := sess.Conn()
+	jc.Phase("scan")
 	log.Info().Int("tables", len(allSorted)).Msg("Scanning row counts")
 	counts, err := db.GetTableRowCounts(ctx, conn, sess.DBType, allSorted)
 	if err != nil {
@@ -230,17 +239,20 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, w 
 		"all":       allSorted,
 	}
 	if !req.Fill || len(gapTables) == 0 {
+		jc.Phase("done")
 		return result, nil
 	}
 
+	jc.Phase("generate")
 	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Msg("Generating data for empty tables")
 	data, err := faker.GenerateFiltered(sc, allSorted, gapTables, req.Rows, req.EnumRows, conn, sess.DBType)
 	if err != nil {
 		return nil, err
 	}
 
+	jc.Phase("insert")
 	totalRows := 0
-	for _, tableName := range gapTables {
+	for idx, tableName := range gapTables {
 		tableRows := data[tableName]
 		log.Info().Str("table", tableName).Int("rows", len(tableRows)).Msg("Filling table")
 		if !req.DryRun {
@@ -256,8 +268,10 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, w 
 			}
 		}
 		totalRows += len(tableRows)
+		jc.Progress(idx+1, len(gapTables), tableName)
 	}
 	result["filled"] = totalRows
+	jc.Phase("done")
 	log.Info().Int("filled_rows", totalRows).Msg("Gap fill complete")
 	return result, nil
 }
@@ -270,12 +284,13 @@ type GenerateRequest struct {
 	Tables []string `json:"tables,omitempty"`
 }
 
-func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateRequest, w io.Writer) (map[string]any, error) {
+func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateRequest, jc JobControl) (map[string]any, error) {
 	_ = ctx
-	log := jobLogger(w)
+	log := jobLogger(jc)
 	if req.Rows <= 0 {
 		req.Rows = 10
 	}
+	jc.Phase("resolve")
 	sc, err := sess.Schema(false)
 	if err != nil {
 		return nil, err
@@ -297,16 +312,19 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 		log.Info().Int("explicit", len(selected)).Int("auto", len(auto)).Int("total", len(targetTables)).Msg("Selection resolved")
 	}
 
+	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
 	// GenerateFiltered is fine here too: with conn=nil it skips PK preload.
 	data, err := faker.GenerateFiltered(sc, allSorted, targetTables, req.Rows, 0, nil, sess.DBType)
 	if err != nil {
 		return nil, err
 	}
+	jc.Phase("encode")
 	output, err := encodeData(data, targetTables, req.Format, sess.DBType)
 	if err != nil {
 		return nil, err
 	}
+	jc.Phase("done")
 	log.Info().Int("tables", len(targetTables)).Str("format", req.Format).Msg("Generation complete")
 	return map[string]any{
 		"output": output,
@@ -348,26 +366,30 @@ type EnrichRequest struct {
 	Context string `json:"context"`
 }
 
-func (s *Server) runEnrich(ctx context.Context, sess *Session, req EnrichRequest, w io.Writer) (map[string]any, error) {
-	log := jobLogger(w)
+func (s *Server) runEnrich(ctx context.Context, sess *Session, req EnrichRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
 	model := req.Model
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
+	jc.Phase("schema")
 	sc, err := sess.Schema(false)
 	if err != nil {
 		return nil, err
 	}
+	jc.Phase("ai-call")
 	log.Info().Str("model", model).Int("tables", len(sc.Tables)).Msg("Enriching faker mappings")
 	enriched, usedModel, err := ai.EnrichFakerMappings(ctx, sc, model, req.Context)
 	if err != nil {
 		return nil, err
 	}
+	jc.Phase("apply")
 	sess.SetSchema(enriched)
 	out, err := yaml.Marshal(enriched)
 	if err != nil {
 		return nil, err
 	}
+	jc.Phase("done")
 	log.Info().Str("model", usedModel).Msg("Enrichment complete (cached schema updated)")
 	return map[string]any{
 		"model":  usedModel,
@@ -384,15 +406,17 @@ type ExportRequest struct {
 	BatchSize int    `json:"batchSize"`
 }
 
-func (s *Server) runExport(_ context.Context, sess *Session, req ExportRequest, w io.Writer) (map[string]any, error) {
-	log := jobLogger(w)
+func (s *Server) runExport(_ context.Context, sess *Session, req ExportRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
 	if req.BatchSize <= 0 {
 		req.BatchSize = 100
 	}
+	jc.Phase("parse")
 	var data map[string][]map[string]any
 	if err := yaml.Unmarshal([]byte(req.DataYAML), &data); err != nil {
 		return nil, fmt.Errorf("parse data yaml: %w", err)
 	}
+	jc.Phase("format")
 	dbType := sess.DBType
 	var output string
 	switch strings.ToLower(req.Format) {
@@ -442,6 +466,7 @@ func (s *Server) runExport(_ context.Context, sess *Session, req ExportRequest, 
 		}
 		output = sb.String()
 	}
+	jc.Phase("done")
 	log.Info().Str("format", req.Format).Int("tables", len(data)).Msg("Export complete")
 	return map[string]any{
 		"output": output,

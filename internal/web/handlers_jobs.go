@@ -59,8 +59,12 @@ func (s *Server) streamJob(w http.ResponseWriter, r *http.Request, job *Job) {
 	ch, backlog := job.Subscribe()
 	defer job.Unsubscribe(ch)
 
-	for _, line := range backlog {
-		writeSSE(w, "log", fmt.Sprintf("[%d] %s", line.Seq, line.Text))
+	maxSeq := 0
+	for _, ev := range backlog {
+		writeEvent(w, ev)
+		if ev.Seq > maxSeq {
+			maxSeq = ev.Seq
+		}
 	}
 	flusher.Flush()
 
@@ -68,7 +72,7 @@ func (s *Server) streamJob(w http.ResponseWriter, r *http.Request, job *Job) {
 		select {
 		case <-r.Context().Done():
 			return
-		case line, alive := <-ch:
+		case ev, alive := <-ch:
 			if !alive {
 				writeSSE(w, "status", string(job.Status))
 				if job.Err != nil {
@@ -78,12 +82,19 @@ func (s *Server) streamJob(w http.ResponseWriter, r *http.Request, job *Job) {
 				flusher.Flush()
 				return
 			}
-			writeSSE(w, "log", fmt.Sprintf("[%d] %s", line.Seq, line.Text))
+			writeEvent(w, ev)
+			if ev.Seq > maxSeq {
+				maxSeq = ev.Seq
+			}
 			flusher.Flush()
 		case <-job.Done():
-			// Drain any final lines that were emitted before Done fired.
-			for _, line := range job.Lines()[len(backlog):] {
-				writeSSE(w, "log", fmt.Sprintf("[%d] %s", line.Seq, line.Text))
+			// Drain any events not already emitted via the live channel.
+			// Done fires before the subscriber channel closes, so we may have
+			// buffered events still pending; maxSeq dedupes against them.
+			for _, ev := range job.Events() {
+				if ev.Seq > maxSeq {
+					writeEvent(w, ev)
+				}
 			}
 			writeSSE(w, "status", string(job.Status))
 			if job.Err != nil {
@@ -93,6 +104,17 @@ func (s *Server) streamJob(w http.ResponseWriter, r *http.Request, job *Job) {
 			flusher.Flush()
 			return
 		}
+	}
+}
+
+func writeEvent(w http.ResponseWriter, ev Event) {
+	switch ev.Kind {
+	case EventPhase:
+		writeSSE(w, "phase", fmt.Sprintf("[%d] %s", ev.Seq, ev.Text))
+	case EventProgress:
+		writeSSE(w, "progress", fmt.Sprintf("[%d] %d/%d %s", ev.Seq, ev.Done, ev.Total, ev.Text))
+	default:
+		writeSSE(w, "log", fmt.Sprintf("[%d] %s", ev.Seq, ev.Text))
 	}
 }
 
