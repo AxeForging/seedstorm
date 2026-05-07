@@ -74,6 +74,7 @@ seedstorm gaps \
 - **AI enrichment** — Gemini rewrites faker hints for domain-meaningful data; supply `--prompt` for richer context
 - **Gap analysis** — `gaps` shows which tables are empty with row counts and FK context; `--fill` seeds only the empty ones
 - **Interactive TUI** — wizard for table selection, config, and review before seeding
+- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, live SSE job logs, multi-DB session switcher, and connection presets in `localStorage`
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, or SQL without a live connection
 

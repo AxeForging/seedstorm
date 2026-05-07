@@ -1,0 +1,21 @@
+{{define "content"}}
+<section class="card stack">
+  <h1>AI Enrich</h1>
+  <p class="muted">Uses Gemini to replace generic faker mappings with semantically meaningful ones based on column names and table context.</p>
+  <p class="muted small">Requires <code>GEMINI_API_KEY</code> in the environment of the seedstorm process.</p>
+  <form id="run-form" data-endpoint="/api/enrich" class="grid-2">
+    <label class="field">
+      <span class="field-label">Model</span>
+      <input name="model" value="gemini-2.5-flash">
+    </label>
+    <label class="field">
+      <span class="field-label">App context (optional)</span>
+      <input name="context" placeholder="e.g. TacoShop · HR system">
+    </label>
+    <div class="span-2 actions">
+      <button class="btn-primary" type="submit">Enrich</button>
+    </div>
+  </form>
+  {{template "joblog" .}}
+</section>
+{{end}}

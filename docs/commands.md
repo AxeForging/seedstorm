@@ -10,6 +10,7 @@ Every seedstorm command, with all flags and examples.
 - [`gaps`](#gaps) — find and fill empty tables
 - [`generate`](#generate) — generate data without a DB connection
 - [`export`](#export) — convert data between formats
+- [`serve`](#serve) — local web UI for every feature
 - [`version`](#version) / [`completion`](#completion)
 
 ---
@@ -237,6 +238,30 @@ seedstorm export --data data.yaml --format csv --out data.csv
 ```
 
 <img src="gifs/export.gif" alt="export demo" width="720" />
+
+---
+
+## `serve`
+
+Starts a local web UI that exposes every seedstorm feature behind an interactive graph workspace. The UI is bundled into the binary via `go:embed` — no extra files to ship.
+
+```bash
+seedstorm serve                              # listens on 127.0.0.1:8080
+seedstorm serve --addr 127.0.0.1:9000        # custom port
+SEEDSTORM_ADDR=127.0.0.1:9000 seedstorm serve
+```
+
+What the UI gives you:
+
+- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). Three run modes: **Seed**, **Fill empty**, **Generate (no DB write)**. Live SSE log stream + status pill.
+- **Connection management** — multi-session: hold several DBs open in one browser and switch from a topbar dropdown. Saved connection presets in `localStorage` with optional password (eye-icon reveal, closed by default). Passwords are kept in process memory only on the server.
+- **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--addr` / `$SEEDSTORM_ADDR` | `127.0.0.1:8080` | Address to listen on (`host:port`) |
+
+> AI Enrich requires `GEMINI_API_KEY` to be set in the environment of the seedstorm process.
 
 ---
 

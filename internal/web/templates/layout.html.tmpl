@@ -1,0 +1,89 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · seedstorm</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/lib/htmx.min.js" defer></script>
+  <script src="/static/lib/cytoscape.min.js" defer></script>
+  <script src="/static/lib/dagre.min.js" defer></script>
+  <script src="/static/lib/cytoscape-dagre.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-active="{{.Active}}">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <span>seedstorm</span>
+    </div>
+    <nav class="nav">
+      {{if .Session}}
+        <a href="/"         class="navlink {{if eq .Active "workspace"}}active{{end}}">Workspace</a>
+        <a href="/generate" class="navlink {{if eq .Active "generate"}}active{{end}}">Generate</a>
+        <a href="/enrich"   class="navlink {{if eq .Active "enrich"}}active{{end}}">AI Enrich</a>
+        <a href="/export"   class="navlink {{if eq .Active "export"}}active{{end}}">Export</a>
+      {{end}}
+    </nav>
+    <div class="session">
+      {{if .Session}}
+        <details class="conn-switcher">
+          <summary class="conn-pill" title="{{.Session.Info.DBType}}://{{.Session.Info.User}}@{{.Session.Info.Host}}:{{.Session.Info.Port}}/{{.Session.Info.DBName}}">
+            <span class="conn-dot {{.Session.Info.DBType}}"></span>
+            <span class="conn-label">{{.Session.Info.DBName}}</span>
+            <span class="muted small">@{{.Session.Info.Host}}</span>
+            <span class="caret">▾</span>
+          </summary>
+          <div class="conn-menu">
+            <div class="conn-menu-list">
+              {{range .Connections}}
+                <form method="post" action="/switch" class="conn-menu-row {{if eq .ID $.Session.ID}}active{{end}}">
+                  <input type="hidden" name="id" value="{{.ID}}">
+                  <button type="submit" class="conn-menu-btn">
+                    <span class="conn-dot {{.Info.DBType}}"></span>
+                    <div class="conn-menu-text">
+                      <strong>{{.Info.DBName}}</strong>
+                      <span class="muted small">{{.Info.User}}@{{.Info.Host}}:{{.Info.Port}}</span>
+                    </div>
+                    {{if eq .ID $.Session.ID}}<span class="muted small">active</span>{{end}}
+                  </button>
+                </form>
+              {{end}}
+            </div>
+            <div class="conn-menu-actions">
+              <a class="btn-ghost" href="/connect">+ New connection</a>
+              <a class="btn-ghost" href="/disconnect">Disconnect this</a>
+            </div>
+          </div>
+        </details>
+      {{else}}
+        <a class="btn-primary" href="/connect">Connect</a>
+      {{end}}
+    </div>
+  </header>
+  <main class="main">
+    {{if .Error}}<div class="flash flash-error">{{.Error}}</div>{{end}}
+    {{if .Flash}}<div class="flash flash-ok">{{.Flash}}</div>{{end}}
+    {{template "content" .}}
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "joblog"}}
+<div class="job-panel" id="job-panel" hidden>
+  <div class="row spread">
+    <div class="row">
+      <span class="status-pill" id="job-status">idle</span>
+      <span class="muted small" id="job-elapsed"></span>
+      <span class="muted" id="job-name"></span>
+    </div>
+    <div class="row">
+      <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
+      <button class="btn-ghost" id="job-clear"  type="button">Clear</button>
+    </div>
+  </div>
+  <pre class="job-log" id="job-log"></pre>
+  <div id="job-result"></div>
+</div>
+{{end}}

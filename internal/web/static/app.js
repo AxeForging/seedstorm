@@ -1,0 +1,650 @@
+// seedstorm UI glue: connection presets, simple form runners, and the
+// unified workspace (interactive graph + side panel + live job stream).
+(function () {
+  "use strict";
+
+  const PRESET_KEY = "seedstorm.connections.v1";
+
+  // ── localStorage presets for the connection form ───────────────────────
+  function loadPresets() {
+    try { return JSON.parse(localStorage.getItem(PRESET_KEY) || "{}"); }
+    catch (_) { return {}; }
+  }
+  function savePresets(p) { localStorage.setItem(PRESET_KEY, JSON.stringify(p)); }
+
+  function setupConnectForm() {
+    const form = document.getElementById("connect-form");
+    if (!form) return;
+    const picker = document.getElementById("preset-picker");
+    const deleteBtn = document.getElementById("preset-delete");
+    const includePw = document.getElementById("preset-include-pw");
+    const pwInput = document.getElementById("conn-password");
+    const eyeBtn = document.getElementById("toggle-password");
+
+    // Eye toggle: closed by default, click reveals
+    if (eyeBtn && pwInput) {
+      eyeBtn.addEventListener("click", () => {
+        const revealed = eyeBtn.dataset.revealed === "true";
+        eyeBtn.dataset.revealed = revealed ? "false" : "true";
+        pwInput.type = revealed ? "password" : "text";
+        eyeBtn.setAttribute("aria-label", revealed ? "Reveal password" : "Hide password");
+      });
+    }
+
+    const presets = loadPresets();
+    Object.keys(presets).sort().forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name; opt.textContent = name;
+      if (presets[name].password) opt.textContent += " · 🔒";
+      picker.appendChild(opt);
+    });
+    picker.addEventListener("change", () => {
+      const p = loadPresets()[picker.value];
+      deleteBtn.disabled = !picker.value;
+      if (!p) return;
+      for (const [k, v] of Object.entries(p)) {
+        const el = form.querySelector(`[name="${k}"]`);
+        if (el) el.value = v;
+      }
+      // Reset eye to closed after auto-fill, regardless of whether password
+      // was loaded — never show secrets without an explicit click.
+      if (eyeBtn) {
+        eyeBtn.dataset.revealed = "false";
+        if (pwInput) pwInput.type = "password";
+      }
+    });
+    deleteBtn.addEventListener("click", () => {
+      const all = loadPresets();
+      delete all[picker.value];
+      savePresets(all);
+      picker.querySelector(`option[value="${picker.value}"]`)?.remove();
+      picker.value = "";
+      deleteBtn.disabled = true;
+    });
+    form.addEventListener("submit", () => {
+      const nameInput = document.getElementById("preset-name");
+      const name = nameInput ? nameInput.value.trim() : "";
+      if (!name) return;
+      const data = new FormData(form);
+      const preset = {};
+      ["dbType", "host", "port", "dbName", "user", "ssl"].forEach((k) => {
+        preset[k] = data.get(k) || "";
+      });
+      if (includePw && includePw.checked) {
+        preset.password = data.get("password") || "";
+      }
+      const all = loadPresets();
+      all[name] = preset;
+      savePresets(all);
+    });
+  }
+
+  // ── shared job streaming ──────────────────────────────────────────────
+  let elapsedTimer = null;
+  function startElapsed() {
+    const el = document.getElementById("job-elapsed");
+    if (!el) return;
+    const start = Date.now();
+    el.textContent = "0.0s";
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    elapsedTimer = setInterval(() => {
+      const s = (Date.now() - start) / 1000;
+      el.textContent = s < 60 ? s.toFixed(1) + "s" : (s / 60).toFixed(1) + "m";
+    }, 100);
+  }
+  function stopElapsed() {
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+  }
+  function setStatus(status) {
+    const pill = document.getElementById("job-status");
+    if (!pill) return;
+    pill.textContent = status;
+    pill.className = "status-pill " + status;
+    if (status === "running") startElapsed();
+    else stopElapsed();
+  }
+  function appendLog(text) {
+    const log = document.getElementById("job-log");
+    if (!log) return;
+    log.textContent += text + "\n";
+    log.scrollTop = log.scrollHeight;
+  }
+  function streamJob(jobId, jobName, hooks) {
+    const log = document.getElementById("job-log");
+    const cancel = document.getElementById("job-cancel");
+    setStatus("running");
+    if (log) log.textContent = "";
+    if (cancel) {
+      cancel.disabled = false;
+      cancel.onclick = () => fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    }
+    const es = new EventSource(`/api/jobs/${jobId}/stream`);
+    es.addEventListener("log", (e) => {
+      appendLog(e.data);
+      hooks?.onLog?.(e.data);
+    });
+    es.addEventListener("status", (e) => setStatus(e.data));
+    es.addEventListener("error", (e) => {
+      if (e.data) appendLog("ERROR: " + e.data);
+    });
+    es.addEventListener("end", () => {
+      es.close();
+      if (cancel) cancel.disabled = true;
+      fetch(`/api/jobs/${jobId}`).then(r => r.json()).then((j) => {
+        setStatus(j.status);
+        hooks?.onEnd?.(j);
+      });
+    });
+    es.onerror = () => { es.close(); };
+  }
+
+  // ── simple run-form (used by /generate, /enrich, /export pages) ───────
+  function setupRunForm() {
+    const form = document.getElementById("run-form");
+    if (!form) return;
+    const endpoint = form.dataset.endpoint;
+    document.getElementById("job-clear")?.addEventListener("click", () => {
+      document.getElementById("job-log").textContent = "";
+      document.getElementById("job-result").innerHTML = "";
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const data = new FormData(form);
+      const payload = {};
+      for (const [k, v] of data.entries()) {
+        const el = form.querySelector(`[name="${k}"]`);
+        if (el && el.type === "checkbox") payload[k] = el.checked;
+        else if (el && el.type === "number") payload[k] = v === "" ? 0 : Number(v);
+        else payload[k] = v;
+      }
+      form.querySelectorAll('input[type="checkbox"]').forEach((el) => {
+        if (!(el.name in payload)) payload[el.name] = false;
+      });
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await res.json();
+      if (!res.ok) { appendLog("ERROR: " + (j.error || res.statusText)); return; }
+      document.getElementById("job-panel").hidden = false;
+      streamJob(j.id, j.name, {
+        onEnd: (job) => {
+          const r = job.result || {};
+          const out = document.getElementById("job-result");
+          if (!out) return;
+          if (typeof r.output === "string") {
+            const pre = document.createElement("pre");
+            pre.className = "job-log"; pre.textContent = r.output;
+            out.appendChild(pre);
+            const dl = document.createElement("a");
+            dl.className = "btn-ghost";
+            dl.href = "data:text/plain;charset=utf-8," + encodeURIComponent(r.output);
+            dl.download = `seedstorm-${j.name}.${r.format || "txt"}`;
+            dl.textContent = "Download";
+            out.appendChild(dl);
+          }
+          if (typeof r.yaml === "string") {
+            const pre = document.createElement("pre");
+            pre.className = "job-log"; pre.textContent = r.yaml;
+            out.appendChild(pre);
+          }
+        },
+      });
+    });
+  }
+
+  // ── Workspace ─────────────────────────────────────────────────────────
+  const ws = {
+    cy: null,
+    selected: new Set(),  // explicit user picks
+    auto: new Set(),      // auto-locked transitive parents
+    parents: {},          // table → [hard parents]
+    nodes: [],            // raw graph payload
+    edges: [],
+    mode: "seed",
+    activeJob: null,
+    activeTable: null,
+  };
+
+  function setupWorkspace() {
+    const cyEl = document.getElementById("cy");
+    if (!cyEl || typeof cytoscape === "undefined") return;
+    if (typeof cytoscapeDagre !== "undefined" && !cytoscape.__dagreRegistered) {
+      cytoscape.use(cytoscapeDagre);
+      cytoscape.__dagreRegistered = true;
+    }
+
+    // Tabs
+    document.querySelectorAll(".ws-tab").forEach((b) => {
+      b.addEventListener("click", () => activateTab(b.dataset.tab));
+    });
+    // Mode pills — recompute auto since gaps mode skips populated parents.
+    document.querySelectorAll(".ws-mode-pill").forEach((b) => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".ws-mode-pill").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        ws.mode = b.dataset.mode;
+        recomputeAuto();
+        refreshSelectionUI();
+      });
+    });
+    // Toolbar
+    document.querySelector('[data-act="all"]').addEventListener("click", () => selectAll());
+    document.querySelector('[data-act="none"]').addEventListener("click", () => clearSelection());
+    document.querySelector('[data-act="empty"]').addEventListener("click", () => selectEmpty());
+    document.querySelector('[data-act="invert"]').addEventListener("click", () => invertSelection());
+    document.querySelector('[data-act="refresh"]').addEventListener("click", () => refreshCounts());
+    // Run
+    document.getElementById("ws-run").addEventListener("click", runMode);
+
+    fetch("/api/graph").then(r => r.json()).then(initGraph);
+  }
+
+  function activateTab(name) {
+    document.querySelectorAll(".ws-tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === name);
+    });
+    document.querySelectorAll(".ws-tab-body").forEach((b) => {
+      b.hidden = b.dataset.tab !== name;
+    });
+  }
+
+  function initGraph(data) {
+    ws.nodes = data.nodes || [];
+    ws.edges = data.edges || [];
+    // Compute hard FK parents per table (from non-nullable edges).
+    ws.parents = {};
+    for (const n of ws.nodes) ws.parents[n.id] = [];
+    for (const e of ws.edges) {
+      if (!e.nullable) ws.parents[e.target].push(e.source);
+    }
+
+    const elements = [
+      ...ws.nodes.map(n => ({ data: nodeData(n) })),
+      ...ws.edges.map(e => ({ data: { id: e.id, source: e.source, target: e.target, label: e.column, nullable: e.nullable } })),
+    ];
+
+    ws.cy = cytoscape({
+      container: document.getElementById("cy"),
+      elements,
+      style: cyStyle(),
+      layout: dagreLayout(),
+      wheelSensitivity: 0.3,
+    });
+
+    ws.cy.on("tap", "node", (ev) => toggleSelect(ev.target.id()));
+    ws.cy.on("cxttap", "node", (ev) => {
+      ev.preventDefault?.();
+      showDetail(ev.target.id());
+    });
+    ws.cy.on("mouseover", "node", (ev) => {
+      ws.cy.batch(() => {
+        ev.target.predecessors().addClass("hover-anc");
+        ev.target.addClass("hover-node");
+      });
+    });
+    ws.cy.on("mouseout", "node", () => {
+      ws.cy.batch(() => {
+        ws.cy.elements(".hover-anc").removeClass("hover-anc");
+        ws.cy.elements(".hover-node").removeClass("hover-node");
+      });
+    });
+
+    document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
+    refreshSelectionUI();
+  }
+
+  function nodeData(n) {
+    return {
+      id: n.id,
+      label: n.label,
+      count: n.count,
+      counted: n.counted,
+      countLabel: n.counted ? formatCount(n.count) : "?",
+    };
+  }
+
+  function formatCount(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+    if (n >= 1_000)     return (n / 1_000).toFixed(1) + "k";
+    return String(n);
+  }
+
+  function dagreLayout() {
+    return { name: "dagre", rankDir: "LR", nodeSep: 22, rankSep: 70, edgeSep: 12 };
+  }
+
+  function cyStyle() {
+    return [
+      {
+        selector: "node",
+        style: {
+          "background-color": "#1d2230",
+          "border-color": "#3b465f",
+          "border-width": 1.5,
+          "label": "data(label)",
+          "color": "#e6e9f2",
+          "font-size": 12,
+          "text-valign": "center",
+          "text-halign": "center",
+          "padding": "10px",
+          "shape": "round-rectangle",
+          "width": "label",
+          "height": "label",
+          "transition-property": "border-color background-color",
+          "transition-duration": 150,
+        },
+      },
+      // count badge using overlay node label trick
+      {
+        selector: "node[count > 0]",
+        style: { "border-color": "#5fd28e" },
+      },
+      {
+        selector: "node[count = 0][?counted]",
+        style: { "border-color": "#5a6079", "background-color": "#171b25" },
+      },
+      {
+        selector: "node.selected",
+        style: {
+          "border-color": "#7c9eff",
+          "border-width": 2.5,
+          "background-color": "#22305b",
+        },
+      },
+      {
+        selector: "node.auto",
+        style: {
+          "border-color": "#b196ff",
+          "border-width": 2,
+          "border-style": "dashed",
+          "background-color": "#2a2440",
+        },
+      },
+      {
+        selector: "node.seeding",
+        style: {
+          "border-color": "#ffcc66",
+          "border-width": 3,
+          "background-color": "#3a2f17",
+        },
+      },
+      {
+        selector: "node.done",
+        style: {
+          "border-color": "#5fd28e",
+          "border-width": 2.5,
+          "background-color": "#1c3a28",
+        },
+      },
+      {
+        selector: "node.hover-anc",
+        style: { "border-color": "#7c9eff", "border-width": 2 },
+      },
+      {
+        selector: "node.hover-node",
+        style: { "border-color": "#b196ff" },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 1.4,
+          "line-color": "#3b465f",
+          "target-arrow-color": "#3b465f",
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          "arrow-scale": 0.9,
+        },
+      },
+      {
+        selector: "edge[?nullable]",
+        style: { "line-style": "dashed", "line-color": "#4a5169", "target-arrow-color": "#4a5169" },
+      },
+    ];
+  }
+
+  // ── selection mechanics ───────────────────────────────────────────────
+  function toggleSelect(id) {
+    if (ws.auto.has(id) && !ws.selected.has(id)) {
+      // Auto-locked: clicking promotes it to explicit so the user can deselect.
+      ws.selected.add(id);
+      recomputeAuto();
+      refreshSelectionUI();
+      return;
+    }
+    if (ws.selected.has(id)) ws.selected.delete(id);
+    else ws.selected.add(id);
+    recomputeAuto();
+    refreshSelectionUI();
+  }
+
+  function isPopulated(id) {
+    const n = ws.nodes.find(x => x.id === id);
+    return !!(n && n.counted && n.count > 0);
+  }
+
+  // Auto-lock dependency closure. In gaps mode populated parents are skipped:
+  // their existing rows already satisfy FKs, so they don't need to be filled.
+  function recomputeAuto() {
+    const auto = new Set();
+    const queue = [...ws.selected];
+    while (queue.length) {
+      const t = queue.shift();
+      for (const p of (ws.parents[t] || [])) {
+        if (ws.selected.has(p) || auto.has(p)) continue;
+        if (ws.mode === "gaps" && isPopulated(p)) continue;
+        auto.add(p);
+        queue.push(p);
+      }
+    }
+    ws.auto = auto;
+  }
+
+  function selectAll() {
+    ws.selected = new Set(ws.nodes.map(n => n.id));
+    ws.auto = new Set();
+    refreshSelectionUI();
+  }
+  function clearSelection() {
+    ws.selected = new Set();
+    ws.auto = new Set();
+    refreshSelectionUI();
+  }
+  function selectEmpty() {
+    ws.selected = new Set(ws.nodes.filter(n => n.counted && n.count === 0).map(n => n.id));
+    recomputeAuto();
+    refreshSelectionUI();
+  }
+  function invertSelection() {
+    const next = new Set();
+    for (const n of ws.nodes) {
+      if (!ws.selected.has(n.id)) next.add(n.id);
+    }
+    ws.selected = next;
+    recomputeAuto();
+    refreshSelectionUI();
+  }
+
+  function refreshSelectionUI() {
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.nodes().forEach((n) => {
+        const id = n.id();
+        n.removeClass("selected auto");
+        if (ws.selected.has(id)) n.addClass("selected");
+        else if (ws.auto.has(id)) n.addClass("auto");
+      });
+    });
+
+    document.getElementById("ws-count-selected").textContent = String(ws.selected.size);
+    document.getElementById("ws-count-auto").textContent = String(ws.auto.size);
+
+    const list = document.getElementById("ws-selected-list");
+    const empty = document.getElementById("ws-selected-empty");
+    list.innerHTML = "";
+    if (ws.selected.size === 0 && ws.auto.size === 0) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    // Show in topological order using node ordering provided by /api/graph
+    // (ws.nodes is already alpha-sorted; the runner re-sorts topologically server-side).
+    // Compose: explicit picks first, then auto-locked, both alpha-sorted within group.
+    const ordered = [
+      ...[...ws.selected].sort().map(id => ({ id, kind: "sel" })),
+      ...[...ws.auto].sort().map(id => ({ id, kind: "auto" })),
+    ];
+    for (const item of ordered) {
+      const li = document.createElement("li");
+      li.className = "ws-sel-item " + item.kind;
+      const name = document.createElement("span");
+      name.textContent = item.id;
+      const tag = document.createElement("span");
+      tag.className = "ws-sel-tag";
+      tag.textContent = item.kind === "sel" ? "selected" : "auto";
+      li.append(name, tag);
+      li.addEventListener("click", () => showDetail(item.id));
+      list.appendChild(li);
+    }
+  }
+
+  // ── detail tab ────────────────────────────────────────────────────────
+  function showDetail(tableName) {
+    activateTab("detail");
+    ws.activeTable = tableName;
+    const target = document.getElementById("ws-detail");
+    target.innerHTML = "<p class='muted small'>loading…</p>";
+    fetch("/api/schema").then(r => r.json()).then((sc) => {
+      const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
+      if (!t) { target.innerHTML = "<p class='muted small'>not in schema</p>"; return; }
+      const rows = Object.entries(t.columns || t.Columns).map(([col, c]) => {
+        const flags = [];
+        if (c.pk || c.PK) flags.push('<span class="badge pk">PK</span>');
+        if (c.fk || c.FK) flags.push(`<span class="badge fk">FK → ${c.fk || c.FK}</span>`);
+        if (c.nullable || c.Nullable) flags.push('<span class="muted small">nullable</span>');
+        return `<tr><td><code>${col}</code> ${flags.join(" ")}</td><td><span class="type">${c.type || c.Type}</span></td></tr>`;
+      }).join("");
+      target.innerHTML = `
+        <h3>${tableName}</h3>
+        <table class="cols"><tbody>${rows}</tbody></table>
+      `;
+    });
+  }
+
+  // ── run dispatcher ────────────────────────────────────────────────────
+  async function runMode() {
+    const tables = [...ws.selected];
+    const cfg = {
+      rows: Number(document.getElementById("cfg-rows").value || 0),
+      enumRows: Number(document.getElementById("cfg-enum").value || 0),
+      batchSize: Number(document.getElementById("cfg-batch").value || 0),
+      truncate: document.getElementById("cfg-truncate").checked,
+      dryRun: document.getElementById("cfg-dryrun").checked,
+      disableFK: document.getElementById("cfg-disablefk").checked,
+      tables,
+    };
+    let endpoint = "/api/seed";
+    if (ws.mode === "gaps") { endpoint = "/api/gaps"; cfg.fill = true; }
+    if (ws.mode === "generate") {
+      endpoint = "/api/generate";
+      cfg.format = "yaml";
+    }
+    activateTab("logs");
+    document.getElementById("job-log").textContent = "";
+    document.getElementById("job-result").innerHTML = "";
+    if (ws.cy) ws.cy.nodes().removeClass("seeding done failed");
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      appendLog("ERROR: " + (j.error || res.statusText));
+      return;
+    }
+    streamJob(j.id, j.name, {
+      onLog: (line) => onLogPulse(line),
+      onEnd: (job) => onJobEnd(job),
+    });
+  }
+
+  function onLogPulse(line) {
+    if (!ws.cy) return;
+    // zerolog console writer renders `Seeding table` and `Filling table` with key=value pairs.
+    const m = line.match(/Seeding table.*?table=(\w+)|Filling table.*?table=(\w+)/);
+    if (m) {
+      const t = m[1] || m[2];
+      const node = ws.cy.getElementById(t);
+      if (node) {
+        ws.cy.nodes(".seeding").removeClass("seeding").addClass("done");
+        node.addClass("seeding");
+      }
+    }
+  }
+
+  function onJobEnd(job) {
+    if (ws.cy) ws.cy.nodes(".seeding").removeClass("seeding").addClass("done");
+    const out = document.getElementById("job-result");
+    const r = job.result || {};
+    if (typeof r.output === "string") {
+      const pre = document.createElement("pre");
+      pre.className = "job-log"; pre.textContent = r.output;
+      out.appendChild(pre);
+    }
+    if (Array.isArray(r.gapTables)) {
+      const div = document.createElement("div");
+      div.innerHTML = `<strong>Empty tables:</strong> ${r.gapTables.length === 0 ? "<em>none</em>" : r.gapTables.join(", ")}`;
+      out.appendChild(div);
+    }
+    refreshCounts();
+  }
+
+  function refreshCounts() {
+    if (!ws.cy) return;
+    fetch("/api/counts").then(r => r.json()).then((counts) => {
+      ws.cy.batch(() => {
+        ws.cy.nodes().forEach((n) => {
+          const id = n.id();
+          if (id in counts) {
+            n.data("count", counts[id]);
+            n.data("counted", true);
+            n.data("countLabel", formatCount(counts[id]));
+          }
+        });
+      });
+      // Keep the JS-side mirror in sync so isPopulated() sees fresh counts.
+      for (const n of ws.nodes) {
+        if (n.id in counts) {
+          n.count = counts[n.id];
+          n.counted = true;
+        }
+      }
+      recomputeAuto();
+      refreshSelectionUI();
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    setupConnectForm();
+    setupRunForm();
+    setupWorkspace();
+  });
+
+  // Lightweight debug surface — useful for poking from the console and for
+  // automated UI tests. Not used by the app itself.
+  window.seedstorm = {
+    state: ws,
+    select: (id) => { toggleSelect(id); },
+    selectAll, clearSelection, selectEmpty, invertSelection, refreshCounts,
+    showDetail,
+    activateTab,
+    setMode: (m) => {
+      ws.mode = m;
+      document.querySelectorAll(".ws-mode-pill").forEach(b => b.classList.toggle("active", b.dataset.mode === m));
+    },
+    run: runMode,
+  };
+})();
