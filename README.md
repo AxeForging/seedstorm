@@ -6,11 +6,33 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 
 ## Install
 
+**Go install**
+
 ```bash
 go install github.com/AxeForging/seedstorm/cmd/seedstorm@latest
 ```
 
-Or download a binary from [Releases](https://github.com/AxeForging/seedstorm/releases).
+**Linux / macOS — download binary**
+
+```bash
+# macOS ARM64 (Apple Silicon)
+curl -L https://github.com/AxeForging/seedstorm/releases/latest/download/seedstorm-darwin-arm64.tar.gz | tar xz
+sudo mv seedstorm /usr/local/bin/
+
+# macOS AMD64
+curl -L https://github.com/AxeForging/seedstorm/releases/latest/download/seedstorm-darwin-amd64.tar.gz | tar xz
+sudo mv seedstorm /usr/local/bin/
+
+# Linux AMD64
+curl -L https://github.com/AxeForging/seedstorm/releases/latest/download/seedstorm-linux-amd64.tar.gz | tar xz
+sudo mv seedstorm /usr/local/bin/
+
+# Linux ARM64
+curl -L https://github.com/AxeForging/seedstorm/releases/latest/download/seedstorm-linux-arm64.tar.gz | tar xz
+sudo mv seedstorm /usr/local/bin/
+```
+
+All releases and checksums at [github.com/AxeForging/seedstorm/releases](https://github.com/AxeForging/seedstorm/releases).
 
 ## Quick Start
 
