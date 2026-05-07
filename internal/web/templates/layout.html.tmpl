@@ -14,7 +14,19 @@
 <body data-active="{{.Active}}">
   <header class="topbar">
     <div class="brand">
-      <span class="logo">⚡</span>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="seedstorm-logo-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#7c9eff"/>
+              <stop offset="1" stop-color="#b196ff"/>
+            </linearGradient>
+          </defs>
+          <path d="M 26 16 A 10 10 0 1 1 16 6" stroke="url(#seedstorm-logo-grad)" stroke-width="2.4" stroke-linecap="round"/>
+          <path d="M 22 16 A 6 6 0 1 1 16 10"  stroke="url(#seedstorm-logo-grad)" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="16" cy="16" r="1.8" fill="url(#seedstorm-logo-grad)"/>
+        </svg>
+      </span>
       <span>seedstorm</span>
     </div>
     <nav class="nav">
@@ -79,11 +91,16 @@
       <span class="muted" id="job-name"></span>
     </div>
     <div class="row">
+      <button class="btn-ghost" id="job-expand-all" type="button" title="Expand or collapse every phase">⤢</button>
       <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
       <button class="btn-ghost" id="job-clear"  type="button">Clear</button>
     </div>
   </div>
-  <pre class="job-log" id="job-log"></pre>
+  <div class="job-progress-wrap" id="job-progress-wrap" hidden>
+    <progress class="job-progress" id="job-progress" max="100" value="0"></progress>
+    <span class="muted small" id="job-progress-label"></span>
+  </div>
+  <div class="job-phases" id="job-phases"></div>
   <div id="job-result"></div>
 </div>
 {{end}}

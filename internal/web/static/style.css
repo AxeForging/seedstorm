@@ -33,7 +33,9 @@ body {
   position: sticky; top: 0; z-index: 5;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.logo { font-size: 18px; color: var(--accent-2); }
+.logo { display: inline-flex; align-items: center; line-height: 0; }
+.logo svg { display: block; transition: transform 600ms cubic-bezier(.2,.7,.2,1); }
+.brand:hover .logo svg { transform: rotate(-180deg); }
 .nav { display: flex; gap: 4px; flex: 1; }
 .navlink {
   color: var(--muted);
@@ -265,6 +267,79 @@ textarea { font-family: var(--mono); font-size: 12px; }
   background: #0b0d12;
   border: 1px solid var(--line);
   border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: #d6dcec;
+}
+
+/* Progress bar shown after the first `progress` event from the job stream. */
+.job-progress-wrap {
+  display: flex; align-items: center; gap: 10px;
+  margin: 10px 0 6px;
+}
+.job-progress {
+  flex: 1; height: 6px;
+  appearance: none; -webkit-appearance: none;
+  border: none; border-radius: 999px; overflow: hidden;
+  background: var(--panel-2);
+}
+.job-progress::-webkit-progress-bar { background: var(--panel-2); border-radius: 999px; }
+.job-progress::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 999px;
+  transition: width 200ms ease;
+}
+.job-progress::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 999px;
+}
+
+/* Phase accordion: one <details> per phase, auto-closed when the next starts. */
+.job-phases { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.job-phase {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0d12;
+  overflow: hidden;
+}
+.job-phase > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-2);
+}
+.job-phase > summary::-webkit-details-marker { display: none; }
+.job-phase > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+.job-phase[open] > summary::before { transform: rotate(90deg); }
+.job-phase-name { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+.job-phase-meta { margin-left: auto; }
+.job-phase-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+.job-phase[data-state="running"] > summary .job-phase-dot {
+  background: var(--accent); animation: status-dot 1.0s ease-in-out infinite;
+}
+.job-phase[data-state="ok"]     > summary .job-phase-dot { background: var(--ok); }
+.job-phase[data-state="done"]   > summary .job-phase-dot { background: var(--ok); }
+.job-phase[data-state="failed"] > summary .job-phase-dot { background: var(--err); }
+.job-phase[data-state="canceled"] > summary .job-phase-dot { background: var(--warn); }
+.job-phase-log {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow: auto;
   font-family: var(--mono);
   font-size: 12px;
   white-space: pre-wrap;

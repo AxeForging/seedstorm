@@ -21,14 +21,44 @@ const (
 	JobCanceled JobStatus = "canceled"
 )
 
-// LogLine is a single structured log line emitted by a running job.
+// EventKind discriminates the entries in a job's event stream.
+type EventKind string
+
+const (
+	EventLog      EventKind = "log"
+	EventPhase    EventKind = "phase"
+	EventProgress EventKind = "progress"
+)
+
+// Event is a single entry on the job's event stream. The fields used depend
+// on Kind: log carries Text; phase carries Text (the phase name); progress
+// carries Done/Total and Text (label).
+type Event struct {
+	Seq   int       `json:"seq"`
+	Time  time.Time `json:"time"`
+	Kind  EventKind `json:"kind"`
+	Text  string    `json:"text,omitempty"`
+	Done  int       `json:"done,omitempty"`
+	Total int       `json:"total,omitempty"`
+}
+
+// LogLine is the historical view of a log-only event, kept for callers that
+// only care about the captured text.
 type LogLine struct {
 	Seq  int       `json:"seq"`
 	Time time.Time `json:"time"`
 	Text string    `json:"text"`
 }
 
-// Job represents a unit of background work with a captured log stream.
+// JobControl is what runners receive: a writer for free-form log output plus
+// hooks for emitting structured phase + progress events.
+type JobControl interface {
+	io.Writer
+	Phase(name string)
+	Progress(done, total int, label string)
+}
+
+// Job represents a unit of background work with a captured event stream.
 type Job struct {
 	ID        string
 	Name      string
@@ -39,16 +69,15 @@ type Job struct {
 	Result    map[string]any
 
 	mu      sync.Mutex
-	lines   []LogLine
-	subs    map[chan LogLine]struct{}
+	events  []Event
+	subs    map[chan Event]struct{}
 	cancel  context.CancelFunc
 	closed  bool
 	closeCh chan struct{}
 }
 
-// JobFunc is the body of a job. The provided io.Writer streams log output.
-// Returning a non-nil result map exposes structured data to the UI.
-type JobFunc func(ctx context.Context, log io.Writer) (map[string]any, error)
+// JobFunc is the body of a job.
+type JobFunc func(ctx context.Context, jc JobControl) (map[string]any, error)
 
 // Manager owns the registry of active and recent jobs.
 type Manager struct {
@@ -69,7 +98,7 @@ func (m *Manager) Start(ctx context.Context, name string, fn JobFunc) *Job {
 		Name:      name,
 		Status:    JobPending,
 		StartedAt: time.Now(),
-		subs:      make(map[chan LogLine]struct{}),
+		subs:      make(map[chan Event]struct{}),
 		cancel:    cancel,
 		closeCh:   make(chan struct{}),
 	}
@@ -79,8 +108,8 @@ func (m *Manager) Start(ctx context.Context, name string, fn JobFunc) *Job {
 
 	go func() {
 		job.setStatus(JobRunning)
-		writer := &jobWriter{job: job}
-		result, err := fn(jctx, writer)
+		ctrl := &jobWriter{job: job}
+		result, err := fn(jctx, ctrl)
 		job.mu.Lock()
 		job.EndedAt = time.Now()
 		job.Result = result
@@ -94,9 +123,7 @@ func (m *Manager) Start(ctx context.Context, name string, fn JobFunc) *Job {
 		default:
 			job.Status = JobDone
 		}
-		// Snapshot subs to close after releasing the lock to avoid deadlocks
-		// if a slow subscriber is also calling back into the job.
-		subs := make([]chan LogLine, 0, len(job.subs))
+		subs := make([]chan Event, 0, len(job.subs))
 		for ch := range job.subs {
 			subs = append(subs, ch)
 		}
@@ -130,42 +157,55 @@ func (m *Manager) Cancel(id string) bool {
 	return true
 }
 
-// Subscribe returns a channel that receives newly emitted log lines plus all
-// lines emitted before subscription. The channel is closed when the job ends.
-// The caller must drain promptly; slow consumers drop lines.
-func (j *Job) Subscribe() (<-chan LogLine, []LogLine) {
+// Subscribe returns a channel that receives newly emitted events plus a copy
+// of all events emitted before subscription. The channel is closed when the
+// job ends. Slow consumers drop events; the backlog is recoverable via Events().
+func (j *Job) Subscribe() (<-chan Event, []Event) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	backlog := make([]LogLine, len(j.lines))
-	copy(backlog, j.lines)
+	backlog := make([]Event, len(j.events))
+	copy(backlog, j.events)
 	if j.closed {
-		ch := make(chan LogLine)
+		ch := make(chan Event)
 		close(ch)
 		return ch, backlog
 	}
-	ch := make(chan LogLine, 64)
+	ch := make(chan Event, 64)
 	j.subs[ch] = struct{}{}
 	return ch, backlog
 }
 
 // Unsubscribe removes a previously registered subscriber.
-func (j *Job) Unsubscribe(ch <-chan LogLine) {
+func (j *Job) Unsubscribe(ch <-chan Event) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	for c := range j.subs {
-		if (<-chan LogLine)(c) == ch {
+		if (<-chan Event)(c) == ch {
 			delete(j.subs, c)
 			return
 		}
 	}
 }
 
-// Lines returns a snapshot of all log lines captured so far.
+// Events returns a snapshot of every event captured so far.
+func (j *Job) Events() []Event {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]Event, len(j.events))
+	copy(out, j.events)
+	return out
+}
+
+// Lines returns a snapshot of just the log-kind events as LogLines.
 func (j *Job) Lines() []LogLine {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	out := make([]LogLine, len(j.lines))
-	copy(out, j.lines)
+	out := make([]LogLine, 0, len(j.events))
+	for _, e := range j.events {
+		if e.Kind == EventLog {
+			out = append(out, LogLine{Seq: e.Seq, Time: e.Time, Text: e.Text})
+		}
+	}
 	return out
 }
 
@@ -178,23 +218,23 @@ func (j *Job) setStatus(s JobStatus) {
 	j.mu.Unlock()
 }
 
-func (j *Job) appendLine(text string) {
+func (j *Job) appendEvent(ev Event) {
 	j.mu.Lock()
-	line := LogLine{Seq: len(j.lines) + 1, Time: time.Now(), Text: text}
-	j.lines = append(j.lines, line)
+	ev.Seq = len(j.events) + 1
+	ev.Time = time.Now()
+	j.events = append(j.events, ev)
 	subs := j.subs
 	j.mu.Unlock()
 	for ch := range subs {
 		select {
-		case ch <- line:
+		case ch <- ev:
 		default:
-			// Drop on slow subscriber; the backlog is still recoverable via Lines().
 		}
 	}
 }
 
-// jobWriter implements io.Writer; each Write call appends a single line entry,
-// splitting on newlines so structured zerolog output stays one-line-per-event.
+// jobWriter implements JobControl. Each Write call appends one or more log
+// events split on newlines so structured zerolog output stays one-line-per-event.
 type jobWriter struct {
 	job *Job
 	buf []byte
@@ -210,10 +250,18 @@ func (w *jobWriter) Write(p []byte) (int, error) {
 		line := string(w.buf[:i])
 		w.buf = w.buf[i+1:]
 		if line != "" {
-			w.job.appendLine(line)
+			w.job.appendEvent(Event{Kind: EventLog, Text: line})
 		}
 	}
 	return len(p), nil
+}
+
+func (w *jobWriter) Phase(name string) {
+	w.job.appendEvent(Event{Kind: EventPhase, Text: name})
+}
+
+func (w *jobWriter) Progress(done, total int, label string) {
+	w.job.appendEvent(Event{Kind: EventProgress, Text: label, Done: done, Total: total})
 }
 
 func indexByte(b []byte, c byte) int {
@@ -228,7 +276,6 @@ func indexByte(b []byte, c byte) int {
 func newID() string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// Fallback to time-based id; effectively never hits in practice.
 		return fmt.Sprintf("job-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])

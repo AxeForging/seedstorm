@@ -42,9 +42,16 @@
           <span class="status-pill" id="job-status">idle</span>
           <span class="muted small" id="job-elapsed"></span>
         </div>
-        <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
+        <div class="row">
+          <button class="btn-ghost" id="job-expand-all" type="button" title="Expand or collapse every phase">⤢</button>
+          <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
+        </div>
       </div>
-      <pre class="job-log" id="job-log"></pre>
+      <div class="job-progress-wrap" id="job-progress-wrap" hidden>
+        <progress class="job-progress" id="job-progress" max="100" value="0"></progress>
+        <span class="muted small" id="job-progress-label"></span>
+      </div>
+      <div class="job-phases" id="job-phases"></div>
       <div id="job-result"></div>
     </div>
   </aside>
