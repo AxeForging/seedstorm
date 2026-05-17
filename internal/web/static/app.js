@@ -657,10 +657,18 @@
       li.className = "ws-sel-item " + item.kind;
       const name = document.createElement("span");
       name.textContent = item.id;
+      const actions = document.createElement("span");
+      actions.className = "ws-sel-actions";
       const tag = document.createElement("span");
       tag.className = "ws-sel-tag";
       tag.textContent = item.kind === "sel" ? "selected" : "auto";
-      li.append(name, tag);
+      const inspect = document.createElement("button");
+      inspect.className = "ws-sel-view";
+      inspect.type = "button";
+      inspect.textContent = "View rows";
+      inspect.title = "Open columns and row preview";
+      actions.append(tag, inspect);
+      li.append(name, actions);
       li.addEventListener("click", () => showDetail(item.id));
       list.appendChild(li);
     }
