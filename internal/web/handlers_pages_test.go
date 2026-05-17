@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,9 +21,12 @@ func TestServer_routes_smoke(t *testing.T) {
 		wantStatus int
 		mustHave   string
 	}{
-		{"/", http.StatusOK, "Connect to a database"},
-		{"/connect", http.StatusOK, "Connect to a database"},
+		{"/", http.StatusOK, "Connect to your seed target"},
+		{"/connect", http.StatusOK, "Connect to your seed target"},
 		{"/static/style.css", http.StatusOK, "--accent"},
+		{"/static/style.css", http.StatusOK, ".table-modal"},
+		{"/static/app.js", http.StatusOK, "/api/table?"},
+		{"/static/app.js", http.StatusOK, "openTableModal"},
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -34,9 +38,11 @@ func TestServer_routes_smoke(t *testing.T) {
 			if res.StatusCode != c.wantStatus {
 				t.Fatalf("status = %d, want %d", res.StatusCode, c.wantStatus)
 			}
-			b := make([]byte, 4096)
-			n, _ := res.Body.Read(b)
-			if !strings.Contains(string(b[:n]), c.mustHave) {
+			b, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if !strings.Contains(string(b), c.mustHave) {
 				t.Fatalf("body missing %q", c.mustHave)
 			}
 		})
@@ -51,14 +57,15 @@ func TestServer_apiRequiresSession(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	// /api/graph without a session should return 401.
-	res, err := http.Get(srv.URL + "/api/graph")
-	if err != nil {
-		t.Fatalf("GET /api/graph: %v", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", res.StatusCode)
+	for _, p := range []string{"/api/graph", "/api/table?table=users"} {
+		res, err := http.Get(srv.URL + p)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s: status = %d, want 401", p, res.StatusCode)
+		}
 	}
 }
 

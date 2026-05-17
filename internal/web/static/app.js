@@ -20,6 +20,9 @@
     const includePw = document.getElementById("preset-include-pw");
     const pwInput = document.getElementById("conn-password");
     const eyeBtn = document.getElementById("toggle-password");
+    const dbType = form.querySelector('[name="dbType"]');
+    const port = form.querySelector('[name="port"]');
+    const defaultPorts = { postgres: "5432", mysql: "3306" };
 
     // Eye toggle: closed by default, click reveals
     if (eyeBtn && pwInput) {
@@ -53,6 +56,13 @@
         if (pwInput) pwInput.type = "password";
       }
     });
+    if (dbType && port) {
+      dbType.addEventListener("change", () => {
+        const next = defaultPorts[dbType.value];
+        const known = Object.values(defaultPorts).includes(port.value);
+        if (next && (port.value === "" || known)) port.value = next;
+      });
+    }
     deleteBtn.addEventListener("click", () => {
       const all = loadPresets();
       delete all[picker.value];
@@ -314,6 +324,11 @@
     mode: "seed",
     activeJob: null,
     activeTable: null,
+    search: "",
+    preview: { limit: 25, offset: 0 },
+    modal: { table: "", limit: 50, offset: 0 },
+    peek: new Set(),
+    schemaColumns: {},
   };
 
   function setupWorkspace() {
@@ -344,6 +359,26 @@
     document.querySelector('[data-act="empty"]').addEventListener("click", () => selectEmpty());
     document.querySelector('[data-act="invert"]').addEventListener("click", () => invertSelection());
     document.querySelector('[data-act="refresh"]').addEventListener("click", () => refreshCounts());
+    document.getElementById("ws-search")?.addEventListener("input", (ev) => applySearch(ev.target.value));
+    document.getElementById("ws-search")?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        focusFirstSearchHit();
+      }
+    });
+    document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
+    document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
+    document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
+    setupTableModal();
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") closeTableModal();
+      if (ev.target && ["INPUT", "TEXTAREA", "SELECT"].includes(ev.target.tagName)) return;
+      if (ev.key === "/") {
+        ev.preventDefault();
+        document.getElementById("ws-search")?.focus();
+      }
+      if (ev.key.toLowerCase() === "f") fitGraph();
+    });
     // Run
     document.getElementById("ws-run").addEventListener("click", runMode);
 
@@ -401,6 +436,7 @@
     });
 
     document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
+    updateStats();
     refreshSelectionUI();
   }
 
@@ -496,6 +532,22 @@
         style: { "border-color": "#b196ff" },
       },
       {
+        selector: "node.search-hit",
+        style: {
+          "border-color": "#ffcc66",
+          "border-width": 3,
+          "background-color": "#352f1d",
+        },
+      },
+      {
+        selector: "node.search-dim",
+        style: { "opacity": 0.28 },
+      },
+      {
+        selector: "edge.search-dim",
+        style: { "opacity": 0.2 },
+      },
+      {
         selector: "edge",
         style: {
           "width": 1.4,
@@ -588,6 +640,7 @@
 
     document.getElementById("ws-count-selected").textContent = String(ws.selected.size);
     document.getElementById("ws-count-auto").textContent = String(ws.auto.size);
+    updateRunScope();
 
     const list = document.getElementById("ws-selected-list");
     const empty = document.getElementById("ws-selected-empty");
@@ -607,38 +660,412 @@
     for (const item of ordered) {
       const li = document.createElement("li");
       li.className = "ws-sel-item " + item.kind;
+      if (ws.peek.has(item.id)) li.classList.add("open");
+      const main = document.createElement("div");
+      main.className = "ws-sel-main";
       const name = document.createElement("span");
       name.textContent = item.id;
+      const actions = document.createElement("span");
+      actions.className = "ws-sel-actions";
       const tag = document.createElement("span");
       tag.className = "ws-sel-tag";
       tag.textContent = item.kind === "sel" ? "selected" : "auto";
-      li.append(name, tag);
-      li.addEventListener("click", () => showDetail(item.id));
+      const peek = document.createElement("button");
+      peek.className = "ws-sel-view";
+      peek.type = "button";
+      peek.textContent = ws.peek.has(item.id) ? "Hide" : "Peek";
+      peek.title = "Expand a compact row preview";
+      const inspect = document.createElement("button");
+      inspect.className = "ws-sel-view";
+      inspect.type = "button";
+      inspect.textContent = "Open";
+      inspect.title = "Open a large row preview";
+      actions.append(tag, peek, inspect);
+      if (item.kind === "sel") {
+        const remove = document.createElement("button");
+        remove.className = "ws-sel-view danger";
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.title = "Unselect this table";
+        remove.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          ws.selected.delete(item.id);
+          ws.peek.delete(item.id);
+          recomputeAuto();
+          refreshSelectionUI();
+        });
+        actions.append(remove);
+      }
+      main.append(name, actions);
+      li.append(main);
+      const preview = document.createElement("div");
+      preview.className = "ws-sel-peek";
+      preview.hidden = !ws.peek.has(item.id);
+      li.append(preview);
+      main.addEventListener("click", () => togglePeek(item.id));
+      peek.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        togglePeek(item.id);
+      });
+      inspect.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openTableModal(item.id);
+      });
       list.appendChild(li);
+      if (ws.peek.has(item.id)) loadPeek(item.id, preview);
     }
+  }
+
+  function togglePeek(tableName) {
+    if (ws.peek.has(tableName)) ws.peek.delete(tableName);
+    else ws.peek.add(tableName);
+    refreshSelectionUI();
+  }
+
+  async function loadPeek(tableName, target) {
+    target.hidden = false;
+    target.innerHTML = '<p class="muted small">Loading rows...</p>';
+    const q = new URLSearchParams({ table: tableName, limit: "5", offset: "0" });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      target.innerHTML = `<p class="muted small">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    if (!data.rows || data.rows.length === 0) {
+      target.innerHTML = '<p class="muted small">No rows yet.</p>';
+      return;
+    }
+    const columns = (data.columns || []).slice(0, 3);
+    const cards = data.rows.map((row) => {
+      const cells = columns.map((c) => {
+        const value = row[c] || "";
+        return `<span><strong>${escapeHTML(c)}</strong>${escapeHTML(value)}</span>`;
+      }).join("");
+      return `<div class="ws-peek-row">${cells}</div>`;
+    }).join("");
+    const more = data.total > data.rows.length ? `<span>${data.rows.length} of ${data.total}</span>` : `<span>${data.total} rows</span>`;
+    target.innerHTML = `
+      <div class="ws-peek-meta">${more}<button type="button" class="ws-peek-open">Open table</button></div>
+      ${cards}
+    `;
+    target.querySelector(".ws-peek-open")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openTableModal(tableName);
+    });
+  }
+
+  function updateStats() {
+    const total = ws.nodes.length;
+    const counted = ws.nodes.filter(n => n.counted);
+    const empty = counted.filter(n => n.count === 0).length;
+    const populated = counted.filter(n => n.count > 0).length;
+    const set = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value);
+    };
+    set("ws-stat-tables", total);
+    set("ws-stat-empty", empty);
+    set("ws-stat-populated", populated);
+  }
+
+  function updateRunScope() {
+    const total = ws.nodes.length;
+    const explicit = ws.selected.size;
+    const auto = ws.auto.size;
+    const effective = explicit + auto;
+    const scope = document.getElementById("ws-scope");
+    const run = document.getElementById("ws-run");
+    const modeLabel = ws.mode === "gaps" ? "Fill empty" : (ws.mode === "generate" ? "Generate" : "Seed");
+    if (scope) {
+      scope.textContent = effective === 0
+        ? `Run scope: all ${total} tables`
+        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)`;
+    }
+    if (run) {
+      run.textContent = effective === 0 ? `${modeLabel} all tables` : `${modeLabel} ${effective} tables`;
+    }
+  }
+
+  function applySearch(raw) {
+    ws.search = (raw || "").trim().toLowerCase();
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.nodes().removeClass("search-hit search-dim");
+      ws.cy.edges().removeClass("search-dim");
+      if (!ws.search) return;
+      ws.cy.nodes().forEach((n) => {
+        if (n.id().toLowerCase().includes(ws.search)) n.addClass("search-hit");
+        else n.addClass("search-dim");
+      });
+      ws.cy.edges().forEach((e) => {
+        if (!e.source().hasClass("search-hit") && !e.target().hasClass("search-hit")) e.addClass("search-dim");
+      });
+    });
+  }
+
+  function focusFirstSearchHit() {
+    if (!ws.cy || !ws.search) return;
+    const hit = ws.cy.nodes(".search-hit")[0];
+    if (!hit) return;
+    ws.cy.animate({ center: { eles: hit }, zoom: Math.max(ws.cy.zoom(), 1.1) }, { duration: 220 });
+    showDetail(hit.id());
+  }
+
+  function fitGraph() {
+    if (!ws.cy) return;
+    const eles = ws.search ? ws.cy.nodes(".search-hit") : ws.cy.elements();
+    ws.cy.animate({ fit: { eles: eles.length ? eles : ws.cy.elements(), padding: 42 } }, { duration: 220 });
+  }
+
+  function zoomGraph(factor) {
+    if (!ws.cy) return;
+    ws.cy.animate({ zoom: ws.cy.zoom() * factor, center: { eles: ws.cy.elements() } }, { duration: 160 });
   }
 
   // ── detail tab ────────────────────────────────────────────────────────
   function showDetail(tableName) {
     activateTab("detail");
     ws.activeTable = tableName;
+    ws.preview.offset = 0;
     const target = document.getElementById("ws-detail");
-    target.innerHTML = "<p class='muted small'>loading…</p>";
+    target.innerHTML = "<p class='muted small'>loading...</p>";
     fetch("/api/schema").then(r => r.json()).then((sc) => {
       const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
       if (!t) { target.innerHTML = "<p class='muted small'>not in schema</p>"; return; }
-      const rows = Object.entries(t.columns || t.Columns).map(([col, c]) => {
+      const entries = Object.entries(t.columns || t.Columns);
+      ws.schemaColumns[tableName] = Object.fromEntries(entries.map(([col, c]) => [col, {
+        nullable: !!(c.nullable || c.Nullable),
+        fk: c.fk || c.FK || "",
+        pk: !!(c.pk || c.PK),
+      }]));
+      const nullableCount = entries.filter(([, c]) => c.nullable || c.Nullable).length;
+      const fkCount = entries.filter(([, c]) => c.fk || c.FK).length;
+      const rows = entries.map(([col, c]) => {
         const flags = [];
         if (c.pk || c.PK) flags.push('<span class="badge pk">PK</span>');
-        if (c.fk || c.FK) flags.push(`<span class="badge fk">FK → ${c.fk || c.FK}</span>`);
-        if (c.nullable || c.Nullable) flags.push('<span class="muted small">nullable</span>');
-        return `<tr><td><code>${col}</code> ${flags.join(" ")}</td><td><span class="type">${c.type || c.Type}</span></td></tr>`;
+        if (c.fk || c.FK) flags.push(`<span class="badge fk">FK -> ${escapeHTML(c.fk || c.FK)}</span>`);
+        if (c.nullable || c.Nullable) flags.push('<span class="badge nullable">nullable</span>');
+        return `<tr><td><code>${escapeHTML(col)}</code> ${flags.join(" ")}</td><td><span class="type">${escapeHTML(c.type || c.Type || "")}</span></td></tr>`;
       }).join("");
       target.innerHTML = `
-        <h3>${tableName}</h3>
-        <table class="cols"><tbody>${rows}</tbody></table>
+        <div class="detail-head">
+          <div>
+            <h3>${escapeHTML(tableName)}</h3>
+            <p class="muted small">Columns and live data preview</p>
+            <div class="detail-stats">
+              <span>${entries.length} columns</span>
+              <span>${nullableCount} nullable</span>
+              <span>${fkCount} FK</span>
+            </div>
+          </div>
+          <button class="btn-ghost" id="preview-refresh" type="button">Refresh rows</button>
+        </div>
+        <table class="cols schema-cols"><tbody>${rows}</tbody></table>
+        <div class="preview-panel">
+          <div class="preview-toolbar">
+            <div>
+              <strong>Rows</strong>
+              <span class="muted small" id="preview-meta">loading...</span>
+            </div>
+            <label class="field-tight inline">
+              <span>Limit</span>
+              <select id="preview-limit">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <label class="field-tight inline preview-toggle">
+              <input id="preview-hide-null" type="checkbox">
+              hide NULL-only columns
+            </label>
+          </div>
+          <div id="preview-table" class="preview-table-wrap">
+            <p class="muted small empty-hint">Loading rows...</p>
+          </div>
+          <div class="preview-pager">
+            <button class="btn-ghost" id="preview-prev" type="button">Previous</button>
+            <span class="muted small" id="preview-page"></span>
+            <button class="btn-ghost" id="preview-next" type="button">Next</button>
+          </div>
+        </div>
       `;
+      document.getElementById("preview-refresh")?.addEventListener("click", () => loadPreview(tableName));
+      document.getElementById("preview-limit")?.addEventListener("change", (ev) => {
+        ws.preview.limit = Number(ev.target.value || 25);
+        ws.preview.offset = 0;
+        loadPreview(tableName);
+      });
+      document.getElementById("preview-hide-null")?.addEventListener("change", () => loadPreview(tableName));
+      document.getElementById("preview-prev")?.addEventListener("click", () => {
+        ws.preview.offset = Math.max(0, ws.preview.offset - ws.preview.limit);
+        loadPreview(tableName);
+      });
+      document.getElementById("preview-next")?.addEventListener("click", () => {
+        ws.preview.offset += ws.preview.limit;
+        loadPreview(tableName);
+      });
+      loadPreview(tableName);
     });
+  }
+
+  function setupTableModal() {
+    document.getElementById("table-modal-close")?.addEventListener("click", closeTableModal);
+    document.querySelector("[data-modal-close]")?.addEventListener("click", closeTableModal);
+    document.getElementById("table-modal-refresh")?.addEventListener("click", () => loadModalPreview());
+    document.getElementById("table-modal-limit")?.addEventListener("change", (ev) => {
+      ws.modal.limit = Number(ev.target.value || 50);
+      ws.modal.offset = 0;
+      loadModalPreview();
+    });
+    document.getElementById("table-modal-hide-null")?.addEventListener("change", () => loadModalPreview());
+    document.getElementById("table-modal-prev")?.addEventListener("click", () => {
+      ws.modal.offset = Math.max(0, ws.modal.offset - ws.modal.limit);
+      loadModalPreview();
+    });
+    document.getElementById("table-modal-next")?.addEventListener("click", () => {
+      ws.modal.offset += ws.modal.limit;
+      loadModalPreview();
+    });
+  }
+
+  async function openTableModal(tableName) {
+    ws.modal.table = tableName;
+    ws.modal.offset = 0;
+    const modal = document.getElementById("table-modal");
+    const title = document.getElementById("table-modal-title");
+    if (title) title.textContent = tableName;
+    if (modal) modal.hidden = false;
+    document.body.classList.add("modal-open");
+    await ensureSchemaColumns(tableName);
+    loadModalPreview();
+  }
+
+  function closeTableModal() {
+    const modal = document.getElementById("table-modal");
+    if (modal) modal.hidden = true;
+    document.body.classList.remove("modal-open");
+  }
+
+  async function ensureSchemaColumns(tableName) {
+    if (ws.schemaColumns[tableName]) return;
+    const sc = await fetch("/api/schema").then(r => r.json());
+    const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
+    if (!t) return;
+    const entries = Object.entries(t.columns || t.Columns);
+    ws.schemaColumns[tableName] = Object.fromEntries(entries.map(([col, c]) => [col, {
+      nullable: !!(c.nullable || c.Nullable),
+      fk: c.fk || c.FK || "",
+      pk: !!(c.pk || c.PK),
+    }]));
+  }
+
+  async function loadModalPreview() {
+    const tableName = ws.modal.table;
+    const box = document.getElementById("table-modal-body");
+    const meta = document.getElementById("table-modal-meta");
+    const page = document.getElementById("table-modal-page");
+    const prev = document.getElementById("table-modal-prev");
+    const next = document.getElementById("table-modal-next");
+    const note = document.getElementById("table-modal-note");
+    if (!box || !tableName) return;
+    box.innerHTML = "<p class='muted small empty-hint'>Loading rows...</p>";
+    const q = new URLSearchParams({
+      table: tableName,
+      limit: String(ws.modal.limit),
+      offset: String(ws.modal.offset),
+    });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    const start = data.total === 0 ? 0 : data.offset + 1;
+    const end = Math.min(data.offset + data.rows.length, data.total);
+    if (meta) meta.textContent = `${start}-${end} of ${data.total} rows`;
+    if (page) page.textContent = data.total === 0 ? "No rows" : `Page ${Math.floor(data.offset / data.limit) + 1}`;
+    if (prev) prev.disabled = data.offset <= 0;
+    if (next) next.disabled = data.offset + data.limit >= data.total;
+    renderPreviewTable(box, data, tableName, !!document.getElementById("table-modal-hide-null")?.checked, note);
+  }
+
+  async function loadPreview(tableName) {
+    const box = document.getElementById("preview-table");
+    const meta = document.getElementById("preview-meta");
+    const page = document.getElementById("preview-page");
+    const prev = document.getElementById("preview-prev");
+    const next = document.getElementById("preview-next");
+    if (!box) return;
+    box.innerHTML = "<p class='muted small empty-hint'>Loading rows...</p>";
+    const q = new URLSearchParams({
+      table: tableName,
+      limit: String(ws.preview.limit),
+      offset: String(ws.preview.offset),
+    });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    const start = data.total === 0 ? 0 : data.offset + 1;
+    const end = Math.min(data.offset + data.rows.length, data.total);
+    if (meta) meta.textContent = `${start}-${end} of ${data.total}`;
+    if (page) page.textContent = data.total === 0 ? "No rows" : `Page ${Math.floor(data.offset / data.limit) + 1}`;
+    if (prev) prev.disabled = data.offset <= 0;
+    if (next) next.disabled = data.offset + data.limit >= data.total;
+    const hideNull = document.getElementById("preview-hide-null")?.checked;
+    const note = document.getElementById("preview-null-note");
+    if (note) note.remove();
+    const inlineNote = { textContent: "" };
+    renderPreviewTable(box, data, tableName, !!hideNull, inlineNote);
+    if (inlineNote.textContent && meta) meta.insertAdjacentHTML("afterend", `<span class="muted small preview-null-note" id="preview-null-note">${escapeHTML(inlineNote.textContent)}</span>`);
+  }
+
+  function renderPreviewTable(box, data, tableName, hideNull, noteEl) {
+    if (!data.rows || data.rows.length === 0) {
+      box.innerHTML = '<p class="muted small empty-hint">This table has no rows yet.</p>';
+      if (noteEl) noteEl.textContent = "";
+      return;
+    }
+    const visibleColumns = hideNull ? data.columns.filter((c) => data.rows.some((row) => row[c] !== "NULL")) : data.columns;
+    const metaBits = [];
+    const schema = ws.schemaColumns[tableName] || {};
+    const hidden = data.columns.length - visibleColumns.length;
+    if (hidden > 0) metaBits.push(`${hidden} NULL-only columns hidden`);
+    const nullableVisible = visibleColumns.filter((c) => schema[c]?.nullable).length;
+    if (nullableVisible > 0) metaBits.push(`${nullableVisible} nullable columns visible`);
+    if (noteEl) noteEl.textContent = metaBits.join(" · ");
+    if (visibleColumns.length === 0) {
+      box.innerHTML = '<p class="muted small empty-hint">All visible rows are NULL-only for this page.</p>';
+      return;
+    }
+    const head = visibleColumns.map(c => {
+      const nullable = schema[c]?.nullable ? '<span class="badge nullable">nullable</span>' : "";
+      return `<th>${escapeHTML(c)} ${nullable}</th>`;
+    }).join("");
+    const body = data.rows.map((row) => {
+      const cells = visibleColumns.map((c) => `<td title="${escapeHTML(row[c] || "")}">${formatPreviewCell(row[c])}</td>`).join("");
+      return `<tr>${cells}</tr>`;
+    }).join("");
+    box.innerHTML = `<table class="preview-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function formatPreviewCell(value) {
+    if (value === "NULL") return '<span class="null-pill">NULL</span>';
+    return escapeHTML(value || "");
+  }
+
+  function escapeHTML(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   // ── run dispatcher ────────────────────────────────────────────────────
@@ -731,6 +1158,7 @@
           n.counted = true;
         }
       }
+      updateStats();
       recomputeAuto();
       refreshSelectionUI();
     });
@@ -753,6 +1181,8 @@
     setMode: (m) => {
       ws.mode = m;
       document.querySelectorAll(".ws-mode-pill").forEach(b => b.classList.toggle("active", b.dataset.mode === m));
+      recomputeAuto();
+      refreshSelectionUI();
     },
     run: runMode,
   };
