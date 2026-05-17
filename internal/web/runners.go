@@ -127,15 +127,22 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 
 	jc.Phase("insert")
 	totalRows := 0
+	tableCounts := make(map[string]int, len(targetTables))
+	var dryRunSQL strings.Builder
 	for idx, tableName := range targetTables {
 		tableRows := data[tableName]
+		tableCounts[tableName] = len(tableRows)
 		log.Info().Str("table", tableName).Int("rows", len(tableRows)).Msg("Seeding table")
-		if !req.DryRun {
-			for i := 0; i < len(tableRows); i += req.BatchSize {
-				end := i + req.BatchSize
-				if end > len(tableRows) {
-					end = len(tableRows)
-				}
+		for i := 0; i < len(tableRows); i += req.BatchSize {
+			end := i + req.BatchSize
+			if end > len(tableRows) {
+				end = len(tableRows)
+			}
+			if req.DryRun {
+				query, _ := db.BuildBatchInsert(tableName, tableRows[i:end], sess.DBType)
+				dryRunSQL.WriteString(query)
+				dryRunSQL.WriteString(";\n")
+			} else {
 				query, values := db.BuildBatchInsert(tableName, tableRows[i:end], sess.DBType)
 				if _, err := conn.ExecContext(ctx, query, values...); err != nil {
 					return nil, fmt.Errorf("insert into %s: %w", tableName, err)
@@ -156,14 +163,20 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	for t := range autoSelected {
 		autoList = append(autoList, t)
 	}
-	return map[string]any{
-		"tables":     len(targetTables),
-		"totalRows":  totalRows,
-		"durationMs": elapsed.Milliseconds(),
-		"dryRun":     req.DryRun,
-		"order":      targetTables,
-		"auto":       autoList,
-	}, nil
+	result := map[string]any{
+		"tables":      len(targetTables),
+		"totalRows":   totalRows,
+		"durationMs":  elapsed.Milliseconds(),
+		"dryRun":      req.DryRun,
+		"order":       targetTables,
+		"auto":        autoList,
+		"tableCounts": tableCounts,
+	}
+	if req.DryRun {
+		result["output"] = dryRunSQL.String()
+		result["format"] = "sql"
+	}
+	return result, nil
 }
 
 // GapsRequest mirrors the gaps CLI flags. Tables, when set, restricts the
@@ -324,13 +337,27 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 	if err != nil {
 		return nil, err
 	}
+	tableCounts, totalRows := tableRowCounts(data, targetTables)
 	jc.Phase("done")
 	log.Info().Int("tables", len(targetTables)).Str("format", req.Format).Msg("Generation complete")
 	return map[string]any{
-		"output": output,
-		"format": req.Format,
-		"tables": targetTables,
+		"output":      output,
+		"format":      req.Format,
+		"tables":      targetTables,
+		"tableCounts": tableCounts,
+		"totalRows":   totalRows,
 	}, nil
+}
+
+func tableRowCounts(data map[string][]map[string]any, sortedTables []string) (map[string]int, int) {
+	counts := make(map[string]int, len(sortedTables))
+	total := 0
+	for _, tableName := range sortedTables {
+		n := len(data[tableName])
+		counts[tableName] = n
+		total += n
+	}
+	return counts, total
 }
 
 func encodeData(data map[string][]map[string]any, sortedTables []string, format, dbType string) (string, error) {
@@ -467,9 +494,17 @@ func (s *Server) runExport(_ context.Context, sess *Session, req ExportRequest, 
 		output = sb.String()
 	}
 	jc.Phase("done")
+	tableNames := make([]string, 0, len(data))
+	for tableName := range data {
+		tableNames = append(tableNames, tableName)
+	}
+	tableCounts, totalRows := tableRowCounts(data, tableNames)
 	log.Info().Str("format", req.Format).Int("tables", len(data)).Msg("Export complete")
 	return map[string]any{
-		"output": output,
-		"format": req.Format,
+		"output":      output,
+		"format":      req.Format,
+		"tables":      len(data),
+		"tableCounts": tableCounts,
+		"totalRows":   totalRows,
 	}, nil
 }
