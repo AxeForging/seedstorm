@@ -326,6 +326,8 @@
     activeTable: null,
     search: "",
     preview: { limit: 25, offset: 0 },
+    peek: new Set(),
+    schemaColumns: {},
   };
 
   function setupWorkspace() {
@@ -655,6 +657,9 @@
     for (const item of ordered) {
       const li = document.createElement("li");
       li.className = "ws-sel-item " + item.kind;
+      if (ws.peek.has(item.id)) li.classList.add("open");
+      const main = document.createElement("div");
+      main.className = "ws-sel-main";
       const name = document.createElement("span");
       name.textContent = item.id;
       const actions = document.createElement("span");
@@ -662,16 +667,89 @@
       const tag = document.createElement("span");
       tag.className = "ws-sel-tag";
       tag.textContent = item.kind === "sel" ? "selected" : "auto";
+      const peek = document.createElement("button");
+      peek.className = "ws-sel-view";
+      peek.type = "button";
+      peek.textContent = ws.peek.has(item.id) ? "Hide" : "Peek";
+      peek.title = "Expand a compact row preview";
       const inspect = document.createElement("button");
       inspect.className = "ws-sel-view";
       inspect.type = "button";
-      inspect.textContent = "View rows";
-      inspect.title = "Open columns and row preview";
-      actions.append(tag, inspect);
-      li.append(name, actions);
-      li.addEventListener("click", () => showDetail(item.id));
+      inspect.textContent = "Open";
+      inspect.title = "Open the full row preview";
+      actions.append(tag, peek, inspect);
+      if (item.kind === "sel") {
+        const remove = document.createElement("button");
+        remove.className = "ws-sel-view danger";
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.title = "Unselect this table";
+        remove.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          ws.selected.delete(item.id);
+          ws.peek.delete(item.id);
+          recomputeAuto();
+          refreshSelectionUI();
+        });
+        actions.append(remove);
+      }
+      main.append(name, actions);
+      li.append(main);
+      const preview = document.createElement("div");
+      preview.className = "ws-sel-peek";
+      preview.hidden = !ws.peek.has(item.id);
+      li.append(preview);
+      main.addEventListener("click", () => togglePeek(item.id));
+      peek.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        togglePeek(item.id);
+      });
+      inspect.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        showDetail(item.id);
+      });
       list.appendChild(li);
+      if (ws.peek.has(item.id)) loadPeek(item.id, preview);
     }
+  }
+
+  function togglePeek(tableName) {
+    if (ws.peek.has(tableName)) ws.peek.delete(tableName);
+    else ws.peek.add(tableName);
+    refreshSelectionUI();
+  }
+
+  async function loadPeek(tableName, target) {
+    target.hidden = false;
+    target.innerHTML = '<p class="muted small">Loading rows...</p>';
+    const q = new URLSearchParams({ table: tableName, limit: "5", offset: "0" });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      target.innerHTML = `<p class="muted small">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    if (!data.rows || data.rows.length === 0) {
+      target.innerHTML = '<p class="muted small">No rows yet.</p>';
+      return;
+    }
+    const columns = (data.columns || []).slice(0, 3);
+    const cards = data.rows.map((row) => {
+      const cells = columns.map((c) => {
+        const value = row[c] || "";
+        return `<span><strong>${escapeHTML(c)}</strong>${escapeHTML(value)}</span>`;
+      }).join("");
+      return `<div class="ws-peek-row">${cells}</div>`;
+    }).join("");
+    const more = data.total > data.rows.length ? `<span>${data.rows.length} of ${data.total}</span>` : `<span>${data.total} rows</span>`;
+    target.innerHTML = `
+      <div class="ws-peek-meta">${more}<button type="button" class="ws-peek-open">Open full table</button></div>
+      ${cards}
+    `;
+    target.querySelector(".ws-peek-open")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      showDetail(tableName);
+    });
   }
 
   function updateStats() {
@@ -752,11 +830,19 @@
     fetch("/api/schema").then(r => r.json()).then((sc) => {
       const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
       if (!t) { target.innerHTML = "<p class='muted small'>not in schema</p>"; return; }
-      const rows = Object.entries(t.columns || t.Columns).map(([col, c]) => {
+      const entries = Object.entries(t.columns || t.Columns);
+      ws.schemaColumns[tableName] = Object.fromEntries(entries.map(([col, c]) => [col, {
+        nullable: !!(c.nullable || c.Nullable),
+        fk: c.fk || c.FK || "",
+        pk: !!(c.pk || c.PK),
+      }]));
+      const nullableCount = entries.filter(([, c]) => c.nullable || c.Nullable).length;
+      const fkCount = entries.filter(([, c]) => c.fk || c.FK).length;
+      const rows = entries.map(([col, c]) => {
         const flags = [];
         if (c.pk || c.PK) flags.push('<span class="badge pk">PK</span>');
         if (c.fk || c.FK) flags.push(`<span class="badge fk">FK -> ${escapeHTML(c.fk || c.FK)}</span>`);
-        if (c.nullable || c.Nullable) flags.push('<span class="muted small">nullable</span>');
+        if (c.nullable || c.Nullable) flags.push('<span class="badge nullable">nullable</span>');
         return `<tr><td><code>${escapeHTML(col)}</code> ${flags.join(" ")}</td><td><span class="type">${escapeHTML(c.type || c.Type || "")}</span></td></tr>`;
       }).join("");
       target.innerHTML = `
@@ -764,6 +850,11 @@
           <div>
             <h3>${escapeHTML(tableName)}</h3>
             <p class="muted small">Columns and live data preview</p>
+            <div class="detail-stats">
+              <span>${entries.length} columns</span>
+              <span>${nullableCount} nullable</span>
+              <span>${fkCount} FK</span>
+            </div>
           </div>
           <button class="btn-ghost" id="preview-refresh" type="button">Refresh rows</button>
         </div>
@@ -783,6 +874,10 @@
                 <option value="100">100</option>
               </select>
             </label>
+            <label class="field-tight inline preview-toggle">
+              <input id="preview-hide-null" type="checkbox">
+              hide NULL-only columns
+            </label>
           </div>
           <div id="preview-table" class="preview-table-wrap">
             <p class="muted small empty-hint">Loading rows...</p>
@@ -800,6 +895,7 @@
         ws.preview.offset = 0;
         loadPreview(tableName);
       });
+      document.getElementById("preview-hide-null")?.addEventListener("change", () => loadPreview(tableName));
       document.getElementById("preview-prev")?.addEventListener("click", () => {
         ws.preview.offset = Math.max(0, ws.preview.offset - ws.preview.limit);
         loadPreview(tableName);
@@ -841,12 +937,37 @@
       box.innerHTML = '<p class="muted small empty-hint">This table has no rows yet.</p>';
       return;
     }
-    const head = data.columns.map(c => `<th>${escapeHTML(c)}</th>`).join("");
+    const hideNull = document.getElementById("preview-hide-null")?.checked;
+    const visibleColumns = hideNull ? data.columns.filter((c) => data.rows.some((row) => row[c] !== "NULL")) : data.columns;
+    const metaBits = [];
+    const schema = ws.schemaColumns[tableName] || {};
+    const hidden = data.columns.length - visibleColumns.length;
+    if (hidden > 0) metaBits.push(`${hidden} NULL-only columns hidden`);
+    const nullableVisible = visibleColumns.filter((c) => schema[c]?.nullable).length;
+    if (nullableVisible > 0) metaBits.push(`${nullableVisible} nullable columns visible`);
+    const note = document.getElementById("preview-null-note");
+    if (note) note.remove();
+    if (metaBits.length && meta) {
+      meta.insertAdjacentHTML("afterend", `<span class="muted small preview-null-note" id="preview-null-note">${escapeHTML(metaBits.join(" · "))}</span>`);
+    }
+    if (visibleColumns.length === 0) {
+      box.innerHTML = '<p class="muted small empty-hint">All visible rows are NULL-only for this page.</p>';
+      return;
+    }
+    const head = visibleColumns.map(c => {
+      const nullable = schema[c]?.nullable ? '<span class="badge nullable">nullable</span>' : "";
+      return `<th>${escapeHTML(c)} ${nullable}</th>`;
+    }).join("");
     const body = data.rows.map((row) => {
-      const cells = data.columns.map((c) => `<td title="${escapeHTML(row[c] || "")}">${escapeHTML(row[c] || "")}</td>`).join("");
+      const cells = visibleColumns.map((c) => `<td title="${escapeHTML(row[c] || "")}">${formatPreviewCell(row[c])}</td>`).join("");
       return `<tr>${cells}</tr>`;
     }).join("");
     box.innerHTML = `<table class="preview-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function formatPreviewCell(value) {
+    if (value === "NULL") return '<span class="null-pill">NULL</span>';
+    return escapeHTML(value || "");
   }
 
   function escapeHTML(value) {
