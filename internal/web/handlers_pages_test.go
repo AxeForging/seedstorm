@@ -20,8 +20,8 @@ func TestServer_routes_smoke(t *testing.T) {
 		wantStatus int
 		mustHave   string
 	}{
-		{"/", http.StatusOK, "Connect to a database"},
-		{"/connect", http.StatusOK, "Connect to a database"},
+		{"/", http.StatusOK, "Connect to your seed target"},
+		{"/connect", http.StatusOK, "Connect to your seed target"},
 		{"/static/style.css", http.StatusOK, "--accent"},
 	}
 	for _, c := range cases {

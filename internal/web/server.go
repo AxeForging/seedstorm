@@ -84,6 +84,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/graph", s.handleGraphJSON)
 	s.mux.HandleFunc("/api/counts", s.handleCountsJSON)
 	s.mux.HandleFunc("/api/schema", s.handleSchemaJSON)
+	s.mux.HandleFunc("/api/table", s.handleTablePreviewJSON)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobsAPI)
 	s.mux.HandleFunc("/api/seed", s.handleSeedRun)
 	s.mux.HandleFunc("/api/gaps", s.handleGapsRun)

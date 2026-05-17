@@ -20,6 +20,9 @@
     const includePw = document.getElementById("preset-include-pw");
     const pwInput = document.getElementById("conn-password");
     const eyeBtn = document.getElementById("toggle-password");
+    const dbType = form.querySelector('[name="dbType"]');
+    const port = form.querySelector('[name="port"]');
+    const defaultPorts = { postgres: "5432", mysql: "3306" };
 
     // Eye toggle: closed by default, click reveals
     if (eyeBtn && pwInput) {
@@ -53,6 +56,13 @@
         if (pwInput) pwInput.type = "password";
       }
     });
+    if (dbType && port) {
+      dbType.addEventListener("change", () => {
+        const next = defaultPorts[dbType.value];
+        const known = Object.values(defaultPorts).includes(port.value);
+        if (next && (port.value === "" || known)) port.value = next;
+      });
+    }
     deleteBtn.addEventListener("click", () => {
       const all = loadPresets();
       delete all[picker.value];
@@ -314,6 +324,8 @@
     mode: "seed",
     activeJob: null,
     activeTable: null,
+    search: "",
+    preview: { limit: 25, offset: 0 },
   };
 
   function setupWorkspace() {
@@ -344,6 +356,24 @@
     document.querySelector('[data-act="empty"]').addEventListener("click", () => selectEmpty());
     document.querySelector('[data-act="invert"]').addEventListener("click", () => invertSelection());
     document.querySelector('[data-act="refresh"]').addEventListener("click", () => refreshCounts());
+    document.getElementById("ws-search")?.addEventListener("input", (ev) => applySearch(ev.target.value));
+    document.getElementById("ws-search")?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        focusFirstSearchHit();
+      }
+    });
+    document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
+    document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
+    document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
+    document.addEventListener("keydown", (ev) => {
+      if (ev.target && ["INPUT", "TEXTAREA", "SELECT"].includes(ev.target.tagName)) return;
+      if (ev.key === "/") {
+        ev.preventDefault();
+        document.getElementById("ws-search")?.focus();
+      }
+      if (ev.key.toLowerCase() === "f") fitGraph();
+    });
     // Run
     document.getElementById("ws-run").addEventListener("click", runMode);
 
@@ -401,6 +431,7 @@
     });
 
     document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
+    updateStats();
     refreshSelectionUI();
   }
 
@@ -496,6 +527,22 @@
         style: { "border-color": "#b196ff" },
       },
       {
+        selector: "node.search-hit",
+        style: {
+          "border-color": "#ffcc66",
+          "border-width": 3,
+          "background-color": "#352f1d",
+        },
+      },
+      {
+        selector: "node.search-dim",
+        style: { "opacity": 0.28 },
+      },
+      {
+        selector: "edge.search-dim",
+        style: { "opacity": 0.2 },
+      },
+      {
         selector: "edge",
         style: {
           "width": 1.4,
@@ -588,6 +635,7 @@
 
     document.getElementById("ws-count-selected").textContent = String(ws.selected.size);
     document.getElementById("ws-count-auto").textContent = String(ws.auto.size);
+    updateRunScope();
 
     const list = document.getElementById("ws-selected-list");
     const empty = document.getElementById("ws-selected-empty");
@@ -618,27 +666,188 @@
     }
   }
 
+  function updateStats() {
+    const total = ws.nodes.length;
+    const counted = ws.nodes.filter(n => n.counted);
+    const empty = counted.filter(n => n.count === 0).length;
+    const populated = counted.filter(n => n.count > 0).length;
+    const set = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value);
+    };
+    set("ws-stat-tables", total);
+    set("ws-stat-empty", empty);
+    set("ws-stat-populated", populated);
+  }
+
+  function updateRunScope() {
+    const total = ws.nodes.length;
+    const explicit = ws.selected.size;
+    const auto = ws.auto.size;
+    const effective = explicit + auto;
+    const scope = document.getElementById("ws-scope");
+    const run = document.getElementById("ws-run");
+    const modeLabel = ws.mode === "gaps" ? "Fill empty" : (ws.mode === "generate" ? "Generate" : "Seed");
+    if (scope) {
+      scope.textContent = effective === 0
+        ? `Run scope: all ${total} tables`
+        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)`;
+    }
+    if (run) {
+      run.textContent = effective === 0 ? `${modeLabel} all tables` : `${modeLabel} ${effective} tables`;
+    }
+  }
+
+  function applySearch(raw) {
+    ws.search = (raw || "").trim().toLowerCase();
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.nodes().removeClass("search-hit search-dim");
+      ws.cy.edges().removeClass("search-dim");
+      if (!ws.search) return;
+      ws.cy.nodes().forEach((n) => {
+        if (n.id().toLowerCase().includes(ws.search)) n.addClass("search-hit");
+        else n.addClass("search-dim");
+      });
+      ws.cy.edges().forEach((e) => {
+        if (!e.source().hasClass("search-hit") && !e.target().hasClass("search-hit")) e.addClass("search-dim");
+      });
+    });
+  }
+
+  function focusFirstSearchHit() {
+    if (!ws.cy || !ws.search) return;
+    const hit = ws.cy.nodes(".search-hit")[0];
+    if (!hit) return;
+    ws.cy.animate({ center: { eles: hit }, zoom: Math.max(ws.cy.zoom(), 1.1) }, { duration: 220 });
+    showDetail(hit.id());
+  }
+
+  function fitGraph() {
+    if (!ws.cy) return;
+    const eles = ws.search ? ws.cy.nodes(".search-hit") : ws.cy.elements();
+    ws.cy.animate({ fit: { eles: eles.length ? eles : ws.cy.elements(), padding: 42 } }, { duration: 220 });
+  }
+
+  function zoomGraph(factor) {
+    if (!ws.cy) return;
+    ws.cy.animate({ zoom: ws.cy.zoom() * factor, center: { eles: ws.cy.elements() } }, { duration: 160 });
+  }
+
   // ── detail tab ────────────────────────────────────────────────────────
   function showDetail(tableName) {
     activateTab("detail");
     ws.activeTable = tableName;
+    ws.preview.offset = 0;
     const target = document.getElementById("ws-detail");
-    target.innerHTML = "<p class='muted small'>loading…</p>";
+    target.innerHTML = "<p class='muted small'>loading...</p>";
     fetch("/api/schema").then(r => r.json()).then((sc) => {
       const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
       if (!t) { target.innerHTML = "<p class='muted small'>not in schema</p>"; return; }
       const rows = Object.entries(t.columns || t.Columns).map(([col, c]) => {
         const flags = [];
         if (c.pk || c.PK) flags.push('<span class="badge pk">PK</span>');
-        if (c.fk || c.FK) flags.push(`<span class="badge fk">FK → ${c.fk || c.FK}</span>`);
+        if (c.fk || c.FK) flags.push(`<span class="badge fk">FK -> ${escapeHTML(c.fk || c.FK)}</span>`);
         if (c.nullable || c.Nullable) flags.push('<span class="muted small">nullable</span>');
-        return `<tr><td><code>${col}</code> ${flags.join(" ")}</td><td><span class="type">${c.type || c.Type}</span></td></tr>`;
+        return `<tr><td><code>${escapeHTML(col)}</code> ${flags.join(" ")}</td><td><span class="type">${escapeHTML(c.type || c.Type || "")}</span></td></tr>`;
       }).join("");
       target.innerHTML = `
-        <h3>${tableName}</h3>
-        <table class="cols"><tbody>${rows}</tbody></table>
+        <div class="detail-head">
+          <div>
+            <h3>${escapeHTML(tableName)}</h3>
+            <p class="muted small">Columns and live data preview</p>
+          </div>
+          <button class="btn-ghost" id="preview-refresh" type="button">Refresh rows</button>
+        </div>
+        <table class="cols schema-cols"><tbody>${rows}</tbody></table>
+        <div class="preview-panel">
+          <div class="preview-toolbar">
+            <div>
+              <strong>Rows</strong>
+              <span class="muted small" id="preview-meta">loading...</span>
+            </div>
+            <label class="field-tight inline">
+              <span>Limit</span>
+              <select id="preview-limit">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+          <div id="preview-table" class="preview-table-wrap">
+            <p class="muted small empty-hint">Loading rows...</p>
+          </div>
+          <div class="preview-pager">
+            <button class="btn-ghost" id="preview-prev" type="button">Previous</button>
+            <span class="muted small" id="preview-page"></span>
+            <button class="btn-ghost" id="preview-next" type="button">Next</button>
+          </div>
+        </div>
       `;
+      document.getElementById("preview-refresh")?.addEventListener("click", () => loadPreview(tableName));
+      document.getElementById("preview-limit")?.addEventListener("change", (ev) => {
+        ws.preview.limit = Number(ev.target.value || 25);
+        ws.preview.offset = 0;
+        loadPreview(tableName);
+      });
+      document.getElementById("preview-prev")?.addEventListener("click", () => {
+        ws.preview.offset = Math.max(0, ws.preview.offset - ws.preview.limit);
+        loadPreview(tableName);
+      });
+      document.getElementById("preview-next")?.addEventListener("click", () => {
+        ws.preview.offset += ws.preview.limit;
+        loadPreview(tableName);
+      });
+      loadPreview(tableName);
     });
+  }
+
+  async function loadPreview(tableName) {
+    const box = document.getElementById("preview-table");
+    const meta = document.getElementById("preview-meta");
+    const page = document.getElementById("preview-page");
+    const prev = document.getElementById("preview-prev");
+    const next = document.getElementById("preview-next");
+    if (!box) return;
+    box.innerHTML = "<p class='muted small empty-hint'>Loading rows...</p>";
+    const q = new URLSearchParams({
+      table: tableName,
+      limit: String(ws.preview.limit),
+      offset: String(ws.preview.offset),
+    });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    const start = data.total === 0 ? 0 : data.offset + 1;
+    const end = Math.min(data.offset + data.rows.length, data.total);
+    if (meta) meta.textContent = `${start}-${end} of ${data.total}`;
+    if (page) page.textContent = data.total === 0 ? "No rows" : `Page ${Math.floor(data.offset / data.limit) + 1}`;
+    if (prev) prev.disabled = data.offset <= 0;
+    if (next) next.disabled = data.offset + data.limit >= data.total;
+    if (!data.rows || data.rows.length === 0) {
+      box.innerHTML = '<p class="muted small empty-hint">This table has no rows yet.</p>';
+      return;
+    }
+    const head = data.columns.map(c => `<th>${escapeHTML(c)}</th>`).join("");
+    const body = data.rows.map((row) => {
+      const cells = data.columns.map((c) => `<td title="${escapeHTML(row[c] || "")}">${escapeHTML(row[c] || "")}</td>`).join("");
+      return `<tr>${cells}</tr>`;
+    }).join("");
+    box.innerHTML = `<table class="preview-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function escapeHTML(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   // ── run dispatcher ────────────────────────────────────────────────────
@@ -731,6 +940,7 @@
           n.counted = true;
         }
       }
+      updateStats();
       recomputeAuto();
       refreshSelectionUI();
     });
@@ -753,6 +963,8 @@
     setMode: (m) => {
       ws.mode = m;
       document.querySelectorAll(".ws-mode-pill").forEach(b => b.classList.toggle("active", b.dataset.mode === m));
+      recomputeAuto();
+      refreshSelectionUI();
     },
     run: runMode,
   };

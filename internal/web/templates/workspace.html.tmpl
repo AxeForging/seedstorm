@@ -3,10 +3,30 @@
   <aside class="ws-rail">
     <header class="ws-rail-head">
       <h2>Workspace</h2>
-      <p class="muted small">Click tables in the graph to select. Non-nullable parents auto-lock.</p>
+      <p class="muted small">Select tables from the graph. Required parents are added automatically.</p>
     </header>
 
+    <div class="ws-stats" aria-label="Schema summary">
+      <div>
+        <span class="ws-stat-value" id="ws-stat-tables">0</span>
+        <span class="ws-stat-label">tables</span>
+      </div>
+      <div>
+        <span class="ws-stat-value" id="ws-stat-empty">0</span>
+        <span class="ws-stat-label">empty</span>
+      </div>
+      <div>
+        <span class="ws-stat-value" id="ws-stat-populated">0</span>
+        <span class="ws-stat-label">with rows</span>
+      </div>
+    </div>
+
     <div class="ws-toolbar">
+      <label class="ws-search">
+        <span class="sr-only">Find table</span>
+        <input id="ws-search" type="search" placeholder="Find table">
+        <kbd>/</kbd>
+      </label>
       <button class="btn-ghost" data-act="all">All</button>
       <button class="btn-ghost" data-act="empty">Empty</button>
       <button class="btn-ghost" data-act="none">None</button>
@@ -26,8 +46,9 @@
         <span id="ws-count-auto">0</span> auto-locked ·
         <span id="ws-count-total">0</span> total
       </div>
+      <div class="ws-scope" id="ws-scope">Run scope: all tables</div>
       <ol class="ws-selected-list" id="ws-selected-list"></ol>
-      <p class="muted small empty-hint" id="ws-selected-empty">Nothing selected — click tables in the graph or hit <kbd>All</kbd>.</p>
+      <p class="muted small empty-hint" id="ws-selected-empty">No explicit selection. Run applies to every table; click nodes or choose <kbd>Empty</kbd> to narrow the scope.</p>
     </div>
 
     <div class="ws-tab-body" data-tab="detail" hidden>
@@ -57,6 +78,11 @@
   </aside>
 
   <div class="ws-canvas-wrap">
+    <div class="ws-canvas-tools" aria-label="Graph controls">
+      <button class="btn-ghost" id="ws-fit" type="button" title="Fit graph">Fit</button>
+      <button class="btn-ghost" id="ws-zoom-in" type="button" title="Zoom in">+</button>
+      <button class="btn-ghost" id="ws-zoom-out" type="button" title="Zoom out">-</button>
+    </div>
     <div id="cy" class="ws-canvas"></div>
     <div class="ws-legend muted small">
       <span><i class="dot dot-sel"></i> selected</span>
@@ -97,7 +123,7 @@
         <input id="cfg-disablefk" type="checkbox"> disable FK
       </label>
     </div>
-    <button class="btn-primary" id="ws-run">Run</button>
+    <button class="btn-primary" id="ws-run">Run all tables</button>
   </footer>
 </section>
 {{end}}
