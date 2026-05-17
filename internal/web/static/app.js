@@ -326,6 +326,7 @@
     activeTable: null,
     search: "",
     preview: { limit: 25, offset: 0 },
+    modal: { table: "", limit: 50, offset: 0 },
     peek: new Set(),
     schemaColumns: {},
   };
@@ -368,7 +369,9 @@
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
+    setupTableModal();
     document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") closeTableModal();
       if (ev.target && ["INPUT", "TEXTAREA", "SELECT"].includes(ev.target.tagName)) return;
       if (ev.key === "/") {
         ev.preventDefault();
@@ -676,7 +679,7 @@
       inspect.className = "ws-sel-view";
       inspect.type = "button";
       inspect.textContent = "Open";
-      inspect.title = "Open the full row preview";
+      inspect.title = "Open a large row preview";
       actions.append(tag, peek, inspect);
       if (item.kind === "sel") {
         const remove = document.createElement("button");
@@ -706,7 +709,7 @@
       });
       inspect.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        showDetail(item.id);
+        openTableModal(item.id);
       });
       list.appendChild(li);
       if (ws.peek.has(item.id)) loadPeek(item.id, preview);
@@ -743,12 +746,12 @@
     }).join("");
     const more = data.total > data.rows.length ? `<span>${data.rows.length} of ${data.total}</span>` : `<span>${data.total} rows</span>`;
     target.innerHTML = `
-      <div class="ws-peek-meta">${more}<button type="button" class="ws-peek-open">Open full table</button></div>
+      <div class="ws-peek-meta">${more}<button type="button" class="ws-peek-open">Open table</button></div>
       ${cards}
     `;
     target.querySelector(".ws-peek-open")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      showDetail(tableName);
+      openTableModal(tableName);
     });
   }
 
@@ -908,6 +911,87 @@
     });
   }
 
+  function setupTableModal() {
+    document.getElementById("table-modal-close")?.addEventListener("click", closeTableModal);
+    document.querySelector("[data-modal-close]")?.addEventListener("click", closeTableModal);
+    document.getElementById("table-modal-refresh")?.addEventListener("click", () => loadModalPreview());
+    document.getElementById("table-modal-limit")?.addEventListener("change", (ev) => {
+      ws.modal.limit = Number(ev.target.value || 50);
+      ws.modal.offset = 0;
+      loadModalPreview();
+    });
+    document.getElementById("table-modal-hide-null")?.addEventListener("change", () => loadModalPreview());
+    document.getElementById("table-modal-prev")?.addEventListener("click", () => {
+      ws.modal.offset = Math.max(0, ws.modal.offset - ws.modal.limit);
+      loadModalPreview();
+    });
+    document.getElementById("table-modal-next")?.addEventListener("click", () => {
+      ws.modal.offset += ws.modal.limit;
+      loadModalPreview();
+    });
+  }
+
+  async function openTableModal(tableName) {
+    ws.modal.table = tableName;
+    ws.modal.offset = 0;
+    const modal = document.getElementById("table-modal");
+    const title = document.getElementById("table-modal-title");
+    if (title) title.textContent = tableName;
+    if (modal) modal.hidden = false;
+    document.body.classList.add("modal-open");
+    await ensureSchemaColumns(tableName);
+    loadModalPreview();
+  }
+
+  function closeTableModal() {
+    const modal = document.getElementById("table-modal");
+    if (modal) modal.hidden = true;
+    document.body.classList.remove("modal-open");
+  }
+
+  async function ensureSchemaColumns(tableName) {
+    if (ws.schemaColumns[tableName]) return;
+    const sc = await fetch("/api/schema").then(r => r.json());
+    const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
+    if (!t) return;
+    const entries = Object.entries(t.columns || t.Columns);
+    ws.schemaColumns[tableName] = Object.fromEntries(entries.map(([col, c]) => [col, {
+      nullable: !!(c.nullable || c.Nullable),
+      fk: c.fk || c.FK || "",
+      pk: !!(c.pk || c.PK),
+    }]));
+  }
+
+  async function loadModalPreview() {
+    const tableName = ws.modal.table;
+    const box = document.getElementById("table-modal-body");
+    const meta = document.getElementById("table-modal-meta");
+    const page = document.getElementById("table-modal-page");
+    const prev = document.getElementById("table-modal-prev");
+    const next = document.getElementById("table-modal-next");
+    const note = document.getElementById("table-modal-note");
+    if (!box || !tableName) return;
+    box.innerHTML = "<p class='muted small empty-hint'>Loading rows...</p>";
+    const q = new URLSearchParams({
+      table: tableName,
+      limit: String(ws.modal.limit),
+      offset: String(ws.modal.offset),
+    });
+    const res = await fetch("/api/table?" + q.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+      return;
+    }
+    const start = data.total === 0 ? 0 : data.offset + 1;
+    const end = Math.min(data.offset + data.rows.length, data.total);
+    if (meta) meta.textContent = `${start}-${end} of ${data.total} rows`;
+    if (page) page.textContent = data.total === 0 ? "No rows" : `Page ${Math.floor(data.offset / data.limit) + 1}`;
+    if (prev) prev.disabled = data.offset <= 0;
+    if (next) next.disabled = data.offset + data.limit >= data.total;
+    renderPreviewTable(box, data, tableName, !!document.getElementById("table-modal-hide-null")?.checked, note);
+  }
+
   async function loadPreview(tableName) {
     const box = document.getElementById("preview-table");
     const meta = document.getElementById("preview-meta");
@@ -933,11 +1017,20 @@
     if (page) page.textContent = data.total === 0 ? "No rows" : `Page ${Math.floor(data.offset / data.limit) + 1}`;
     if (prev) prev.disabled = data.offset <= 0;
     if (next) next.disabled = data.offset + data.limit >= data.total;
+    const hideNull = document.getElementById("preview-hide-null")?.checked;
+    const note = document.getElementById("preview-null-note");
+    if (note) note.remove();
+    const inlineNote = { textContent: "" };
+    renderPreviewTable(box, data, tableName, !!hideNull, inlineNote);
+    if (inlineNote.textContent && meta) meta.insertAdjacentHTML("afterend", `<span class="muted small preview-null-note" id="preview-null-note">${escapeHTML(inlineNote.textContent)}</span>`);
+  }
+
+  function renderPreviewTable(box, data, tableName, hideNull, noteEl) {
     if (!data.rows || data.rows.length === 0) {
       box.innerHTML = '<p class="muted small empty-hint">This table has no rows yet.</p>';
+      if (noteEl) noteEl.textContent = "";
       return;
     }
-    const hideNull = document.getElementById("preview-hide-null")?.checked;
     const visibleColumns = hideNull ? data.columns.filter((c) => data.rows.some((row) => row[c] !== "NULL")) : data.columns;
     const metaBits = [];
     const schema = ws.schemaColumns[tableName] || {};
@@ -945,11 +1038,7 @@
     if (hidden > 0) metaBits.push(`${hidden} NULL-only columns hidden`);
     const nullableVisible = visibleColumns.filter((c) => schema[c]?.nullable).length;
     if (nullableVisible > 0) metaBits.push(`${nullableVisible} nullable columns visible`);
-    const note = document.getElementById("preview-null-note");
-    if (note) note.remove();
-    if (metaBits.length && meta) {
-      meta.insertAdjacentHTML("afterend", `<span class="muted small preview-null-note" id="preview-null-note">${escapeHTML(metaBits.join(" · "))}</span>`);
-    }
+    if (noteEl) noteEl.textContent = metaBits.join(" · ");
     if (visibleColumns.length === 0) {
       box.innerHTML = '<p class="muted small empty-hint">All visible rows are NULL-only for this page.</p>';
       return;

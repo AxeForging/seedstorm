@@ -26,6 +26,7 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
+body.modal-open { overflow: hidden; }
 
 .topbar {
   display: flex;
@@ -940,6 +941,79 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .preview-pager .btn-ghost {
   padding: 5px 9px;
   font-size: 12px;
+}
+
+.table-modal[hidden] { display: none; }
+.table-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.table-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4,7,9,0.72);
+  backdrop-filter: blur(6px);
+}
+.table-modal-panel {
+  position: relative;
+  z-index: 1;
+  width: min(1280px, 100%);
+  max-height: min(86vh, 920px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: rgba(17,23,28,0.98);
+  border: 1px solid rgba(231,236,232,0.1);
+  border-radius: 14px;
+  box-shadow: 0 32px 90px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04);
+  overflow: hidden;
+}
+.table-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.table-modal-head h2 {
+  margin: 2px 0 4px;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+.table-modal-controls,
+.table-modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+  background: rgba(11,15,18,0.42);
+  border-bottom: 1px solid var(--line);
+}
+.table-modal-controls select {
+  min-height: 30px;
+  padding: 4px 8px;
+}
+.table-modal-body {
+  min-height: 0;
+  overflow: auto;
+}
+.table-modal-body .preview-table {
+  min-width: 900px;
+  font-size: 12px;
+}
+.table-modal-body .preview-table th,
+.table-modal-body .preview-table td {
+  padding: 9px 11px;
+  max-width: 320px;
+}
+.table-modal-foot {
+  justify-content: center;
+  border-top: 1px solid var(--line);
+  border-bottom: none;
 }
 
 .ws-canvas-wrap {

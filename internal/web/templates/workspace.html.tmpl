@@ -126,5 +126,45 @@
     </div>
     <button class="btn-primary" id="ws-run">Run all tables</button>
   </footer>
+
+  <div class="table-modal" id="table-modal" hidden>
+    <div class="table-modal-backdrop" data-modal-close></div>
+    <section class="table-modal-panel" role="dialog" aria-modal="true" aria-labelledby="table-modal-title">
+      <header class="table-modal-head">
+        <div>
+          <span class="eyebrow">live table preview</span>
+          <h2 id="table-modal-title">Table</h2>
+          <p class="muted small" id="table-modal-meta">Loading rows...</p>
+        </div>
+        <div class="row">
+          <button class="btn-ghost" id="table-modal-refresh" type="button">Refresh</button>
+          <button class="btn-ghost" id="table-modal-close" type="button" aria-label="Close table preview">Close</button>
+        </div>
+      </header>
+      <div class="table-modal-controls">
+        <label class="field-tight inline">
+          <span>Limit</span>
+          <select id="table-modal-limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <label class="field-tight inline preview-toggle">
+          <input id="table-modal-hide-null" type="checkbox">
+          hide NULL-only columns
+        </label>
+        <span class="muted small" id="table-modal-note"></span>
+      </div>
+      <div class="table-modal-body" id="table-modal-body">
+        <p class="muted small empty-hint">Loading rows...</p>
+      </div>
+      <footer class="table-modal-foot">
+        <button class="btn-ghost" id="table-modal-prev" type="button">Previous</button>
+        <span class="muted small" id="table-modal-page"></span>
+        <button class="btn-ghost" id="table-modal-next" type="button">Next</button>
+      </footer>
+    </section>
+  </div>
 </section>
 {{end}}
