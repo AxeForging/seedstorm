@@ -897,7 +897,7 @@
           "line-color": "#3b465f",
           "target-arrow-color": "#3b465f",
           "target-arrow-shape": "triangle",
-          "curve-style": "straight",
+          "curve-style": "bezier",
           "arrow-scale": 0.9,
         },
       },
@@ -918,7 +918,10 @@
       },
       {
         selector: "edge.route-straight",
-        style: { "curve-style": "straight" },
+        style: {
+          "curve-style": "bezier",
+          "control-point-step-size": 42,
+        },
       },
       {
         selector: "edge[?nullable]",
