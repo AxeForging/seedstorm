@@ -5,6 +5,7 @@
 
   const PRESET_KEY = "seedstorm.connections.v1";
   const GENERATED_DRAFT_KEY = "seedstorm.generatedData.v1";
+  const GRAPH_ROUTE_KEY = "seedstorm.graphRoute.v1";
 
   // ── localStorage presets for the connection form ───────────────────────
   function loadPresets() {
@@ -641,6 +642,7 @@
     nodes: [],            // raw graph payload
     edges: [],
     mode: "seed",
+    edgeRoute: loadGraphRoute(),
     activeJob: null,
     activeTable: null,
     search: "",
@@ -688,6 +690,10 @@
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
+    document.querySelectorAll("[data-route]").forEach((b) => {
+      b.addEventListener("click", () => setEdgeRoute(b.dataset.route));
+      b.classList.toggle("active", b.dataset.route === ws.edgeRoute);
+    });
     setupTableModal();
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape") { closeTableModal(); closeResultModal(); }
@@ -755,6 +761,7 @@
     });
 
     document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
+    applyEdgeRoute();
     updateStats();
     refreshSelectionUI();
   }
@@ -873,15 +880,62 @@
           "line-color": "#3b465f",
           "target-arrow-color": "#3b465f",
           "target-arrow-shape": "triangle",
-          "curve-style": "bezier",
+          "curve-style": "straight",
           "arrow-scale": 0.9,
         },
+      },
+      {
+        selector: "edge.route-smooth",
+        style: {
+          "curve-style": "bezier",
+          "control-point-step-size": 48,
+        },
+      },
+      {
+        selector: "edge.route-step",
+        style: {
+          "curve-style": "taxi",
+          "taxi-direction": "auto",
+          "taxi-turn": "42px",
+          "taxi-turn-min-distance": "16px",
+        },
+      },
+      {
+        selector: "edge.route-straight",
+        style: { "curve-style": "straight" },
       },
       {
         selector: "edge[?nullable]",
         style: { "line-style": "dashed", "line-color": "#4a5169", "target-arrow-color": "#4a5169" },
       },
     ];
+  }
+
+  function loadGraphRoute() {
+    try {
+      const saved = localStorage.getItem(GRAPH_ROUTE_KEY);
+      if (["straight", "smooth", "step"].includes(saved)) return saved;
+    } catch (_) {}
+    return "straight";
+  }
+
+  function setEdgeRoute(route) {
+    if (!["straight", "smooth", "step"].includes(route)) return;
+    ws.edgeRoute = route;
+    try { localStorage.setItem(GRAPH_ROUTE_KEY, route); } catch (_) {}
+    document.querySelectorAll("[data-route]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.route === route);
+    });
+    applyEdgeRoute();
+  }
+
+  function applyEdgeRoute() {
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.edges()
+        .removeClass("route-straight route-smooth route-step")
+        .addClass("route-" + ws.edgeRoute);
+    });
   }
 
   // ── selection mechanics ───────────────────────────────────────────────

@@ -80,6 +80,11 @@
 
   <div class="ws-canvas-wrap">
     <div class="ws-canvas-tools" aria-label="Graph controls">
+      <div class="ws-route-toggle" aria-label="Edge routing">
+        <button class="btn-ghost active" data-route="straight" type="button" title="Straight relationships">Straight</button>
+        <button class="btn-ghost" data-route="smooth" type="button" title="Smooth bezier relationships">Smooth</button>
+        <button class="btn-ghost" data-route="step" type="button" title="Orthogonal step relationships">Step</button>
+      </div>
       <button class="btn-ghost" id="ws-fit" type="button" title="Fit graph">Fit</button>
       <button class="btn-ghost" id="ws-zoom-in" type="button" title="Zoom in">+</button>
       <button class="btn-ghost" id="ws-zoom-out" type="button" title="Zoom out">-</button>

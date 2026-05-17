@@ -1409,6 +1409,7 @@ textarea { font-family: var(--mono); font-size: 12px; }
   right: 12px;
   z-index: 2;
   display: flex;
+  align-items: center;
   gap: 4px;
   background: rgba(15,17,21,0.82);
   border: 1px solid var(--line);
@@ -1421,6 +1422,23 @@ textarea { font-family: var(--mono); font-size: 12px; }
   justify-content: center;
   padding: 5px 8px;
   font-size: 12px;
+}
+.ws-route-toggle {
+  display: flex;
+  gap: 2px;
+  padding-right: 4px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(231,236,232,0.08);
+}
+.ws-route-toggle .btn-ghost {
+  min-width: 0;
+  padding-inline: 9px;
+}
+.ws-route-toggle .btn-ghost.active {
+  color: #07120e;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
 }
 .ws-legend {
   position: absolute; bottom: 10px; right: 12px;
