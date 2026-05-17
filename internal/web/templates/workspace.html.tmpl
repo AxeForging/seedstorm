@@ -96,12 +96,25 @@
   </div>
 
   <footer class="ws-actionbar">
-    <div class="ws-mode" role="tablist">
-      <button class="ws-mode-pill active" data-mode="seed">Seed</button>
-      <button class="ws-mode-pill" data-mode="gaps">Fill empty</button>
-      <button class="ws-mode-pill" data-mode="generate">Generate (no DB write)</button>
+    <div class="ws-run-group ws-run-modes">
+      <span class="ws-run-label">Mode</span>
+      <div class="ws-mode" role="tablist" aria-label="Run mode">
+        <button class="ws-mode-pill active" data-mode="seed" type="button">
+          <strong>Seed</strong>
+          <span>write rows</span>
+        </button>
+        <button class="ws-mode-pill" data-mode="gaps" type="button">
+          <strong>Fill empty</strong>
+          <span>only gaps</span>
+        </button>
+        <button class="ws-mode-pill" data-mode="generate" type="button">
+          <strong>Generate</strong>
+          <span>no DB write</span>
+        </button>
+      </div>
     </div>
-    <div class="ws-config">
+    <div class="ws-config ws-run-group">
+      <span class="ws-run-label">Volume</span>
       <label class="field-tight">
         <span>Rows</span>
         <input id="cfg-rows" type="number" value="20" min="1">
@@ -114,6 +127,9 @@
         <span>Enum/value</span>
         <input id="cfg-enum" type="number" value="0" min="0">
       </label>
+    </div>
+    <div class="ws-run-group ws-risk">
+      <span class="ws-run-label">Options</span>
       <label class="field-tight inline">
         <input id="cfg-truncate" type="checkbox"> truncate
       </label>

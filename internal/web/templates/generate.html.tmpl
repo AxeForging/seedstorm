@@ -1,24 +1,41 @@
 {{define "content"}}
-<section class="card stack">
-  <h1>Generate</h1>
-  <p class="muted">Generates fake rows from the live schema without writing to the database. Result is downloadable.</p>
-  <form id="run-form" data-endpoint="/api/generate" class="grid-2">
-    <label class="field">
-      <span class="field-label">Rows per table</span>
-      <input name="rows" type="number" value="10" min="1">
-    </label>
-    <label class="field">
-      <span class="field-label">Format</span>
-      <select name="format">
-        <option value="yaml">yaml</option>
-        <option value="json">json</option>
-        <option value="sql">sql</option>
-      </select>
-    </label>
-    <div class="span-2 actions">
-      <button class="btn-primary" type="submit">Generate</button>
+<section class="run-shell">
+  <aside class="run-intro">
+    <span class="eyebrow">offline dataset</span>
+    <h1>Generate fake data without writing to the database.</h1>
+    <p class="muted">Use this when you need a portable fixture, a reviewable sample, or a payload to convert in Export.</p>
+    <div class="run-notes">
+      <span>FK order preserved</span>
+      <span>Downloadable output</span>
+      <span>Export handoff for YAML</span>
     </div>
-  </form>
-  {{template "joblog" .}}
+  </aside>
+
+  <section class="run-panel">
+    <form id="run-form" data-endpoint="/api/generate" class="run-form">
+      <div class="run-form-head">
+        <div>
+          <h2>Generation settings</h2>
+          <p class="muted small">The schema is read from the active connection. No insert statements are executed.</p>
+        </div>
+        <button class="btn-primary" type="submit">Generate data</button>
+      </div>
+      <div class="run-fields">
+        <label class="field">
+          <span class="field-label">Rows per table</span>
+          <input name="rows" type="number" value="10" min="1">
+        </label>
+        <label class="field">
+          <span class="field-label">Output format</span>
+          <select name="format">
+            <option value="yaml">YAML for Export</option>
+            <option value="json">JSON</option>
+            <option value="sql">SQL inserts</option>
+          </select>
+        </label>
+      </div>
+    </form>
+    {{template "joblog" .}}
+  </section>
 </section>
 {{end}}

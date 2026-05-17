@@ -27,6 +27,8 @@ func TestServer_routes_smoke(t *testing.T) {
 		{"/static/style.css", http.StatusOK, ".table-modal"},
 		{"/static/app.js", http.StatusOK, "/api/table?"},
 		{"/static/app.js", http.StatusOK, "openTableModal"},
+		{"/static/app.js", http.StatusOK, "GENERATED_DRAFT_KEY"},
+		{"/static/style.css", http.StatusOK, ".result-shell"},
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {

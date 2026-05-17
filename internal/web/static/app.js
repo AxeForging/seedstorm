@@ -4,6 +4,7 @@
   "use strict";
 
   const PRESET_KEY = "seedstorm.connections.v1";
+  const GENERATED_DRAFT_KEY = "seedstorm.generatedData.v1";
 
   // ── localStorage presets for the connection form ───────────────────────
   function loadPresets() {
@@ -262,6 +263,7 @@
     const form = document.getElementById("run-form");
     if (!form) return;
     const endpoint = form.dataset.endpoint;
+    hydrateExportDraft(form, endpoint);
     document.getElementById("job-clear")?.addEventListener("click", () => {
       resetPhases();
       document.getElementById("job-result").innerHTML = "";
@@ -292,25 +294,342 @@
           const r = job.result || {};
           const out = document.getElementById("job-result");
           if (!out) return;
-          if (typeof r.output === "string") {
-            const pre = document.createElement("pre");
-            pre.className = "job-log"; pre.textContent = r.output;
-            out.appendChild(pre);
-            const dl = document.createElement("a");
-            dl.className = "btn-ghost";
-            dl.href = "data:text/plain;charset=utf-8," + encodeURIComponent(r.output);
-            dl.download = `seedstorm-${j.name}.${r.format || "txt"}`;
-            dl.textContent = "Download";
-            out.appendChild(dl);
-          }
-          if (typeof r.yaml === "string") {
-            const pre = document.createElement("pre");
-            pre.className = "job-log"; pre.textContent = r.yaml;
-            out.appendChild(pre);
-          }
+          renderJobResult(out, r, job.name || j.name || "run");
         },
       });
     });
+  }
+
+  function hydrateExportDraft(form, endpoint) {
+    if (endpoint !== "/api/export") return;
+    const input = form.querySelector('[name="dataYaml"]');
+    if (!input || input.value.trim()) return;
+    let draft = null;
+    try { draft = JSON.parse(sessionStorage.getItem(GENERATED_DRAFT_KEY) || "null"); }
+    catch (_) { draft = null; }
+    if (!draft || !draft.yaml) return;
+    input.value = draft.yaml;
+    const note = document.createElement("div");
+    note.className = "handoff-note";
+    note.innerHTML = '<strong>Generated data loaded.</strong><span class="muted small">Review it, choose a format, then export.</span>';
+    form.insertBefore(note, form.firstChild);
+  }
+
+  function renderJobResult(out, result, jobName) {
+    out.innerHTML = "";
+    const shell = document.createElement("section");
+    shell.className = "result-shell";
+
+    const summary = resultSummaryItems(result, jobName);
+    if (summary.length > 0) {
+      const grid = document.createElement("div");
+      grid.className = "result-summary";
+      summary.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "result-stat";
+        const value = document.createElement("strong");
+        value.textContent = item.value;
+        const label = document.createElement("span");
+        label.textContent = item.label;
+        card.append(value, label);
+        grid.appendChild(card);
+      });
+      shell.appendChild(grid);
+    }
+
+    if (Array.isArray(result.order) && result.order.length > 0) {
+      shell.appendChild(renderTableList("Run order", result.order));
+    } else if (Array.isArray(result.tables) && result.tables.length > 0) {
+      shell.appendChild(renderTableList("Generated tables", result.tables));
+    }
+
+    if (Array.isArray(result.gapTables)) {
+      shell.appendChild(renderTableList("Empty tables", result.gapTables, "No empty tables found."));
+    }
+
+    const output = typeof result.output === "string" ? result.output : (typeof result.yaml === "string" ? result.yaml : "");
+    if (output) {
+      shell.appendChild(renderOutputPanel(output, result, jobName));
+      if ((result.format || "yaml").toLowerCase() === "yaml" && jobName === "generate") {
+        persistGeneratedDraft(output);
+      }
+    }
+
+    out.appendChild(shell);
+  }
+
+  function resultSummaryItems(result, jobName) {
+    const items = [];
+    const fmt = result.format ? String(result.format).toUpperCase() : "";
+    if (result.dryRun) items.push({ label: "mode", value: "Dry-run" });
+    else items.push({ label: "run", value: jobName });
+    if (fmt) items.push({ label: "format", value: fmt });
+    if (typeof result.totalRows === "number") items.push({ label: "rows", value: formatCount(result.totalRows) });
+    if (typeof result.tables === "number") items.push({ label: "tables", value: String(result.tables) });
+    else if (Array.isArray(result.tables)) items.push({ label: "tables", value: String(result.tables.length) });
+    if (Array.isArray(result.auto) && result.auto.length > 0) items.push({ label: "auto-required", value: String(result.auto.length) });
+    if (typeof result.durationMs === "number") items.push({ label: "duration", value: result.durationMs < 1000 ? `${result.durationMs}ms` : `${(result.durationMs / 1000).toFixed(1)}s` });
+    return items;
+  }
+
+  function renderTableList(title, tables, emptyText) {
+    const wrap = document.createElement("div");
+    wrap.className = "result-list";
+    const head = document.createElement("div");
+    head.className = "result-list-head";
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const count = document.createElement("span");
+    count.className = "muted small";
+    count.textContent = `${tables.length} ${tables.length === 1 ? "table" : "tables"}`;
+    head.append(strong, count);
+    wrap.appendChild(head);
+    if (tables.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "muted small empty-hint";
+      empty.textContent = emptyText || "Nothing to show.";
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    const row = document.createElement("div");
+    row.className = "result-table-chips";
+    tables.forEach((tableName) => {
+      const chip = document.createElement("span");
+      chip.textContent = tableName;
+      row.appendChild(chip);
+    });
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  function renderOutputPanel(output, result, jobName) {
+    const panel = document.createElement("div");
+    panel.className = "result-output";
+    const toolbar = document.createElement("div");
+    toolbar.className = "result-output-toolbar";
+    const title = document.createElement("div");
+    title.className = "result-output-title";
+    const label = document.createElement("strong");
+    label.textContent = result.dryRun ? "SQL preview" : "Output";
+    const meta = document.createElement("span");
+    meta.className = "muted small";
+    meta.textContent = `${formatBytes(output.length)} · ${(result.format || "txt").toUpperCase()}`;
+    title.append(label, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const view = document.createElement("button");
+    view.className = "btn-primary";
+    view.type = "button";
+    view.textContent = "View full";
+    view.addEventListener("click", () => openResultModal(output, result, jobName));
+    const copy = document.createElement("button");
+    copy.className = "btn-ghost";
+    copy.type = "button";
+    copy.textContent = "Copy";
+    copy.addEventListener("click", async () => {
+      await copyText(output);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1400);
+    });
+    const dl = document.createElement("a");
+    dl.className = "btn-ghost";
+    dl.href = "data:text/plain;charset=utf-8," + encodeURIComponent(output);
+    dl.download = `seedstorm-${jobName}.${result.format || "txt"}`;
+    dl.textContent = "Download";
+    actions.append(view, copy, dl);
+
+    if ((result.format || "").toLowerCase() === "yaml" && jobName === "generate") {
+      const exportBtn = document.createElement("button");
+      exportBtn.className = "btn-ghost";
+      exportBtn.type = "button";
+      exportBtn.textContent = "Export this";
+      exportBtn.addEventListener("click", () => {
+        persistGeneratedDraft(output);
+        window.location.href = "/export";
+      });
+      actions.appendChild(exportBtn);
+    }
+
+    toolbar.append(title, actions);
+    const pre = document.createElement("pre");
+    pre.className = "job-log result-pre";
+    pre.textContent = output;
+    panel.append(toolbar, pre);
+    return panel;
+  }
+
+  function openResultModal(output, result, jobName) {
+    let modal = document.getElementById("result-modal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "result-modal";
+      modal.className = "result-modal";
+      modal.hidden = true;
+      modal.innerHTML = `
+        <div class="result-modal-backdrop" data-result-modal-close></div>
+        <section class="result-modal-panel" role="dialog" aria-modal="true" aria-labelledby="result-modal-title">
+          <header class="result-modal-head">
+            <div>
+              <span class="eyebrow" id="result-modal-kind">output preview</span>
+              <h2 id="result-modal-title">Output</h2>
+              <p class="muted small" id="result-modal-meta"></p>
+            </div>
+            <div class="row">
+              <button class="btn-ghost" id="result-modal-copy" type="button">Copy</button>
+              <a class="btn-ghost" id="result-modal-download">Download</a>
+              <button class="btn-ghost" id="result-modal-close" type="button">Close</button>
+            </div>
+          </header>
+          <nav class="result-modal-tabs" aria-label="Output views">
+            <button class="result-modal-tab active" type="button" data-result-tab="overview">Overview</button>
+            <button class="result-modal-tab" type="button" data-result-tab="tables">Tables</button>
+            <button class="result-modal-tab" type="button" data-result-tab="output">SQL / output</button>
+          </nav>
+          <div class="result-modal-body">
+            <section class="result-modal-pane active" data-result-pane="overview" id="result-modal-overview"></section>
+            <section class="result-modal-pane" data-result-pane="tables" id="result-modal-tables"></section>
+            <section class="result-modal-pane" data-result-pane="output">
+              <pre class="result-modal-pre" id="result-modal-output"></pre>
+            </section>
+          </div>
+        </section>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector("[data-result-modal-close]")?.addEventListener("click", closeResultModal);
+      modal.querySelector("#result-modal-close")?.addEventListener("click", closeResultModal);
+      modal.querySelectorAll("[data-result-tab]").forEach((tab) => {
+        tab.addEventListener("click", () => activateResultTab(modal, tab.dataset.resultTab));
+      });
+    }
+
+    const format = result.format || "txt";
+    modal.dataset.output = output;
+    modal.querySelector("#result-modal-kind").textContent = result.dryRun ? "dry-run sql" : `${jobName} output`;
+    modal.querySelector("#result-modal-title").textContent = result.dryRun ? "Dry-run SQL preview" : "Generated output";
+    modal.querySelector("#result-modal-meta").textContent = `${formatBytes(output.length)} · ${String(format).toUpperCase()}`;
+    modal.querySelector("#result-modal-overview").innerHTML = renderResultOverview(result, output, jobName);
+    modal.querySelector("#result-modal-tables").innerHTML = renderResultTables(result);
+    modal.querySelector("#result-modal-output").textContent = output;
+    activateResultTab(modal, "overview");
+    const dl = modal.querySelector("#result-modal-download");
+    dl.href = "data:text/plain;charset=utf-8," + encodeURIComponent(output);
+    dl.download = `seedstorm-${jobName}.${format}`;
+    const copy = modal.querySelector("#result-modal-copy");
+    copy.onclick = async () => {
+      await copyText(output);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1400);
+    };
+    modal.hidden = false;
+    document.body.classList.add("modal-open");
+  }
+
+  function activateResultTab(modal, tabName) {
+    modal.querySelectorAll("[data-result-tab]").forEach((tab) => {
+      tab.classList.toggle("active", tab.dataset.resultTab === tabName);
+    });
+    modal.querySelectorAll("[data-result-pane]").forEach((pane) => {
+      pane.classList.toggle("active", pane.dataset.resultPane === tabName);
+    });
+  }
+
+  function renderResultOverview(result, output, jobName) {
+    const order = Array.isArray(result.order) ? result.order : (Array.isArray(result.tables) ? result.tables : []);
+    const auto = new Set(Array.isArray(result.auto) ? result.auto : []);
+    const explicit = Math.max(0, order.length - auto.size);
+    const rows = typeof result.totalRows === "number" ? formatCount(result.totalRows) : "n/a";
+    const relationText = auto.size > 0
+      ? `${auto.size} parent ${auto.size === 1 ? "table was" : "tables were"} added because selected tables depend on them.`
+      : "No extra parent tables were required for this run scope.";
+    const primary = result.dryRun ? "No database writes will run from this preview." : "This output is ready to copy or download.";
+    const cards = [
+      ["Run", result.dryRun ? "Dry-run" : jobName],
+      ["Rows", rows],
+      ["Tables", String(order.length || result.tables || 0)],
+      ["Output", `${formatBytes(output.length)} · ${(result.format || "txt").toUpperCase()}`],
+    ].map(([label, value]) => `
+      <div class="result-modal-card">
+        <strong>${escapeHTML(value)}</strong>
+        <span>${escapeHTML(label)}</span>
+      </div>
+    `).join("");
+    return `
+      <div class="result-modal-grid">${cards}</div>
+      <div class="result-modal-callout">
+        <strong>${escapeHTML(primary)}</strong>
+        <span>${escapeHTML(relationText)}</span>
+      </div>
+      <div class="result-modal-flow">
+        <div><strong>${explicit}</strong><span>explicit or default target tables</span></div>
+        <i></i>
+        <div><strong>${auto.size}</strong><span>auto-required FK parents</span></div>
+        <i></i>
+        <div><strong>${order.length}</strong><span>tables in execution order</span></div>
+      </div>
+    `;
+  }
+
+  function renderResultTables(result) {
+    const order = Array.isArray(result.order) ? result.order : (Array.isArray(result.tables) ? result.tables : []);
+    const auto = new Set(Array.isArray(result.auto) ? result.auto : []);
+    const counts = result.tableCounts || {};
+    if (order.length === 0) {
+      return '<p class="muted small empty-hint">No table list was returned for this run.</p>';
+    }
+    const rows = order.map((tableName, idx) => {
+      const kind = auto.has(tableName) ? "required parent" : "target";
+      const rowCount = typeof counts[tableName] === "number" ? formatCount(counts[tableName]) : "n/a";
+      return `
+        <tr>
+          <td>${idx + 1}</td>
+          <td><code>${escapeHTML(tableName)}</code></td>
+          <td><span class="result-kind ${auto.has(tableName) ? "auto" : ""}">${kind}</span></td>
+          <td>${rowCount}</td>
+        </tr>
+      `;
+    }).join("");
+    return `
+      <table class="result-modal-table">
+        <thead><tr><th>#</th><th>Table</th><th>Relationship role</th><th>Rows</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function closeResultModal() {
+    const modal = document.getElementById("result-modal");
+    if (modal) modal.hidden = true;
+    if (!document.getElementById("table-modal") || document.getElementById("table-modal").hidden) {
+      document.body.classList.remove("modal-open");
+    }
+  }
+
+  function persistGeneratedDraft(yaml) {
+    try {
+      sessionStorage.setItem(GENERATED_DRAFT_KEY, JSON.stringify({ yaml, createdAt: Date.now() }));
+    } catch (_) {}
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+
+  function formatBytes(chars) {
+    if (chars >= 1_000_000) return (chars / 1_000_000).toFixed(1) + " MB";
+    if (chars >= 1_000) return (chars / 1_000).toFixed(1) + " KB";
+    return `${chars} B`;
   }
 
   // ── Workspace ─────────────────────────────────────────────────────────
@@ -371,7 +690,7 @@
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
     setupTableModal();
     document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") closeTableModal();
+      if (ev.key === "Escape") { closeTableModal(); closeResultModal(); }
       if (ev.target && ["INPUT", "TEXTAREA", "SELECT"].includes(ev.target.tagName)) return;
       if (ev.key === "/") {
         ev.preventDefault();
@@ -1124,17 +1443,7 @@
   function onJobEnd(job) {
     if (ws.cy) ws.cy.nodes(".seeding").removeClass("seeding").addClass("done");
     const out = document.getElementById("job-result");
-    const r = job.result || {};
-    if (typeof r.output === "string") {
-      const pre = document.createElement("pre");
-      pre.className = "job-log"; pre.textContent = r.output;
-      out.appendChild(pre);
-    }
-    if (Array.isArray(r.gapTables)) {
-      const div = document.createElement("div");
-      div.innerHTML = `<strong>Empty tables:</strong> ${r.gapTables.length === 0 ? "<em>none</em>" : r.gapTables.join(", ")}`;
-      out.appendChild(div);
-    }
+    if (out) renderJobResult(out, job.result || {}, job.name || ws.mode);
     refreshCounts();
   }
 
@@ -1168,6 +1477,9 @@
     setupConnectForm();
     setupRunForm();
     setupWorkspace();
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") closeResultModal();
+    });
   });
 
   // Lightweight debug surface — useful for poking from the console and for

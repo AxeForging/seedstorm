@@ -1,30 +1,45 @@
 {{define "content"}}
-<section class="card stack">
-  <h1>Export</h1>
-  <p class="muted">Convert a generated data YAML payload to SQL, CSV, or JSON.</p>
-  <form id="run-form" data-endpoint="/api/export" class="stack">
-    <label class="field">
-      <span class="field-label">Data YAML</span>
-      <textarea name="dataYaml" rows="14" placeholder="paste output from Generate (yaml)…" required></textarea>
-    </label>
-    <div class="row">
-      <label class="field">
-        <span class="field-label">Format</span>
-        <select name="format">
-          <option value="sql">sql</option>
-          <option value="csv">csv</option>
-          <option value="json">json</option>
-        </select>
-      </label>
-      <label class="field">
-        <span class="field-label">Batch size</span>
-        <input name="batchSize" type="number" value="100" min="1">
-      </label>
+<section class="run-shell">
+  <aside class="run-intro">
+    <span class="eyebrow">format converter</span>
+    <h1>Turn generated YAML into a usable artifact.</h1>
+    <p class="muted">Export accepts YAML from Generate and converts it into SQL, CSV, or JSON with copy and download controls.</p>
+    <div class="run-notes">
+      <span>Generate handoff supported</span>
+      <span>SQL batching</span>
+      <span>CSV or JSON output</span>
     </div>
-    <div class="actions">
-      <button class="btn-primary" type="submit">Export</button>
-    </div>
-  </form>
-  {{template "joblog" .}}
+  </aside>
+
+  <section class="run-panel">
+    <form id="run-form" data-endpoint="/api/export" class="run-form">
+      <div class="run-form-head">
+        <div>
+          <h2>Export payload</h2>
+          <p class="muted small">If you arrived from Generate, the YAML payload is loaded automatically.</p>
+        </div>
+        <button class="btn-primary" type="submit">Export artifact</button>
+      </div>
+      <label class="field">
+        <span class="field-label">Data YAML</span>
+        <textarea name="dataYaml" rows="16" placeholder="paste output from Generate (yaml)..." required></textarea>
+      </label>
+      <div class="run-fields compact">
+        <label class="field">
+          <span class="field-label">Output format</span>
+          <select name="format">
+            <option value="sql">SQL inserts</option>
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Batch size</span>
+          <input name="batchSize" type="number" value="100" min="1">
+        </label>
+      </div>
+    </form>
+    {{template "joblog" .}}
+  </section>
 </section>
 {{end}}

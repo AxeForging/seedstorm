@@ -1,21 +1,37 @@
 {{define "content"}}
-<section class="card stack">
-  <h1>AI Enrich</h1>
-  <p class="muted">Uses Gemini to replace generic faker mappings with semantically meaningful ones based on column names and table context.</p>
-  <p class="muted small">Requires <code>GEMINI_API_KEY</code> in the environment of the seedstorm process.</p>
-  <form id="run-form" data-endpoint="/api/enrich" class="grid-2">
-    <label class="field">
-      <span class="field-label">Model</span>
-      <input name="model" value="gemini-2.5-flash">
-    </label>
-    <label class="field">
-      <span class="field-label">App context (optional)</span>
-      <input name="context" placeholder="e.g. TacoShop · HR system">
-    </label>
-    <div class="span-2 actions">
-      <button class="btn-primary" type="submit">Enrich</button>
+<section class="run-shell">
+  <aside class="run-intro">
+    <span class="eyebrow">semantic faker map</span>
+    <h1>Teach the schema what kind of data it should make.</h1>
+    <p class="muted">AI Enrich updates the in-memory schema with faker hints that better match your product domain.</p>
+    <div class="run-notes">
+      <span>Requires GEMINI_API_KEY</span>
+      <span>Updates cached schema</span>
+      <span>Review YAML result</span>
     </div>
-  </form>
-  {{template "joblog" .}}
+  </aside>
+
+  <section class="run-panel">
+    <form id="run-form" data-endpoint="/api/enrich" class="run-form">
+      <div class="run-form-head">
+        <div>
+          <h2>Enrichment prompt</h2>
+          <p class="muted small">Give the model a short domain cue so generated names, labels, statuses, and descriptions fit the app.</p>
+        </div>
+        <button class="btn-primary" type="submit">Enrich schema</button>
+      </div>
+      <div class="run-fields">
+        <label class="field">
+          <span class="field-label">Model</span>
+          <input name="model" value="gemini-2.5-flash">
+        </label>
+        <label class="field">
+          <span class="field-label">App context</span>
+          <input name="context" placeholder="e.g. outdoor marketplace, HR system, indie game backend">
+        </label>
+      </div>
+    </form>
+    {{template "joblog" .}}
+  </section>
 </section>
 {{end}}
