@@ -30,6 +30,7 @@ func TestServer_routes_smoke(t *testing.T) {
 		{"/static/app.js", http.StatusOK, "GENERATED_DRAFT_KEY"},
 		{"/static/app.js", http.StatusOK, "GRAPH_ROUTE_KEY"},
 		{"/static/app.js", http.StatusOK, "route-step"},
+		{"/static/app.js", http.StatusOK, "routeColorFor"},
 		{"/static/style.css", http.StatusOK, ".result-shell"},
 		{"/static/style.css", http.StatusOK, ".ws-route-toggle"},
 	}

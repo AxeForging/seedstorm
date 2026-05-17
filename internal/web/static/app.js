@@ -731,7 +731,17 @@
 
     const elements = [
       ...ws.nodes.map(n => ({ data: nodeData(n) })),
-      ...ws.edges.map(e => ({ data: { id: e.id, source: e.source, target: e.target, label: e.column, nullable: e.nullable } })),
+      ...ws.edges.map((e, idx) => ({
+        data: {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.column,
+          nullable: e.nullable,
+          routeLane: idx % 7,
+          routeColor: routeColorFor(e.source),
+        },
+      })),
     ];
 
     ws.cy = cytoscape({
@@ -774,6 +784,13 @@
       counted: n.counted,
       countLabel: n.counted ? formatCount(n.count) : "?",
     };
+  }
+
+  function routeColorFor(seed) {
+    const colors = ["#79d8b3", "#d8b56f", "#7ca7ff", "#df8cc8", "#8dd6e8", "#c2d16b", "#b196ff"];
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+    return colors[Math.abs(hash) % colors.length];
   }
 
   function formatCount(n) {
@@ -887,8 +904,7 @@
       {
         selector: "edge.route-smooth",
         style: {
-          "curve-style": "bezier",
-          "control-point-step-size": 48,
+          "curve-style": "unbundled-bezier",
         },
       },
       {
@@ -931,10 +947,37 @@
 
   function applyEdgeRoute() {
     if (!ws.cy) return;
+    const smoothOffsets = [-96, -64, -32, 32, 64, 96, 128];
+    const taxiTurns = [24, 44, 64, 84, 104, 124, 144];
     ws.cy.batch(() => {
       ws.cy.edges()
         .removeClass("route-straight route-smooth route-step")
         .addClass("route-" + ws.edgeRoute);
+      ws.cy.edges().forEach((edge) => {
+        edge.removeStyle("curve-style line-color target-arrow-color control-point-distances control-point-weights control-point-step-size taxi-direction taxi-turn taxi-turn-min-distance");
+        const lane = Number(edge.data("routeLane") || 0);
+        if (ws.edgeRoute === "smooth") {
+          const color = edge.data("routeColor");
+          edge.style({
+            "curve-style": "unbundled-bezier",
+            "line-color": color,
+            "target-arrow-color": color,
+            "control-point-distances": smoothOffsets[lane] + "px",
+            "control-point-weights": lane % 2 === 0 ? "0.42" : "0.58",
+          });
+        }
+        if (ws.edgeRoute === "step") {
+          const color = edge.data("routeColor");
+          edge.style({
+            "curve-style": "taxi",
+            "line-color": color,
+            "target-arrow-color": color,
+            "taxi-direction": "rightward",
+            "taxi-turn": taxiTurns[lane] + "px",
+            "taxi-turn-min-distance": "18px",
+          });
+        }
+      });
     });
   }
 
