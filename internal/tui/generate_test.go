@@ -57,12 +57,16 @@ func TestGen_pickerToConfig(t *testing.T) {
 	}
 }
 
-func TestGen_configToExecute(t *testing.T) {
+func TestGen_configToVolumesToExecute(t *testing.T) {
 	m := buildGenModel()
 	m2 := sendGenKey(m, "enter")  // → config
-	m3 := sendGenKey(m2, "enter") // → execute
-	if getGen(m3).step != genStepExecute {
-		t.Fatalf("enter on config should advance to execute, got step %d", getGen(m3).step)
+	m3 := sendGenKey(m2, "enter") // → volumes
+	if getGen(m3).step != genStepRows {
+		t.Fatalf("enter on config should advance to volumes, got step %d", getGen(m3).step)
+	}
+	m4 := sendGenKey(m3, "enter") // → execute
+	if getGen(m4).step != genStepExecute {
+		t.Fatalf("enter on volumes should advance to execute, got step %d", getGen(m4).step)
 	}
 }
 
@@ -113,8 +117,8 @@ func TestGen_viewShowsGenerateHeader(t *testing.T) {
 func TestGen_viewShowsAllStepNames(t *testing.T) {
 	m := buildGenModel()
 	view := m.View()
-	if !stringContains(view, "Tables") || !stringContains(view, "Config") || !stringContains(view, "Generate") {
-		t.Error("breadcrumb should show all 3 step names")
+	if !stringContains(view, "Tables") || !stringContains(view, "Config") || !stringContains(view, "Volumes") || !stringContains(view, "Generate") {
+		t.Error("breadcrumb should show all 4 step names")
 	}
 }
 

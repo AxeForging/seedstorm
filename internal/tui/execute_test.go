@@ -452,3 +452,37 @@ func TestStartDryRun_multipleTables(t *testing.T) {
 		t.Errorf("total = %d, want 6", dm.total)
 	}
 }
+
+func TestStartDryRun_usesPerTableRowOverrides(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users": {
+			"id": {Type: "integer", PK: true},
+		},
+		"orders": {
+			"id":      {Type: "integer", PK: true},
+			"user_id": {Type: "integer", FK: "users.id"},
+		},
+	})
+	params := &seedParams{
+		schema:    s,
+		tables:    []string{"users", "orders"},
+		rows:      2,
+		tableRows: map[string]int{"orders": 5},
+		dbType:    "pgx",
+	}
+	msg := startDryRun(params)()
+	dm := msg.(dryRunDoneMsg)
+	if dm.err != nil {
+		t.Fatalf("unexpected error: %v", dm.err)
+	}
+	if dm.total != 7 {
+		t.Fatalf("total = %d, want 7", dm.total)
+	}
+	got := map[string]int{}
+	for _, table := range dm.tables {
+		got[table.name] = table.rows
+	}
+	if got["users"] != 2 || got["orders"] != 5 {
+		t.Fatalf("rows by table = %+v, want users=2 orders=5", got)
+	}
+}

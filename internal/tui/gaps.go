@@ -22,6 +22,7 @@ type gapsStep int
 const (
 	gapsStepPicker gapsStep = iota
 	gapsStepConfig
+	gapsStepRows
 	gapsStepReview
 	gapsStepExecute
 )
@@ -39,6 +40,7 @@ type GapsModel struct {
 
 	picker  tablePickerModel
 	config  configModel
+	volumes tableRowsModel
 	review  reviewModel
 	execute executeModel
 
@@ -125,6 +127,7 @@ func (m GapsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.picker.height = msg.Height
+		m.volumes.height = msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
@@ -137,6 +140,8 @@ func (m GapsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePicker(msg)
 	case gapsStepConfig:
 		return m.updateConfig(msg)
+	case gapsStepRows:
+		return m.updateRows(msg)
 	case gapsStepReview:
 		return m.updateReview(msg)
 	case gapsStepExecute:
@@ -202,12 +207,33 @@ func (m GapsModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		resolved, _ := ResolveDeps(m.graph, cleanSelected, m.sortedAll)
 
+		m.volumes = newTableRows(resolved, m.config.Rows(), nil, m.height)
+		m.step = gapsStepRows
+	}
+	return m, cmd
+}
+
+func (m GapsModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.volumes, cmd = m.volumes.Update(msg)
+
+	if m.volumes.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	if m.volumes.back {
+		m.volumes.back = false
+		m.config.done = false
+		m.step = gapsStepConfig
+		return m, nil
+	}
+	if m.volumes.done {
 		parents := make(map[string][]string)
-		for _, t := range resolved {
+		for _, t := range m.volumes.tables {
 			parents[t] = m.graph.Parents(t)
 		}
-		m.review = newReview(resolved, parents,
-			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), false)
+		m.review = newReview(m.volumes.tables, parents,
+			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), false, m.volumes.TableRows())
 		m.step = gapsStepReview
 	}
 	return m, cmd
@@ -223,8 +249,8 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.review.back {
 		m.review.back = false
-		m.config.done = false
-		m.step = gapsStepConfig
+		m.volumes.done = false
+		m.step = gapsStepRows
 		return m, nil
 	}
 	if m.review.done {
@@ -233,6 +259,7 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tables:    m.review.tables,
 			rows:      m.review.rows,
 			enumRows:  m.review.enumRows,
+			tableRows: m.review.tableRows,
 			batchSize: m.review.batch,
 			truncate:  false, // gaps never truncates
 			dbType:    m.dbType,
@@ -261,7 +288,7 @@ func (m GapsModel) updateExecute(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m GapsModel) View() string {
 	var sb strings.Builder
 
-	steps := []string{"Tables", "Config", "Review", "Execute"}
+	steps := []string{"Tables", "Config", "Volumes", "Review", "Execute"}
 	var breadcrumbs []string
 	for i, name := range steps {
 		if gapsStep(i) == m.step {
@@ -282,6 +309,8 @@ func (m GapsModel) View() string {
 		sb.WriteString(m.picker.View())
 	case gapsStepConfig:
 		sb.WriteString(m.config.View())
+	case gapsStepRows:
+		sb.WriteString(m.volumes.View())
 	case gapsStepReview:
 		sb.WriteString(m.review.View())
 	case gapsStepExecute:
@@ -310,7 +339,7 @@ func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.C
 			return seedDoneMsg{err: fmt.Errorf("failed to ping database: %w", err)}
 		}
 
-		data, err := faker.GenerateFiltered(s.schema, allSorted, s.tables, s.rows, s.enumRows, conn, s.dbType)
+		data, err := faker.GenerateFilteredWithCounts(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType)
 		if err != nil {
 			return seedDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}
@@ -345,7 +374,7 @@ func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.C
 // startGapsDryRun generates data for gap tables and returns a preview.
 func startGapsDryRun(s *seedParams, allSorted []string) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.GenerateFiltered(s.schema, allSorted, s.tables, s.rows, s.enumRows, nil, s.dbType)
+		data, err := faker.GenerateFilteredWithCounts(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType)
 		if err != nil {
 			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}

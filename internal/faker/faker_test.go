@@ -732,6 +732,108 @@ func TestGenerate_reproducibleWithSeed(t *testing.T) {
 	}
 }
 
+func TestGenerateFilteredWithCountsUsesGlobalRowsByDefault(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"users": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "integer", PK: true},
+					"name": {Type: "varchar", Faker: "name"},
+				},
+			},
+			"orders": {
+				Columns: map[string]schema.Column{
+					"id":      {Type: "integer", PK: true},
+					"user_id": {Type: "integer", FK: "users.id"},
+				},
+			},
+		},
+	}
+
+	data, err := GenerateFilteredWithCounts(s, []string{"users", "orders"}, []string{"users", "orders"}, 3, 0, nil, nil, "pgx")
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithCounts: %v", err)
+	}
+	if got := len(data["users"]); got != 3 {
+		t.Fatalf("users rows = %d, want 3", got)
+	}
+	if got := len(data["orders"]); got != 3 {
+		t.Fatalf("orders rows = %d, want 3", got)
+	}
+}
+
+func TestGenerateFilteredWithCountsOverridesIndividualTables(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"users": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "integer", PK: true},
+					"name": {Type: "varchar", Faker: "name"},
+				},
+			},
+			"orders": {
+				Columns: map[string]schema.Column{
+					"id":      {Type: "integer", PK: true},
+					"user_id": {Type: "integer", FK: "users.id"},
+				},
+			},
+		},
+	}
+
+	data, err := GenerateFilteredWithCounts(s, []string{"users", "orders"}, []string{"users", "orders"}, 2, 0, map[string]int{
+		"orders": 5,
+	}, nil, "pgx")
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithCounts: %v", err)
+	}
+	if got := len(data["users"]); got != 2 {
+		t.Fatalf("users rows = %d, want 2", got)
+	}
+	if got := len(data["orders"]); got != 5 {
+		t.Fatalf("orders rows = %d, want 5", got)
+	}
+}
+
+func TestGenerateFilteredWithCountsUsesOverrideAsExactEnumTableVolume(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"tickets": makeEnumTable(map[string][]string{
+				"status": {"open", "closed"},
+			}),
+		},
+	}
+
+	data, err := GenerateFilteredWithCounts(s, []string{"tickets"}, []string{"tickets"}, 1, 0, map[string]int{
+		"tickets": 3,
+	}, nil, "pgx")
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithCounts: %v", err)
+	}
+	if got := len(data["tickets"]); got != 3 {
+		t.Fatalf("tickets rows = %d, want exact table override 3", got)
+	}
+}
+
+func TestGenerateFilteredWithCountsOverrideWinsOverEnumRows(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"tickets": makeEnumTable(map[string][]string{
+				"status": {"open", "closed"},
+			}),
+		},
+	}
+
+	data, err := GenerateFilteredWithCounts(s, []string{"tickets"}, []string{"tickets"}, 1, 2, map[string]int{
+		"tickets": 7,
+	}, nil, "pgx")
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithCounts: %v", err)
+	}
+	if got := len(data["tickets"]); got != 7 {
+		t.Fatalf("tickets rows = %d, want table override 7 instead of enumRows total 4", got)
+	}
+}
+
 func TestGenerate_differentSeedsDifferentOutput(t *testing.T) {
 	s := &schema.Schema{
 		Tables: map[string]schema.Table{
