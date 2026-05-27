@@ -25,6 +25,7 @@ type genStep int
 const (
 	genStepPicker genStep = iota
 	genStepConfig
+	genStepRows
 	genStepExecute
 )
 
@@ -213,6 +214,7 @@ type GenModel struct {
 
 	picker    tablePickerModel
 	genConfig genConfigModel
+	volumes   tableRowsModel
 	execute   executeModel
 
 	quitting bool
@@ -271,6 +273,7 @@ func (m GenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.picker.height = msg.Height
+		m.volumes.height = msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
@@ -283,6 +286,8 @@ func (m GenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePicker(msg)
 	case genStepConfig:
 		return m.updateGenConfig(msg)
+	case genStepRows:
+		return m.updateRows(msg)
 	case genStepExecute:
 		return m.updateExecute(msg)
 	}
@@ -337,12 +342,32 @@ func (m GenModel) updateGenConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tables = append(tables, t)
 			}
 		}
+		m.volumes = newTableRows(tables, m.genConfig.Rows(), nil, m.height)
+		m.step = genStepRows
+	}
+	return m, cmd
+}
 
-		m.execute = newExecute(len(tables), false)
+func (m GenModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.volumes, cmd = m.volumes.Update(msg)
+
+	if m.volumes.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	if m.volumes.back {
+		m.volumes.back = false
+		m.genConfig.done = false
+		m.step = genStepConfig
+		return m, nil
+	}
+	if m.volumes.done {
+		m.execute = newExecute(len(m.volumes.tables), false)
 		m.execute.dryRun = true // generate is always a "dry run" (no DB)
 		m.step = genStepExecute
 
-		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, tables, m.genConfig.Rows(), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType))
+		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.volumes.TableRows(), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType))
 	}
 	return m, cmd
 }
@@ -372,7 +397,7 @@ func (m GenModel) updateExecute(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m GenModel) View() string {
 	var sb strings.Builder
 
-	steps := []string{"Tables", "Config", "Generate"}
+	steps := []string{"Tables", "Config", "Volumes", "Generate"}
 	var breadcrumbs []string
 	for i, name := range steps {
 		if genStep(i) == m.step {
@@ -391,6 +416,8 @@ func (m GenModel) View() string {
 		sb.WriteString(m.picker.View())
 	case genStepConfig:
 		sb.WriteString(m.genConfig.View())
+	case genStepRows:
+		sb.WriteString(m.volumes.View())
 	case genStepExecute:
 		sb.WriteString(m.execute.View())
 	}
@@ -398,9 +425,9 @@ func (m GenModel) View() string {
 }
 
 // startGenerate generates data and optionally writes to file.
-func startGenerate(s *schema.Schema, tables []string, rows int, format, outPath, dbType string) tea.Cmd {
+func startGenerate(s *schema.Schema, tables []string, rows int, tableRows map[string]int, format, outPath, dbType string) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.Generate(s, tables, rows, 0, nil, dbType)
+		data, err := faker.GenerateFilteredWithCounts(s, tables, tables, rows, 0, tableRows, nil, dbType)
 		if err != nil {
 			return generateDoneMsg{err: fmt.Errorf("generation failed: %w", err)}
 		}

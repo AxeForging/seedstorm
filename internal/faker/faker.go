@@ -32,6 +32,12 @@ func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, conn 
 // Use this when you only want to seed a subset of tables (e.g. empty ones)
 // while still being able to resolve FK references to already-populated parents.
 func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
+	return GenerateFilteredWithCounts(s, allTables, targetTables, rows, enumRows, nil, conn, dbType)
+}
+
+// GenerateFilteredWithCounts is like GenerateFiltered, but tableRows can
+// override the default row count for individual target tables.
+func GenerateFilteredWithCounts(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, tableRows map[string]int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
 	data := make(map[string][]map[string]interface{})
 	generatedPKs := make(map[string][]interface{})
 
@@ -46,21 +52,27 @@ func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, 
 	for _, tableName := range sortedTables {
 		table := s.Tables[tableName]
 		data[tableName] = nil
+		tableRowCount := rows
+		_, hasRowOverride := tableRows[tableName]
+		if override := tableRows[tableName]; override > 0 {
+			tableRowCount = override
+		}
 
 		enumCol, enumVals := findEnumColumn(table)
 
-		if enumCol != "" && enumRows > 0 {
+		if enumCol != "" && enumRows > 0 && !hasRowOverride {
 			if err := generateEnumRows(data, generatedPKs, table, tableName, enumCol, enumVals, enumRows); err != nil {
 				return nil, fmt.Errorf("table %s: %w", tableName, err)
 			}
 		} else {
-			if err := generateStandardRows(data, generatedPKs, table, tableName, rows); err != nil {
+			if err := generateStandardRows(data, generatedPKs, table, tableName, tableRowCount); err != nil {
 				return nil, fmt.Errorf("table %s: %w", tableName, err)
 			}
-			// Guarantee every enum value appears at least `rows` times, independently per column.
+			// Guarantee every enum value appears at least the requested table
+			// row count, independently per column.
 			enumCols := findAllEnumColumns(table)
-			if len(enumCols) > 0 {
-				if err := topUpEnumCoverage(data, generatedPKs, table, tableName, enumCols, rows); err != nil {
+			if len(enumCols) > 0 && !hasRowOverride {
+				if err := topUpEnumCoverage(data, generatedPKs, table, tableName, enumCols, tableRowCount); err != nil {
 					return nil, fmt.Errorf("table %s enum top-up: %w", tableName, err)
 				}
 			}

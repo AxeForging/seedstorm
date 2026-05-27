@@ -116,6 +116,8 @@ seedstorm seed \
   --interactive
 ```
 
+The interactive TUI includes a **Volumes** step after global config. Each selected table starts with the `--rows` value, and you can override individual tables before review, dry-run, or execution.
+
 <img src="gifs/seed-interactive.gif" alt="seed interactive TUI demo" width="720" />
 
 | Flag | Default | Description |
@@ -168,6 +170,8 @@ seedstorm gaps \
   --interactive
 ```
 
+Interactive gap fill also includes the **Volumes** step, so empty child tables can receive higher or lower row counts than their auto-required parents.
+
 Sample output (gap analysis report):
 
 ```
@@ -214,6 +218,8 @@ seedstorm generate --schema schema.yaml --rows 20 --format yaml
 seedstorm generate --schema schema.yaml --interactive
 ```
 
+In interactive mode, the **Volumes** step can override row counts per selected table while `--rows` remains the default.
+
 <img src="gifs/generate.gif" alt="generate demo" width="720" />
 
 | Flag | Default | Description |
@@ -253,7 +259,7 @@ SEEDSTORM_ADDR=127.0.0.1:9000 seedstorm serve
 
 What the UI gives you:
 
-- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). Three run modes: **Seed**, **Fill empty**, **Generate (no DB write)**. Live SSE log stream + status pill.
+- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. Live SSE log stream + status pill.
 - **Connection management** — multi-session: hold several DBs open in one browser and switch from a topbar dropdown. Saved connection presets in `localStorage` with optional password (eye-icon reveal, closed by default). Passwords are kept in process memory only on the server.
 - **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
 

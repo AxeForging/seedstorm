@@ -16,6 +16,7 @@ type step int
 const (
 	stepPicker step = iota
 	stepConfig
+	stepRows
 	stepReview
 	stepExecute
 )
@@ -26,6 +27,7 @@ type seedParams struct {
 	tables    []string
 	rows      int
 	enumRows  int
+	tableRows map[string]int
 	batchSize int
 	truncate  bool
 	dbType    string
@@ -44,6 +46,7 @@ type Model struct {
 
 	picker  tablePickerModel
 	config  configModel
+	volumes tableRowsModel
 	review  reviewModel
 	execute executeModel
 
@@ -112,6 +115,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.picker.height = msg.Height
+		m.volumes.height = msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
@@ -124,6 +128,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePicker(msg)
 	case stepConfig:
 		return m.updateConfig(msg)
+	case stepRows:
+		return m.updateRows(msg)
 	case stepReview:
 		return m.updateReview(msg)
 	case stepExecute:
@@ -182,7 +188,6 @@ func (m Model) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.config.done {
-		// Build review data
 		selected := m.picker.selectedTables()
 		var tables []string
 		for _, t := range m.sortedAll {
@@ -190,13 +195,36 @@ func (m Model) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tables = append(tables, t)
 			}
 		}
+		m.volumes = newTableRows(tables, m.config.Rows(), nil, m.height)
+		m.step = stepRows
+	}
+
+	return m, cmd
+}
+
+func (m Model) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.volumes, cmd = m.volumes.Update(msg)
+
+	if m.volumes.quitting {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	if m.volumes.back {
+		m.volumes.back = false
+		m.config.done = false
+		m.step = stepConfig
+		return m, nil
+	}
+	if m.volumes.done {
+		tables := m.volumes.tables
 		parents := make(map[string][]string)
 		for _, t := range tables {
 			parents[t] = m.graph.Parents(t)
 		}
 
 		m.review = newReview(tables, parents,
-			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), m.config.Truncate())
+			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), m.config.Truncate(), m.volumes.TableRows())
 		m.step = stepReview
 	}
 
@@ -213,8 +241,8 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.review.back {
 		m.review.back = false
-		m.config.done = false
-		m.step = stepConfig
+		m.volumes.done = false
+		m.step = stepRows
 		return m, nil
 	}
 	if m.review.done {
@@ -223,6 +251,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tables:    m.review.tables,
 			rows:      m.review.rows,
 			enumRows:  m.review.enumRows,
+			tableRows: m.review.tableRows,
 			batchSize: m.review.batch,
 			truncate:  m.review.truncate,
 			dbType:    m.dbType,
@@ -262,7 +291,7 @@ func (m Model) View() string {
 	var sb strings.Builder
 
 	// Step breadcrumb
-	steps := []string{"Tables", "Config", "Review", "Execute"}
+	steps := []string{"Tables", "Config", "Volumes", "Review", "Execute"}
 	var breadcrumbs []string
 	for i, name := range steps {
 		if step(i) == m.step {
@@ -285,6 +314,8 @@ func (m Model) View() string {
 		sb.WriteString(m.picker.View())
 	case stepConfig:
 		sb.WriteString(m.config.View())
+	case stepRows:
+		sb.WriteString(m.volumes.View())
 	case stepReview:
 		sb.WriteString(m.review.View())
 	case stepExecute:

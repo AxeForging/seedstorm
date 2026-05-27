@@ -86,14 +86,15 @@ func TestWizard_fullFlowToReview(t *testing.T) {
 		t.Fatalf("enter on picker should advance to config, got step %d", getModel(m2).step)
 	}
 
-	// Step 2: Config — press enter to advance
+	// Step 2: Config — press enter to advance to table volumes.
 	m3 := sendKey(m2, "enter")
-	if getModel(m3).step != stepReview {
-		t.Fatalf("enter on config should advance to review, got step %d", getModel(m3).step)
+	if getModel(m3).step != stepRows {
+		t.Fatalf("enter on config should advance to volumes, got step %d", getModel(m3).step)
 	}
+	m4 := sendKey(m3, "enter")
 
 	// Verify review has all 3 tables
-	rm := getModel(m3)
+	rm := getModel(m4)
 	if len(rm.review.tables) != 3 {
 		t.Errorf("review should have 3 tables, got %d", len(rm.review.tables))
 	}
@@ -111,10 +112,15 @@ func TestWizard_backFromConfigToPicker(t *testing.T) {
 func TestWizard_backFromReviewToConfig(t *testing.T) {
 	m := buildTestModel()
 	m2 := sendKey(m, "enter")  // picker → config
-	m3 := sendKey(m2, "enter") // config → review
-	m4 := sendKey(m3, "b")     // review → back to config
-	if getModel(m4).step != stepConfig {
-		t.Fatalf("b on review should go back to config, got step %d", getModel(m4).step)
+	m3 := sendKey(m2, "enter") // config → volumes
+	m4 := sendKey(m3, "enter") // volumes → review
+	m5 := sendKey(m4, "b")     // review → back to volumes
+	if getModel(m5).step != stepRows {
+		t.Fatalf("b on review should go back to volumes, got step %d", getModel(m5).step)
+	}
+	m6 := sendKey(m5, "b") // volumes → back to config
+	if getModel(m6).step != stepConfig {
+		t.Fatalf("b on volumes should go back to config, got step %d", getModel(m6).step)
 	}
 }
 
@@ -138,9 +144,10 @@ func TestWizard_quitFromConfig(t *testing.T) {
 func TestWizard_quitFromReview(t *testing.T) {
 	m := buildTestModel()
 	m2 := sendKey(m, "enter")  // → config
-	m3 := sendKey(m2, "enter") // → review
-	m4 := sendKey(m3, "q")
-	if !getModel(m4).quitting {
+	m3 := sendKey(m2, "enter") // → volumes
+	m4 := sendKey(m3, "enter") // → review
+	m5 := sendKey(m4, "q")
+	if !getModel(m5).quitting {
 		t.Error("q on review should set quitting=true")
 	}
 }
@@ -152,8 +159,9 @@ func TestWizard_deselectLeafReducesReviewCount(t *testing.T) {
 	m3 := sendKey(m2, "down")  // cursor=2 (order_items)
 	m4 := sendKey(m3, "space") // toggle off order_items
 	m5 := sendKey(m4, "enter") // → config
-	m6 := sendKey(m5, "enter") // → review
-	rm := getModel(m6)
+	m6 := sendKey(m5, "enter") // → volumes
+	m7 := sendKey(m6, "enter") // → review
+	rm := getModel(m7)
 	if len(rm.review.tables) != 2 {
 		t.Errorf("deselecting leaf should leave 2 tables, got %d: %v", len(rm.review.tables), rm.review.tables)
 	}
@@ -198,8 +206,9 @@ func TestWizard_autoDepResolutionOnAdvance(t *testing.T) {
 func TestWizard_reviewShowsCorrectRowCount(t *testing.T) {
 	m := buildTestModel()
 	m2 := sendKey(m, "enter")  // → config (rows=10 from buildTestModel)
-	m3 := sendKey(m2, "enter") // → review
-	rm := getModel(m3)
+	m3 := sendKey(m2, "enter") // → volumes
+	m4 := sendKey(m3, "enter") // → review
+	rm := getModel(m4)
 	if rm.review.rows != 10 {
 		t.Errorf("review should show 10 rows (from config default), got %d", rm.review.rows)
 	}
@@ -208,10 +217,11 @@ func TestWizard_reviewShowsCorrectRowCount(t *testing.T) {
 func TestWizard_dryRunFromReview(t *testing.T) {
 	m := buildTestModel()
 	m2 := sendKey(m, "enter")  // → config
-	m3 := sendKey(m2, "enter") // → review
-	m4 := sendKey(m3, "d")     // dry-run
+	m3 := sendKey(m2, "enter") // → volumes
+	m4 := sendKey(m3, "enter") // → review
+	m5 := sendKey(m4, "d")     // dry-run
 
-	rm := getModel(m4)
+	rm := getModel(m5)
 	if rm.step != stepExecute {
 		t.Fatalf("d on review should advance to execute, got step %d", rm.step)
 	}
@@ -236,10 +246,17 @@ func TestWizard_viewRendersAllSteps(t *testing.T) {
 		t.Error("config view should contain 'Configure'")
 	}
 
-	// Review view should contain "Review"
+	// Volumes view should contain volume controls
 	m3 := sendKey(m2, "enter")
 	view3 := getModel(m3).View()
-	if !contains(view3, "Review") {
+	if !contains(view3, "Set table volumes") {
+		t.Error("volumes view should contain 'Set table volumes'")
+	}
+
+	// Review view should contain "Review"
+	m4 := sendKey(m3, "enter")
+	view4 := getModel(m4).View()
+	if !contains(view4, "Review") {
 		t.Error("review view should contain 'Review'")
 	}
 }
@@ -247,8 +264,8 @@ func TestWizard_viewRendersAllSteps(t *testing.T) {
 func TestWizard_breadcrumbShowsProgress(t *testing.T) {
 	m := buildTestModel()
 	view := m.View()
-	if !contains(view, "Tables") || !contains(view, "Config") || !contains(view, "Review") || !contains(view, "Execute") {
-		t.Error("breadcrumb should show all 4 step names")
+	if !contains(view, "Tables") || !contains(view, "Config") || !contains(view, "Volumes") || !contains(view, "Review") || !contains(view, "Execute") {
+		t.Error("breadcrumb should show all 5 step names")
 	}
 }
 

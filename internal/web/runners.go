@@ -40,13 +40,14 @@ func jobLogger(w io.Writer) zerolog.Logger {
 // restricts seeding to the listed tables plus their transitive non-nullable
 // FK parents.
 type SeedRequest struct {
-	Rows      int      `json:"rows"`
-	EnumRows  int      `json:"enumRows"`
-	BatchSize int      `json:"batchSize"`
-	DisableFK bool     `json:"disableFK"`
-	Truncate  bool     `json:"truncate"`
-	DryRun    bool     `json:"dryRun"`
-	Tables    []string `json:"tables,omitempty"`
+	Rows      int            `json:"rows"`
+	EnumRows  int            `json:"enumRows"`
+	BatchSize int            `json:"batchSize"`
+	DisableFK bool           `json:"disableFK"`
+	Truncate  bool           `json:"truncate"`
+	DryRun    bool           `json:"dryRun"`
+	Tables    []string       `json:"tables,omitempty"`
+	TableRows map[string]int `json:"tableRows,omitempty"`
 }
 
 func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc JobControl) (map[string]any, error) {
@@ -120,7 +121,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	}
 	// GenerateFiltered preloads PKs from allSorted so target tables can FK-ref
 	// already-populated parents; targetTables alone is what gets generated.
-	data, err := faker.GenerateFiltered(sc, allSorted, targetTables, req.Rows, req.EnumRows, connArg, sess.DBType)
+	data, err := faker.GenerateFilteredWithCounts(sc, allSorted, targetTables, req.Rows, req.EnumRows, cleanTableRows(req.TableRows), connArg, sess.DBType)
 	if err != nil {
 		return nil, fmt.Errorf("generation: %w", err)
 	}
@@ -182,12 +183,13 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 // GapsRequest mirrors the gaps CLI flags. Tables, when set, restricts the
 // fill phase to the listed empty tables (plus their transitive parents).
 type GapsRequest struct {
-	Rows      int      `json:"rows"`
-	EnumRows  int      `json:"enumRows"`
-	BatchSize int      `json:"batchSize"`
-	Fill      bool     `json:"fill"`
-	DryRun    bool     `json:"dryRun"`
-	Tables    []string `json:"tables,omitempty"`
+	Rows      int            `json:"rows"`
+	EnumRows  int            `json:"enumRows"`
+	BatchSize int            `json:"batchSize"`
+	Fill      bool           `json:"fill"`
+	DryRun    bool           `json:"dryRun"`
+	Tables    []string       `json:"tables,omitempty"`
+	TableRows map[string]int `json:"tableRows,omitempty"`
 }
 
 func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
@@ -258,7 +260,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 
 	jc.Phase("generate")
 	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Msg("Generating data for empty tables")
-	data, err := faker.GenerateFiltered(sc, allSorted, gapTables, req.Rows, req.EnumRows, conn, sess.DBType)
+	data, err := faker.GenerateFilteredWithCounts(sc, allSorted, gapTables, req.Rows, req.EnumRows, cleanTableRows(req.TableRows), conn, sess.DBType)
 	if err != nil {
 		return nil, err
 	}
@@ -292,9 +294,10 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 // GenerateRequest mirrors the generate CLI flags. Tables, when set, restricts
 // generation to the listed tables plus their transitive non-nullable parents.
 type GenerateRequest struct {
-	Rows   int      `json:"rows"`
-	Format string   `json:"format"` // yaml | json | sql
-	Tables []string `json:"tables,omitempty"`
+	Rows      int            `json:"rows"`
+	Format    string         `json:"format"` // yaml | json | sql
+	Tables    []string       `json:"tables,omitempty"`
+	TableRows map[string]int `json:"tableRows,omitempty"`
 }
 
 func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateRequest, jc JobControl) (map[string]any, error) {
@@ -328,7 +331,7 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
 	// GenerateFiltered is fine here too: with conn=nil it skips PK preload.
-	data, err := faker.GenerateFiltered(sc, allSorted, targetTables, req.Rows, 0, nil, sess.DBType)
+	data, err := faker.GenerateFilteredWithCounts(sc, allSorted, targetTables, req.Rows, 0, cleanTableRows(req.TableRows), nil, sess.DBType)
 	if err != nil {
 		return nil, err
 	}
@@ -358,6 +361,22 @@ func tableRowCounts(data map[string][]map[string]any, sortedTables []string) (ma
 		total += n
 	}
 	return counts, total
+}
+
+func cleanTableRows(rows map[string]int) map[string]int {
+	if len(rows) == 0 {
+		return nil
+	}
+	clean := make(map[string]int, len(rows))
+	for tableName, count := range rows {
+		if tableName != "" && count > 0 {
+			clean[tableName] = count
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	return clean
 }
 
 func encodeData(data map[string][]map[string]any, sortedTables []string, format, dbType string) (string, error) {

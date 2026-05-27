@@ -639,6 +639,8 @@
     selected: new Set(),  // explicit user picks
     auto: new Set(),      // auto-locked transitive parents
     parents: {},          // table → [hard parents]
+    children: {},         // table → [hard children]
+    tableRows: {},        // table → explicit row count override
     nodes: [],            // raw graph payload
     edges: [],
     mode: "seed",
@@ -687,6 +689,7 @@
         focusFirstSearchHit();
       }
     });
+    document.getElementById("cfg-rows")?.addEventListener("input", () => refreshSelectionUI());
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
@@ -724,9 +727,16 @@
     ws.edges = data.edges || [];
     // Compute hard FK parents per table (from non-nullable edges).
     ws.parents = {};
-    for (const n of ws.nodes) ws.parents[n.id] = [];
+    ws.children = {};
+    for (const n of ws.nodes) {
+      ws.parents[n.id] = [];
+      ws.children[n.id] = [];
+    }
     for (const e of ws.edges) {
-      if (!e.nullable) ws.parents[e.target].push(e.source);
+      if (!e.nullable) {
+        ws.parents[e.target].push(e.source);
+        ws.children[e.source].push(e.target);
+      }
     }
 
     const elements = [
@@ -780,6 +790,7 @@
     return {
       id: n.id,
       label: n.label,
+      displayLabel: n.label,
       count: n.count,
       counted: n.counted,
       countLabel: n.counted ? formatCount(n.count) : "?",
@@ -811,7 +822,7 @@
           "background-color": "#1d2230",
           "border-color": "#3b465f",
           "border-width": 1.5,
-          "label": "data(label)",
+          "label": "data(displayLabel)",
           "color": "#e6e9f2",
           "font-size": 12,
           "text-valign": "center",
@@ -822,6 +833,9 @@
           "height": "label",
           "transition-property": "border-color background-color",
           "transition-duration": 150,
+          "text-wrap": "wrap",
+          "text-max-width": 150,
+          "line-height": 1.25,
         },
       },
       // count badge using overlay node label trick
@@ -1029,6 +1043,7 @@
   function clearSelection() {
     ws.selected = new Set();
     ws.auto = new Set();
+    ws.tableRows = {};
     refreshSelectionUI();
   }
   function selectEmpty() {
@@ -1052,6 +1067,7 @@
       ws.cy.nodes().forEach((n) => {
         const id = n.id();
         n.removeClass("selected auto");
+        n.data("displayLabel", nodeDisplayLabel(id));
         if (ws.selected.has(id)) n.addClass("selected");
         else if (ws.auto.has(id)) n.addClass("auto");
       });
@@ -1083,7 +1099,30 @@
       const main = document.createElement("div");
       main.className = "ws-sel-main";
       const name = document.createElement("span");
+      name.className = "ws-sel-name";
       name.textContent = item.id;
+      const volume = document.createElement("label");
+      volume.className = "ws-sel-rows";
+      volume.title = "Rows to create for this table in this run";
+      const volumeText = document.createElement("span");
+      const childCount = selectedChildCount(item.id);
+      volumeText.textContent = childCount > 0 ? `${childCount} child${childCount === 1 ? "" : "ren"}` : "rows";
+      const volumeInput = document.createElement("input");
+      volumeInput.type = "number";
+      volumeInput.min = "1";
+      volumeInput.inputMode = "numeric";
+      volumeInput.placeholder = String(defaultRows());
+      volumeInput.value = ws.tableRows[item.id] ? String(ws.tableRows[item.id]) : "";
+      volumeInput.addEventListener("click", (ev) => ev.stopPropagation());
+      volumeInput.addEventListener("input", (ev) => {
+        ev.stopPropagation();
+        const n = Number(ev.target.value || 0);
+        if (n > 0) ws.tableRows[item.id] = n;
+        else delete ws.tableRows[item.id];
+        syncNodeRowLabels();
+        updateRunScope();
+      });
+      volume.append(volumeText, volumeInput);
       const actions = document.createElement("span");
       actions.className = "ws-sel-actions";
       const tag = document.createElement("span");
@@ -1110,12 +1149,13 @@
           ev.stopPropagation();
           ws.selected.delete(item.id);
           ws.peek.delete(item.id);
+          delete ws.tableRows[item.id];
           recomputeAuto();
           refreshSelectionUI();
         });
         actions.append(remove);
       }
-      main.append(name, actions);
+      main.append(name, volume, actions);
       li.append(main);
       const preview = document.createElement("div");
       preview.className = "ws-sel-peek";
@@ -1141,11 +1181,33 @@
     refreshSelectionUI();
   }
 
+  function defaultRows() {
+    return Number(document.getElementById("cfg-rows")?.value || 0) || 20;
+  }
+
+  function selectedChildCount(tableName) {
+    const effective = new Set([...ws.selected, ...ws.auto]);
+    return (ws.children[tableName] || []).filter((child) => effective.has(child)).length;
+  }
+
+  function nodeDisplayLabel(id) {
+    const override = ws.tableRows[id];
+    const effective = ws.selected.has(id) || ws.auto.has(id);
+    return effective && override > 0 ? `${id}\n${formatCount(override)} rows` : id;
+  }
+
+  function syncNodeRowLabels() {
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.nodes().forEach((n) => n.data("displayLabel", nodeDisplayLabel(n.id())));
+    });
+  }
+
   async function loadPeek(tableName, target) {
     target.hidden = false;
     target.innerHTML = '<p class="muted small">Loading rows...</p>';
-    const q = new URLSearchParams({ table: tableName, limit: "5", offset: "0" });
-    const res = await fetch("/api/table?" + q.toString());
+    const q = new URLSearchParams({ table: tableName, limit: "5", offset: "0", _: String(Date.now()) });
+    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       target.innerHTML = `<p class="muted small">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
@@ -1163,7 +1225,9 @@
       }).join("");
       return `<div class="ws-peek-row">${cells}</div>`;
     }).join("");
-    const more = data.total > data.rows.length ? `<span>${data.rows.length} of ${data.total}</span>` : `<span>${data.total} rows</span>`;
+    const more = data.total > data.rows.length
+      ? `<span>Showing first ${data.rows.length} of ${data.total} rows</span>`
+      : `<span>${data.total} rows</span>`;
     target.innerHTML = `
       <div class="ws-peek-meta">${more}<button type="button" class="ws-peek-open">Open table</button></div>
       ${cards}
@@ -1197,9 +1261,13 @@
     const run = document.getElementById("ws-run");
     const modeLabel = ws.mode === "gaps" ? "Fill empty" : (ws.mode === "generate" ? "Generate" : "Seed");
     if (scope) {
+      const overrideCount = Object.keys(tableRowPayload()).length;
+      const volumeText = overrideCount > 0
+        ? ` · ${overrideCount} customized`
+        : "";
       scope.textContent = effective === 0
         ? `Run scope: all ${total} tables`
-        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)`;
+        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)${volumeText}`;
     }
     if (run) {
       run.textContent = effective === 0 ? `${modeLabel} all tables` : `${modeLabel} ${effective} tables`;
@@ -1395,8 +1463,9 @@
       table: tableName,
       limit: String(ws.modal.limit),
       offset: String(ws.modal.offset),
+      _: String(Date.now()),
     });
-    const res = await fetch("/api/table?" + q.toString());
+    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
@@ -1423,8 +1492,9 @@
       table: tableName,
       limit: String(ws.preview.limit),
       offset: String(ws.preview.offset),
+      _: String(Date.now()),
     });
-    const res = await fetch("/api/table?" + q.toString());
+    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
     const data = await res.json();
     if (!res.ok) {
       box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
@@ -1498,6 +1568,7 @@
       dryRun: document.getElementById("cfg-dryrun").checked,
       disableFK: document.getElementById("cfg-disablefk").checked,
       tables,
+      tableRows: tableRowPayload(),
     };
     let endpoint = "/api/seed";
     if (ws.mode === "gaps") { endpoint = "/api/gaps"; cfg.fill = true; }
@@ -1524,6 +1595,15 @@
       onLog: (line) => onLogPulse(line),
       onEnd: (job) => onJobEnd(job),
     });
+  }
+
+  function tableRowPayload() {
+    const effective = new Set([...ws.selected, ...ws.auto]);
+    const out = {};
+    for (const [tableName, rows] of Object.entries(ws.tableRows)) {
+      if (rows > 0 && effective.has(tableName)) out[tableName] = rows;
+    }
+    return out;
   }
 
   function onLogPulse(line) {

@@ -67,12 +67,16 @@ func TestGaps_pickerToConfig(t *testing.T) {
 	}
 }
 
-func TestGaps_configToReview(t *testing.T) {
+func TestGaps_configToVolumesToReview(t *testing.T) {
 	m := buildGapsModel()
 	m2 := sendGapsKey(m, "enter")  // → config
-	m3 := sendGapsKey(m2, "enter") // → review
-	if getGaps(m3).step != gapsStepReview {
-		t.Fatalf("enter should advance to review, got step %d", getGaps(m3).step)
+	m3 := sendGapsKey(m2, "enter") // → volumes
+	if getGaps(m3).step != gapsStepRows {
+		t.Fatalf("enter should advance to volumes, got step %d", getGaps(m3).step)
+	}
+	m4 := sendGapsKey(m3, "enter") // → review
+	if getGaps(m4).step != gapsStepReview {
+		t.Fatalf("enter should advance to review, got step %d", getGaps(m4).step)
 	}
 }
 
@@ -89,9 +93,14 @@ func TestGaps_backFromReviewToConfig(t *testing.T) {
 	m := buildGapsModel()
 	m2 := sendGapsKey(m, "enter")
 	m3 := sendGapsKey(m2, "enter")
-	m4 := sendGapsKey(m3, "b")
-	if getGaps(m4).step != gapsStepConfig {
-		t.Fatal("b should go back to config")
+	m4 := sendGapsKey(m3, "enter")
+	m5 := sendGapsKey(m4, "b")
+	if getGaps(m5).step != gapsStepRows {
+		t.Fatal("b from review should go back to volumes")
+	}
+	m6 := sendGapsKey(m5, "b")
+	if getGaps(m6).step != gapsStepConfig {
+		t.Fatal("b from volumes should go back to config")
 	}
 }
 
@@ -116,8 +125,9 @@ func TestGaps_quitFromReview(t *testing.T) {
 	m := buildGapsModel()
 	m2 := sendGapsKey(m, "enter")
 	m3 := sendGapsKey(m2, "enter")
-	m4 := sendGapsKey(m3, "q")
-	if !getGaps(m4).quitting {
+	m4 := sendGapsKey(m3, "enter")
+	m5 := sendGapsKey(m4, "q")
+	if !getGaps(m5).quitting {
 		t.Error("q should set quitting")
 	}
 }
@@ -126,8 +136,9 @@ func TestGaps_dryRunFromReview(t *testing.T) {
 	m := buildGapsModel()
 	m2 := sendGapsKey(m, "enter")
 	m3 := sendGapsKey(m2, "enter")
-	m4 := sendGapsKey(m3, "d")
-	gm := getGaps(m4)
+	m4 := sendGapsKey(m3, "enter")
+	m5 := sendGapsKey(m4, "d")
+	gm := getGaps(m5)
 	if gm.step != gapsStepExecute {
 		t.Fatalf("d should advance to execute, got step %d", gm.step)
 	}
@@ -140,7 +151,8 @@ func TestGaps_reviewNeverShowsTruncate(t *testing.T) {
 	m := buildGapsModel()
 	m2 := sendGapsKey(m, "enter")
 	m3 := sendGapsKey(m2, "enter")
-	gm := getGaps(m3)
+	m4 := sendGapsKey(m3, "enter")
+	gm := getGaps(m4)
 	if gm.review.truncate {
 		t.Error("gaps should never set truncate")
 	}
