@@ -2,8 +2,13 @@ package web
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
@@ -153,6 +158,46 @@ func TestRunSeedDryRunHandlesHardSelfReference(t *testing.T) {
 	}
 }
 
+func TestRunSeedUsesFreshConnectionForMutatingServeJob(t *testing.T) {
+	registerServeRunnerTestDriver()
+	staleConn, err := sql.Open(serveRunnerTestDriverName, "stale")
+	if err != nil {
+		t.Fatalf("open stale conn: %v", err)
+	}
+	defer staleConn.Close()
+
+	oldOpen := sqlOpen
+	sqlOpen = func(driverName, dataSourceName string) (*sql.DB, error) {
+		if driverName != "pgx" || dataSourceName != "fresh" {
+			t.Fatalf("sqlOpen called with %s %s, want pgx fresh", driverName, dataSourceName)
+		}
+		return sql.Open(serveRunnerTestDriverName, "fresh")
+	}
+	defer func() { sqlOpen = oldOpen }()
+
+	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{
+		DBType: "pgx",
+		DSN:    "fresh",
+		conn:   staleConn,
+		schema: enumInsertSchema(),
+	}
+
+	result, err := srv.runSeed(context.Background(), sess, SeedRequest{
+		Rows:      1,
+		BatchSize: 100,
+	}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runSeed should use fresh run connection instead of stale session connection: %v", err)
+	}
+	if got := result["totalRows"]; got != 2 {
+		t.Fatalf("totalRows = %v, want 2", got)
+	}
+}
+
 func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
 	srv, err := New(Options{Addr: "127.0.0.1:0"})
 	if err != nil {
@@ -190,6 +235,63 @@ func containsAll(value string, parts ...string) bool {
 	return true
 }
 
+const serveRunnerTestDriverName = "seedstorm_web_runner_test"
+
+var registerServeRunnerDriverOnce sync.Once
+
+func registerServeRunnerTestDriver() {
+	registerServeRunnerDriverOnce.Do(func() {
+		sql.Register(serveRunnerTestDriverName, serveRunnerTestDriver{})
+	})
+}
+
+type serveRunnerTestDriver struct{}
+
+func (serveRunnerTestDriver) Open(name string) (driver.Conn, error) {
+	return &serveRunnerTestConn{name: name}, nil
+}
+
+type serveRunnerTestConn struct {
+	name string
+}
+
+func (c *serveRunnerTestConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("prepare not implemented")
+}
+
+func (c *serveRunnerTestConn) Close() error { return nil }
+
+func (c *serveRunnerTestConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("transactions not implemented")
+}
+
+func (c *serveRunnerTestConn) Ping(context.Context) error { return nil }
+
+func (c *serveRunnerTestConn) Query(query string, args []driver.Value) (driver.Rows, error) {
+	return &serveRunnerRows{columns: []string{"id"}}, nil
+}
+
+func (c *serveRunnerTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return &serveRunnerRows{columns: []string{"id"}}, nil
+}
+
+func (c *serveRunnerTestConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if c.name == "stale" && strings.Contains(query, "INSERT") {
+		return nil, errors.New("cache lookup failed for type 34868 (SQLSTATE XX000)")
+	}
+	return driver.RowsAffected(1), nil
+}
+
+type serveRunnerRows struct {
+	columns []string
+}
+
+func (r *serveRunnerRows) Columns() []string { return r.columns }
+func (r *serveRunnerRows) Close() error      { return nil }
+func (r *serveRunnerRows) Next([]driver.Value) error {
+	return io.EOF
+}
+
 func runnerRowCountSchema() *schema.Schema {
 	return &schema.Schema{
 		Tables: map[string]schema.Table{
@@ -203,6 +305,19 @@ func runnerRowCountSchema() *schema.Schema {
 				Columns: map[string]schema.Column{
 					"id":      {Type: "integer", PK: true},
 					"user_id": {Type: "integer", FK: "users.id"},
+				},
+			},
+		},
+	}
+}
+
+func enumInsertSchema() *schema.Schema {
+	return &schema.Schema{
+		Tables: map[string]schema.Table{
+			"purchase_orders": {
+				Columns: map[string]schema.Column{
+					"id":     {Type: "integer", PK: true},
+					"status": {Type: "po_status", Faker: "randomstring(draft,submitted)"},
 				},
 			},
 		},
