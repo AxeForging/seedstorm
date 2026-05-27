@@ -18,6 +18,8 @@ import (
 
 const sessionCookieName = "seedstorm_session"
 
+var sqlOpen = sql.Open
+
 // ConnectionInfo is the non-secret view of an active connection, safe to
 // surface in templates and logs.
 type ConnectionInfo struct {
@@ -137,6 +139,21 @@ func (r *SessionRegistry) Close(id string) {
 
 // Conn returns the live *sql.DB.
 func (s *Session) Conn() *sql.DB { return s.conn }
+
+// OpenRunConn opens a short-lived database handle for mutating background jobs.
+// Long-lived Serve sessions can outlive DDL resets that recreate enum/user
+// types; a fresh handle avoids stale driver-side type metadata during inserts.
+func (s *Session) OpenRunConn(ctx context.Context) (*sql.DB, error) {
+	conn, err := sqlOpen(s.DBType, s.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("open run connection: %w", err)
+	}
+	if err := conn.PingContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ping run connection: %w", err)
+	}
+	return conn, nil
+}
 
 // Schema returns the cached schema, introspecting if needed.
 func (s *Session) Schema(force bool) (*schema.Schema, error) {

@@ -103,6 +103,14 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	log.Info().Str("order", strings.Join(targetTables, " → ")).Msg("Seed order resolved")
 
 	conn := sess.Conn()
+	if !req.DryRun {
+		runConn, err := sess.OpenRunConn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer runConn.Close()
+		conn = runConn
+	}
 
 	if req.Truncate && !req.DryRun {
 		jc.Phase("truncate")
@@ -216,6 +224,14 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 	}
 
 	conn := sess.Conn()
+	if req.Fill && !req.DryRun {
+		runConn, err := sess.OpenRunConn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer runConn.Close()
+		conn = runConn
+	}
 	jc.Phase("scan")
 	log.Info().Int("tables", len(allSorted)).Msg("Scanning row counts")
 	counts, err := db.GetTableRowCounts(ctx, conn, sess.DBType, allSorted)
