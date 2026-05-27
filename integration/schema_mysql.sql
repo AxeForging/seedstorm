@@ -2,6 +2,7 @@
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS return_requests;
 DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS hard_self_employees;
 DROP TABLE IF EXISTS support_tickets;
 DROP TABLE IF EXISTS project_assignments;
 DROP TABLE IF EXISTS purchase_order_items;
@@ -90,6 +91,14 @@ CREATE TABLE suppliers (
     phone   VARCHAR(50),
     country VARCHAR(100),
     rating  DECIMAL(3,2)
+);
+
+CREATE TABLE hard_self_employees (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    manager_id INT NOT NULL,
+    name       VARCHAR(100) NOT NULL,
+    title      VARCHAR(100),
+    FOREIGN KEY (manager_id) REFERENCES hard_self_employees(id)
 );
 
 -- Level 1: FK to level 0

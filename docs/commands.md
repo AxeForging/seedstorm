@@ -108,6 +108,22 @@ seedstorm seed \
   --schema schema.yaml \
   --enum-rows 10
 
+# Bound generated self-referential chains to 2 levels
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --self-ref-depth 2
+
+# Override specific table volumes from a scripted run
+seedstorm seed \
+  --db postgres \
+  --dsn "postgres://..." \
+  --schema schema.yaml \
+  --rows 20 \
+  --table-rows users=200,orders=500 \
+  --table-rows order_items=1000
+
 # Interactive TUI — pick tables, configure options, review, then seed
 seedstorm seed \
   --db postgres \
@@ -126,7 +142,9 @@ The interactive TUI includes a **Volumes** step after global config. Each select
 | `--db` / `$SEEDSTORM_DB` | `postgres` | Database type |
 | `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
 | `--rows` / `-r` | `100` | Rows per table |
+| `--table-rows` | — | Per-table row override, repeatable or comma-separated (`table=rows`) |
 | `--enum-rows` | `0` | Rows per enum value (0 = use `--rows`) |
+| `--self-ref-depth` | `2` | Maximum generated depth for self-referential FK chains |
 | `--disable-fk` | false | Skip FK ordering |
 | `--dry-run` / `-n` | false | Print seed plan + SQL, do not execute |
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
@@ -196,7 +214,9 @@ Gap Analysis
 | `--db` / `$SEEDSTORM_DB` | `postgres` | Database type |
 | `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
 | `--rows` / `-r` | `100` | Rows per empty table (when `--fill` is set) |
+| `--table-rows` | — | Per-table row override for fill, repeatable or comma-separated (`table=rows`) |
 | `--enum-rows` | `0` | Rows per enum value for empty enum tables (0 = use `--rows`) |
+| `--self-ref-depth` | `2` | Maximum generated depth for self-referential FK chains |
 | `--fill` | false | Seed all empty tables |
 | `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
 | `--yes` / `-y` | false | Skip confirmation prompt |
@@ -213,6 +233,8 @@ Generates fake data without connecting to a database. Outputs YAML, JSON, or SQL
 seedstorm generate --schema schema.yaml --rows 10 --format json --out data.json
 seedstorm generate --schema schema.yaml --rows 5  --format sql  --db postgres
 seedstorm generate --schema schema.yaml --rows 20 --format yaml
+seedstorm generate --schema schema.yaml --rows 20 --self-ref-depth 3
+seedstorm generate --schema schema.yaml --rows 20 --table-rows users=200,orders=500
 
 # Interactive TUI
 seedstorm generate --schema schema.yaml --interactive
@@ -226,6 +248,8 @@ In interactive mode, the **Volumes** step can override row counts per selected t
 |------|---------|-------------|
 | `--schema` / `-s` | `schema.yaml` | Schema file |
 | `--rows` / `-r` | `100` | Rows per table |
+| `--table-rows` | — | Per-table row override, repeatable or comma-separated (`table=rows`) |
+| `--self-ref-depth` | `2` | Maximum generated depth for self-referential FK chains |
 | `--format` / `-f` | `yaml` | Output format: `yaml`, `json`, `sql` |
 | `--out` / `-o` | stdout | Output file (omit for stdout) |
 | `--db` | `postgres` | DB type (affects SQL placeholder style) |
@@ -259,7 +283,7 @@ SEEDSTORM_ADDR=127.0.0.1:9000 seedstorm serve
 
 What the UI gives you:
 
-- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. Live SSE log stream + status pill.
+- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. `Self-ref` controls bounded generated depth for self-referential FK chains. Live SSE log stream + status pill.
 - **Connection management** — multi-session: hold several DBs open in one browser and switch from a topbar dropdown. Saved connection presets in `localStorage` with optional password (eye-icon reveal, closed by default). Passwords are kept in process memory only on the server.
 - **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
 

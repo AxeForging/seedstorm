@@ -44,6 +44,27 @@ func buildGapsModel() GapsModel {
 	}
 }
 
+func TestStartGapsDryRunHandlesHardSelfReference(t *testing.T) {
+	params := &seedParams{
+		schema:       hardSelfReferenceTUISchema(),
+		tables:       []string{"employees"},
+		rows:         3,
+		selfRefDepth: 2,
+		dbType:       "pgx",
+	}
+	msg := startGapsDryRun(params, []string{"employees"})()
+	done, ok := msg.(dryRunDoneMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want dryRunDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("startGapsDryRun: %v", done.err)
+	}
+	if done.total != 3 {
+		t.Fatalf("total = %d, want 3", done.total)
+	}
+}
+
 func sendGapsKey(m tea.Model, key string) tea.Model {
 	return sendKey(m, key) // reuse from wizard_test.go
 }

@@ -51,7 +51,7 @@ type GapsModel struct {
 }
 
 // RunGaps launches the interactive TUI for the gaps command.
-func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts map[string]int64, defaultRows, defaultBatchSize, defaultEnumRows int) error {
+func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts map[string]int64, defaultRows, defaultBatchSize, defaultEnumRows int, defaultSelfRefDepth ...int) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -84,7 +84,7 @@ func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts m
 		dsn:       dsn,
 		counts:    counts,
 		picker:    newGapsPicker(items, counts, 40),
-		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, false),
+		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, false, defaultSelfRefDepth...),
 		height:    40,
 		width:     80,
 	}
@@ -255,15 +255,16 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.review.done {
 		params := &seedParams{
-			schema:    m.schema,
-			tables:    m.review.tables,
-			rows:      m.review.rows,
-			enumRows:  m.review.enumRows,
-			tableRows: m.review.tableRows,
-			batchSize: m.review.batch,
-			truncate:  false, // gaps never truncates
-			dbType:    m.dbType,
-			dsn:       m.dsn,
+			schema:       m.schema,
+			tables:       m.review.tables,
+			rows:         m.review.rows,
+			enumRows:     m.review.enumRows,
+			selfRefDepth: m.config.SelfRefDepth(),
+			tableRows:    m.review.tableRows,
+			batchSize:    m.review.batch,
+			truncate:     false, // gaps never truncates
+			dbType:       m.dbType,
+			dsn:          m.dsn,
 		}
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)
 		m.step = gapsStepExecute
@@ -339,7 +340,9 @@ func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.C
 			return seedDoneMsg{err: fmt.Errorf("failed to ping database: %w", err)}
 		}
 
-		data, err := faker.GenerateFilteredWithCounts(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType)
+		data, err := faker.GenerateFilteredWithOptions(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType, faker.GenerateOptions{
+			SelfRefDepth: s.selfRefDepth,
+		})
 		if err != nil {
 			return seedDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}
@@ -374,7 +377,9 @@ func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.C
 // startGapsDryRun generates data for gap tables and returns a preview.
 func startGapsDryRun(s *seedParams, allSorted []string) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithCounts(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType)
+		data, err := faker.GenerateFilteredWithOptions(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType, faker.GenerateOptions{
+			SelfRefDepth: s.selfRefDepth,
+		})
 		if err != nil {
 			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}

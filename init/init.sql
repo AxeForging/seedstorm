@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS hard_self_employees;
 DROP TABLE IF EXISTS orders;
 DROP TYPE IF EXISTS order_status;
 CREATE TYPE order_status AS ENUM ('pending', 'processing', 'shipped', 'delivered', 'cancelled');
@@ -14,6 +15,13 @@ CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     price NUMERIC(10, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hard_self_employees (
+    id SERIAL PRIMARY KEY,
+    manager_id INTEGER NOT NULL REFERENCES hard_self_employees(id),
+    name VARCHAR(255) NOT NULL,
+    title VARCHAR(255)
 );
 
 CREATE TABLE IF NOT EXISTS orders (

@@ -1,6 +1,7 @@
 -- Teardown (always safe to re-run)
 DROP TABLE IF EXISTS return_requests CASCADE;
 DROP TABLE IF EXISTS audit_logs CASCADE;
+DROP TABLE IF EXISTS hard_self_employees CASCADE;
 DROP TABLE IF EXISTS support_tickets CASCADE;
 DROP TABLE IF EXISTS project_assignments CASCADE;
 DROP TABLE IF EXISTS purchase_order_items CASCADE;
@@ -118,6 +119,13 @@ CREATE TABLE suppliers (
     phone   VARCHAR(50),
     country VARCHAR(100),
     rating  NUMERIC(3,2)
+);
+
+CREATE TABLE hard_self_employees (
+    id         SERIAL PRIMARY KEY,
+    manager_id INTEGER NOT NULL REFERENCES hard_self_employees(id),
+    name       VARCHAR(100) NOT NULL,
+    title      VARCHAR(100)
 );
 
 -- Level 1: FK to level 0

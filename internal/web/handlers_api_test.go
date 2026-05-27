@@ -110,6 +110,24 @@ func TestBuildGraphPayload_cycle(t *testing.T) {
 	}
 }
 
+func TestBuildGraphPayload_hardSelfReferenceIsSeedable(t *testing.T) {
+	sc := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"employees": {Columns: map[string]schema.Column{
+				"id":         {PK: true, Type: "int"},
+				"manager_id": {Type: "int", FK: "employees.id"},
+			}},
+		},
+	}
+	payload := buildGraphPayload(sc, nil)
+	if payload.Cycle {
+		t.Fatalf("hard self-reference should be handled during generation, got cycle")
+	}
+	if !reflect.DeepEqual(payload.Order, []string{"employees"}) {
+		t.Fatalf("order = %v, want [employees]", payload.Order)
+	}
+}
+
 func TestHandleTablePreviewJSON_requiresSession(t *testing.T) {
 	s, err := New(Options{Addr: "127.0.0.1:0"})
 	if err != nil {

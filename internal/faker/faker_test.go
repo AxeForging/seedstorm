@@ -653,15 +653,15 @@ func TestGenerateValue_NullableFKWithNoParents(t *testing.T) {
 	}
 }
 
-func TestGenerateValue_SelfRefFKReturnsNil(t *testing.T) {
-	col := schema.Column{Type: "integer", FK: "cats.id"}
+func TestGenerateValue_NullableSelfRefFKReturnsNil(t *testing.T) {
+	col := schema.Column{Type: "integer", FK: "cats.id", Nullable: true}
 	pks := map[string][]interface{}{} // no PKs yet for self
 	val, err := generateValue(col, "parent_id", "cats", pks, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if val != nil {
-		t.Errorf("self-ref FK with no PKs should be nil, got %v", val)
+		t.Errorf("nullable self-ref FK with no PKs should be nil, got %v", val)
 	}
 }
 
@@ -832,6 +832,130 @@ func TestGenerateFilteredWithCountsOverrideWinsOverEnumRows(t *testing.T) {
 	if got := len(data["tickets"]); got != 7 {
 		t.Fatalf("tickets rows = %d, want table override 7 instead of enumRows total 4", got)
 	}
+}
+
+func TestGenerateNullableSelfReferenceCreatesRootRow(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"categories": {
+				Columns: map[string]schema.Column{
+					"id":        {Type: "integer", PK: true},
+					"parent_id": {Type: "integer", FK: "categories.id", Nullable: true},
+				},
+			},
+		},
+	}
+
+	data, err := Generate(s, []string{"categories"}, 3, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := len(data["categories"]); got != 3 {
+		t.Fatalf("categories rows = %d, want 3", got)
+	}
+	if data["categories"][0]["parent_id"] != nil {
+		t.Fatalf("first self-referential row should be a NULL root, got %v", data["categories"][0]["parent_id"])
+	}
+	if got := maxSelfRefDepth(data["categories"], "id", "parent_id"); got > DefaultSelfRefDepth {
+		t.Fatalf("self-reference depth = %d, want <= %d", got, DefaultSelfRefDepth)
+	}
+}
+
+func TestGenerateHardSelfReferenceBackfillsValidManagers(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"employees": {
+				Columns: map[string]schema.Column{
+					"id":         {Type: "integer", PK: true},
+					"manager_id": {Type: "integer", FK: "employees.id"},
+				},
+			},
+		},
+	}
+
+	data, err := GenerateWithOptions(s, []string{"employees"}, 5, 0, nil, "pgx", GenerateOptions{SelfRefDepth: 2})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions: %v", err)
+	}
+	rows := data["employees"]
+	if got := len(rows); got != 5 {
+		t.Fatalf("employees rows = %d, want 5", got)
+	}
+	if rows[0]["manager_id"] == nil {
+		t.Fatal("non-nullable self-reference should be backfilled on first row")
+	}
+	if rows[0]["manager_id"] != rows[0]["id"] {
+		t.Fatalf("first hard self-reference should self-root, got manager_id=%v id=%v", rows[0]["manager_id"], rows[0]["id"])
+	}
+	ids := map[interface{}]bool{}
+	for _, row := range rows {
+		ids[row["id"]] = true
+	}
+	for i, row := range rows {
+		if row["manager_id"] == nil {
+			t.Fatalf("row %d manager_id is nil for non-nullable self-FK", i)
+		}
+		if !ids[row["manager_id"]] {
+			t.Fatalf("row %d manager_id=%v does not reference generated employee IDs %v", i, row["manager_id"], ids)
+		}
+	}
+	if got := maxSelfRefDepth(rows, "id", "manager_id"); got > 2 {
+		t.Fatalf("self-reference depth = %d, want <= 2", got)
+	}
+}
+
+func TestGenerateWithOptionsSelfRefDepthZeroDoesNotBuildNullableChain(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"categories": {
+				Columns: map[string]schema.Column{
+					"id":        {Type: "integer", PK: true},
+					"parent_id": {Type: "integer", FK: "categories.id", Nullable: true},
+				},
+			},
+		},
+	}
+
+	data, err := GenerateWithOptions(s, []string{"categories"}, 4, 0, nil, "pgx", GenerateOptions{SelfRefDepth: 0})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions: %v", err)
+	}
+	for i, row := range data["categories"] {
+		if row["parent_id"] != nil {
+			t.Fatalf("row %d parent_id = %v, want nil when self-ref depth is 0", i, row["parent_id"])
+		}
+	}
+}
+
+func maxSelfRefDepth(rows []map[string]interface{}, pkCol, fkCol string) int {
+	byID := make(map[interface{}]map[string]interface{}, len(rows))
+	for _, row := range rows {
+		byID[row[pkCol]] = row
+	}
+
+	maxDepth := 0
+	for _, row := range rows {
+		seen := map[interface{}]bool{}
+		depth := 0
+		current := row
+		for {
+			fk := current[fkCol]
+			if fk == nil || seen[fk] {
+				break
+			}
+			seen[fk] = true
+			next := byID[fk]
+			if next == nil || next[pkCol] == current[pkCol] {
+				break
+			}
+			depth++
+			current = next
+		}
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+	return maxDepth
 }
 
 func TestGenerate_differentSeedsDifferentOutput(t *testing.T) {

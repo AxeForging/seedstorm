@@ -52,10 +52,19 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Usage:   "Rows to insert per empty table (when --fill is set)",
 				Value:   100,
 			},
+			&cli.StringSliceFlag{
+				Name:  "table-rows",
+				Usage: "Per-table row override for fill, repeatable or comma-separated (table=rows)",
+			},
 			&cli.IntFlag{
 				Name:  "enum-rows",
 				Usage: "Rows per enum value for empty tables with enum columns (0 = use --rows)",
 				Value: 0,
+			},
+			&cli.IntFlag{
+				Name:  "self-ref-depth",
+				Usage: "Maximum generated depth for self-referential FK chains",
+				Value: faker.DefaultSelfRefDepth,
 			},
 			&cli.BoolFlag{
 				Name:  "fill",
@@ -88,7 +97,12 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			dbType := normalizeDBType(cmd.String("db"))
 			dsn := cmd.String("dsn")
 			rows := cmd.Int("rows")
+			tableRows, err := parseTableRows(cmd.StringSlice("table-rows"))
+			if err != nil {
+				return err
+			}
 			enumRows := cmd.Int("enum-rows")
+			selfRefDepth := cmd.Int("self-ref-depth")
 			fill := cmd.Bool("fill")
 			dryRun := cmd.Bool("dry-run")
 			yes := cmd.Bool("yes")
@@ -127,7 +141,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			}
 
 			if cmd.Bool("interactive") {
-				return tui.RunGaps(ctx, s, dbType, dsn, counts, rows, batchSize, enumRows)
+				return tui.RunGaps(ctx, s, dbType, dsn, counts, rows, batchSize, enumRows, selfRefDepth)
 			}
 
 			// Build FK parents map for display: table → []parent tables.
@@ -176,7 +190,9 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 
 			// Generate data for gap tables only; allSorted is used internally to
 			// preload existing PKs from already-populated parent tables.
-			data, err := faker.GenerateFiltered(s, allSorted, gapTables, rows, enumRows, dbConn, dbType)
+			data, err := faker.GenerateFilteredWithOptions(s, allSorted, gapTables, rows, enumRows, tableRows, dbConn, dbType, faker.GenerateOptions{
+				SelfRefDepth: selfRefDepth,
+			})
 			if err != nil {
 				return fmt.Errorf("data generation failed: %w", err)
 			}

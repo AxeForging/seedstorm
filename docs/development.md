@@ -62,12 +62,13 @@ go test ./... -v
 
 ### Integration tests
 
-Integration tests run the full pipeline against a 28-table real-world schema on both MySQL and PostgreSQL, covering:
+Integration tests run the full pipeline against a 29-table real-world schema on both MySQL and PostgreSQL, covering:
 
 | Edge case | Tables |
 |-----------|--------|
 | Self-referential FK | `categories`, `departments`, `employees` |
 | Near-cycle (nullable FK breaks it) | `departments.head_employee_id ↔ employees.department_id` |
+| Hard self-reference | `hard_self_employees.manager_id → hard_self_employees.id` |
 | Deep FK chain (5 levels) | `return_requests → order_items → orders → users` |
 | Many-to-many junctions | `product_tags`, `project_assignments`, `wishlist_items` |
 | Multiple enums per table | `support_tickets` (status + priority) |
@@ -78,8 +79,8 @@ Integration tests run the full pipeline against a 28-table real-world schema on 
 | CHECK range constraint → `number(min,max)` faker | `products.rating` (1–5) |
 
 Tests verify:
-- All 28 tables receive exactly the requested number of rows
-- 38 FK relationships have zero orphans
+- All 29 tables receive rows, with enum-coverage tables allowed to exceed the base request so every enum value is represented
+- 39 FK relationships have zero orphans, including nullable and non-nullable self-references
 - 6 value constraints hold (ratings 1–5, prices > 0, quantities ≥ 1, salaries > 0)
 - Enum values, UNIQUE columns, and CHECK constraints are auto-detected correctly
 
@@ -100,7 +101,7 @@ Expected output:
           brands               25 rows
           ...
           audit_logs           25 rows
-          Total: 700 rows across 28 tables (4.43s)
+          Total: 1600+ rows across 29 tables (11.30s)
 --- PASS: TestPostgresIntegration (6.87s)
 ```
 
@@ -117,7 +118,7 @@ All tests run automatically on every PR via GitHub Actions (`.github/workflows/p
 | `validate` | Directory/file structure via structlint |
 | `test` | `go test ./...` + `make build` |
 | `lint` | `golangci-lint` |
-| `integration` | Full 28-table suite on Postgres 15 + MySQL 8 |
+| `integration` | Full 29-table suite on Postgres 15 + MySQL 8 |
 
 The integration job in CI uses `--timeout 120s`. Use `300s` locally when running both engines back-to-back.
 

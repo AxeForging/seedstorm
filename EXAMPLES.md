@@ -19,7 +19,7 @@ End-to-end walkthroughs for common seedstorm workflows. All examples assume loca
 ## 1. Basic Seeding (no AI)
 
 <details>
-<summary><strong>Demo</strong> — introspect + seed a 28-table schema</summary>
+<summary><strong>Demo</strong> — introspect + seed a 29-table schema</summary>
 
 <img src="docs/gifs/basic-seed.gif" alt="seedstorm introspect + seed" width="720" />
 
@@ -55,7 +55,7 @@ seedstorm seed \
 14:12:15 INFO   Seeding table table=users rows=150
 14:12:15 INFO   Seeding table table=companies rows=50
 ...
-14:12:16 INFO   Seeding complete tables=28 total_rows=1515 duration=316ms
+14:12:16 INFO   Seeding complete tables=29 total_rows=1540 duration=316ms
 ```
 
 </details>
@@ -398,7 +398,7 @@ Select which tables to seed. Tables are shown in FK-safe order with their depend
     [ ] employees                 → departments
     [✓] wishlists                 → users
 
-  7 of 28 tables selected
+  7 of 29 tables selected
   ↑/↓ navigate • space toggle • a all • n none • enter confirm • q quit
 ```
 
@@ -426,6 +426,7 @@ Set seeding parameters. Tab between fields, space to toggle the truncate checkbo
   ▸ Rows per table: [50]
     Batch size: [100]
     Enum rows (0 = use rows): [0]
+    Self-ref depth: [2]
     [ ] Truncate before seeding
 
   tab/↑↓ navigate • space toggle • enter confirm • b back • q quit
@@ -436,6 +437,7 @@ Set seeding parameters. Tab between fields, space to toggle the truncate checkbo
 | Rows per table | How many rows to generate for each selected table |
 | Batch size | Rows per INSERT statement (higher = faster, default 100) |
 | Enum rows | Rows per enum value for enum tables (0 = use rows count) |
+| Self-ref depth | Maximum generated depth for self-referential FK chains |
 | Truncate | Delete all existing data before seeding (shows warning in review) |
 
 </details>
@@ -598,7 +600,7 @@ A 3-step wizard: **Tables → Config → Generate**
 
 **Step 1 — Table picker:** Same as `seed -i` — select which tables to include.
 
-**Step 2 — Config:** Set rows, choose format (yaml/json/sql with `←`/`→`), and optionally set an output file path.
+**Step 2 — Config:** Set rows, self-reference depth, choose format (yaml/json/sql with `←`/`→`), and optionally set an output file path.
 
 ```
   seedstorm generate interactive  ✓ Tables  ● Config  ○ Generate
@@ -606,6 +608,7 @@ A 3-step wizard: **Tables → Config → Generate**
   Configure generation
 
   ▸ Rows per table: [10]
+    Self-ref depth: [2]
     Format: [yaml]  json   sql
     Output file: [data.json]
 

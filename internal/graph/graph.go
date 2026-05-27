@@ -48,7 +48,7 @@ func Build(s *schema.Schema) *Graph {
 			}
 			refTable := parts[0]
 			if refTable == tableName {
-				continue // self-reference: skip
+				continue
 			}
 			g.edges[refTable] = append(g.edges[refTable], tableName)
 			g.inDegree[tableName]++
@@ -87,10 +87,25 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	}
 
 	if len(sorted) != len(g.nodes) {
-		return nil, fmt.Errorf("circular FK dependency detected — use --disable-fk to bypass")
+		cycles := make(map[string]bool)
+		for tableName, degree := range inDegree {
+			if degree > 0 {
+				cycles[tableName] = true
+			}
+		}
+		return nil, fmt.Errorf("circular FK dependency detected among %s — make one FK nullable, use deferrable constraints manually, or use --disable-fk to bypass", strings.Join(sortedKeys(cycles), ", "))
 	}
 
 	return sorted, nil
+}
+
+func sortedKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Parents returns the tables that `table` has hard (non-nullable) FK dependencies on.
@@ -119,9 +134,13 @@ func (g *Graph) Children(table string) []string {
 // order and, per table, which parent tables it depends on (hard dependencies
 // listed first, nullable/optional ones marked with "?").
 func RenderPlan(s *schema.Schema, sortedTables []string, rows int) string {
+	return RenderPlanWithCounts(s, sortedTables, rows, nil)
+}
+
+func RenderPlanWithCounts(s *schema.Schema, sortedTables []string, rows int, tableRows map[string]int) string {
 	var sb strings.Builder
 
-	fmt.Fprintf(&sb, "\n=== Dry Run — Seed Plan (%d tables, %d rows each) ===\n\n", len(sortedTables), rows)
+	fmt.Fprintf(&sb, "\n=== Dry Run — Seed Plan (%d tables, default %d rows) ===\n\n", len(sortedTables), rows)
 
 	// Calculate column widths.
 	numWidth := len(fmt.Sprintf("%d", len(sortedTables)))
@@ -132,8 +151,8 @@ func RenderPlan(s *schema.Schema, sortedTables []string, rows int) string {
 		}
 	}
 
-	fmt.Fprintf(&sb, "  %-*s  %-*s  %s\n", numWidth, "#", tableWidth, "Table", "Depends On")
-	fmt.Fprintf(&sb, "  %s\n", strings.Repeat("─", numWidth+2+tableWidth+2+40))
+	fmt.Fprintf(&sb, "  %-*s  %-*s  %-6s  %s\n", numWidth, "#", tableWidth, "Table", "Rows", "Depends On")
+	fmt.Fprintf(&sb, "  %s\n", strings.Repeat("─", numWidth+2+tableWidth+2+6+2+40))
 
 	for i, tableName := range sortedTables {
 		table := s.Tables[tableName]
@@ -168,7 +187,11 @@ func RenderPlan(s *schema.Schema, sortedTables []string, rows int) string {
 			deps = strings.Join(all, ", ")
 		}
 
-		fmt.Fprintf(&sb, "  %-*d  %-*s  %s\n", numWidth, i+1, tableWidth, tableName, deps)
+		tableCount := rows
+		if override := tableRows[tableName]; override > 0 {
+			tableCount = override
+		}
+		fmt.Fprintf(&sb, "  %-*d  %-*s  %-6d  %s\n", numWidth, i+1, tableWidth, tableName, tableCount, deps)
 	}
 
 	fmt.Fprintln(&sb)

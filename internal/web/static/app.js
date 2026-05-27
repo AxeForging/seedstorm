@@ -1564,6 +1564,7 @@
       rows: Number(document.getElementById("cfg-rows").value || 0),
       enumRows: Number(document.getElementById("cfg-enum").value || 0),
       batchSize: Number(document.getElementById("cfg-batch").value || 0),
+      selfRefDepth: Number(document.getElementById("cfg-selfref-depth").value || 0),
       truncate: document.getElementById("cfg-truncate").checked,
       dryRun: document.getElementById("cfg-dryrun").checked,
       disableFK: document.getElementById("cfg-disablefk").checked,

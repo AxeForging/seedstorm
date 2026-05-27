@@ -51,10 +51,19 @@ Use --dry-run to print SQL statements without executing them.`,
 				Usage:   "Number of rows to insert per table",
 				Value:   100,
 			},
+			&cli.StringSliceFlag{
+				Name:  "table-rows",
+				Usage: "Per-table row override, repeatable or comma-separated (table=rows)",
+			},
 			&cli.IntFlag{
 				Name:  "enum-rows",
 				Usage: "Rows per enum value for tables with enum columns (0 = use --rows)",
 				Value: 0,
+			},
+			&cli.IntFlag{
+				Name:  "self-ref-depth",
+				Usage: "Maximum generated depth for self-referential FK chains",
+				Value: faker.DefaultSelfRefDepth,
 			},
 			&cli.BoolFlag{
 				Name:  "disable-fk",
@@ -96,7 +105,12 @@ Use --dry-run to print SQL statements without executing them.`,
 			dbType := normalizeDBType(cmd.String("db"))
 			dsn := cmd.String("dsn")
 			rows := cmd.Int("rows")
+			tableRows, err := parseTableRows(cmd.StringSlice("table-rows"))
+			if err != nil {
+				return err
+			}
 			enumRows := cmd.Int("enum-rows")
+			selfRefDepth := cmd.Int("self-ref-depth")
 			disableFK := cmd.Bool("disable-fk")
 			dryRun := cmd.Bool("dry-run")
 			truncate := cmd.Bool("truncate")
@@ -116,7 +130,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			}
 
 			if cmd.Bool("interactive") {
-				return tui.Run(ctx, s, dbType, dsn, rows, batchSize, enumRows, truncate)
+				return tui.Run(ctx, s, dbType, dsn, rows, batchSize, enumRows, truncate, selfRefDepth)
 			}
 
 			// Resolve seed order
@@ -152,7 +166,7 @@ Use --dry-run to print SQL statements without executing them.`,
 
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
-				fmt.Print(graph.RenderPlan(s, sortedTables, rows))
+				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, tableRows))
 				fmt.Println("--- SQL ---")
 			}
 
@@ -176,7 +190,9 @@ Use --dry-run to print SQL statements without executing them.`,
 			// Generate data
 			start := time.Now()
 			log.Info().Int("rows", rows).Msg("Generating fake data")
-			data, err := faker.Generate(s, sortedTables, rows, enumRows, dbConn, dbType)
+			data, err := faker.GenerateFilteredWithOptions(s, sortedTables, sortedTables, rows, enumRows, tableRows, dbConn, dbType, faker.GenerateOptions{
+				SelfRefDepth: selfRefDepth,
+			})
 			if err != nil {
 				return fmt.Errorf("data generation failed: %w", err)
 			}

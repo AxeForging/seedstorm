@@ -67,14 +67,14 @@ seedstorm gaps \
 ## Features
 
 - **Schema self-discovery** — introspects tables, columns, PKs, FKs, enum values, UNIQUE and CHECK constraints; no manual editing required
-- **FK-aware seeding** — topological sort guarantees parent tables are seeded before children; handles self-referential FKs, near-cycles, junction tables, and deep multi-level chains
+- **FK-aware seeding** — topological sort guarantees parent tables are seeded before children; handles nullable and non-nullable self-referential FKs with bounded depth, near-cycles, junction tables, and deep multi-level chains
 - **Constraint-aware faker mapping** — UNIQUE → `uuid`, CHECK IN → `randomstring(a,b,c)`, CHECK range → `number(min,max)`; seed data always satisfies your constraints
 - **Semantic faker** — maps column names (`email`, `first_name`, `price`, `city`…) to realistic `gofakeit` generators automatically
 - **Enum coverage** — every enum value appears at least `--rows` times, independently per column
 - **AI enrichment** — Gemini rewrites faker hints for domain-meaningful data; supply `--prompt` for richer context
 - **Gap analysis** — `gaps` shows which tables are empty with row counts and FK context; `--fill` seeds only the empty ones
-- **Interactive TUI** — wizard for table selection, global config, per-table row volumes, and review before seeding
-- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, per-table row overrides, live SSE job logs, multi-DB session switcher, and connection presets in `localStorage`
+- **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
+- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, live SSE job logs, multi-DB session switcher, and connection presets in `localStorage`
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, or SQL without a live connection
 

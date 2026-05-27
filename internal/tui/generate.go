@@ -31,23 +31,33 @@ const (
 
 // genConfigModel extends config with format and output fields.
 type genConfigModel struct {
-	rowsInput textinput.Model
-	outInput  textinput.Model
-	formatIdx int // 0=yaml 1=json 2=sql
-	focused   int // 0=rows 1=format 2=output
-	done      bool
-	back      bool
-	quitting  bool
+	rowsInput  textinput.Model
+	depthInput textinput.Model
+	outInput   textinput.Model
+	formatIdx  int // 0=yaml 1=json 2=sql
+	focused    int // 0=rows 1=depth 2=format 3=output
+	done       bool
+	back       bool
+	quitting   bool
 }
 
 var genFormats = []string{"yaml", "json", "sql"}
 
-func newGenConfig(rows int, format, outPath string) genConfigModel {
+func newGenConfig(rows int, format, outPath string, selfRefDepth ...int) genConfigModel {
 	ri := textinput.New()
 	ri.SetValue(fmt.Sprintf("%d", rows))
 	ri.CharLimit = 10
 	ri.Width = 12
 	ri.Focus()
+
+	depth := 2
+	if len(selfRefDepth) > 0 {
+		depth = selfRefDepth[0]
+	}
+	di := textinput.New()
+	di.SetValue(fmt.Sprintf("%d", depth))
+	di.CharLimit = 10
+	di.Width = 12
 
 	oi := textinput.New()
 	oi.SetValue(outPath)
@@ -63,9 +73,10 @@ func newGenConfig(rows int, format, outPath string) genConfigModel {
 	}
 
 	return genConfigModel{
-		rowsInput: ri,
-		outInput:  oi,
-		formatIdx: fmtIdx,
+		rowsInput:  ri,
+		depthInput: di,
+		outInput:   oi,
+		formatIdx:  fmtIdx,
 	}
 }
 
@@ -78,6 +89,13 @@ func (m genConfigModel) Rows() int {
 }
 func (m genConfigModel) Format() string  { return genFormats[m.formatIdx] }
 func (m genConfigModel) OutPath() string { return strings.TrimSpace(m.outInput.Value()) }
+func (m genConfigModel) SelfRefDepth() int {
+	n, err := strconv.Atoi(strings.TrimSpace(m.depthInput.Value()))
+	if err != nil || n < 0 {
+		return 2
+	}
+	return n
+}
 
 func (m genConfigModel) Update(msg tea.Msg) (genConfigModel, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -85,38 +103,44 @@ func (m genConfigModel) Update(msg tea.Msg) (genConfigModel, tea.Cmd) {
 		switch msg.String() {
 		case "tab", "down", "j":
 			m.rowsInput.Blur()
+			m.depthInput.Blur()
 			m.outInput.Blur()
-			m.focused = (m.focused + 1) % 3
+			m.focused = (m.focused + 1) % 4
 			switch m.focused {
 			case 0:
 				m.rowsInput.Focus()
-			case 2:
+			case 1:
+				m.depthInput.Focus()
+			case 3:
 				m.outInput.Focus()
 			}
 			return m, nil
 		case "shift+tab", "up", "k":
 			m.rowsInput.Blur()
+			m.depthInput.Blur()
 			m.outInput.Blur()
-			m.focused = (m.focused + 2) % 3
+			m.focused = (m.focused + 3) % 4
 			switch m.focused {
 			case 0:
 				m.rowsInput.Focus()
-			case 2:
+			case 1:
+				m.depthInput.Focus()
+			case 3:
 				m.outInput.Focus()
 			}
 			return m, nil
 		case "left", "h":
-			if m.focused == 1 {
+			if m.focused == 2 {
 				m.formatIdx = (m.formatIdx + len(genFormats) - 1) % len(genFormats)
 				return m, nil
 			}
 		case "right", "l":
-			if m.focused == 1 {
+			if m.focused == 2 {
 				m.formatIdx = (m.formatIdx + 1) % len(genFormats)
 				return m, nil
 			}
 		case " ":
-			if m.focused == 1 {
+			if m.focused == 2 {
 				m.formatIdx = (m.formatIdx + 1) % len(genFormats)
 				return m, nil
 			}
@@ -124,7 +148,7 @@ func (m genConfigModel) Update(msg tea.Msg) (genConfigModel, tea.Cmd) {
 			m.done = true
 			return m, nil
 		case "b":
-			if m.focused == 1 { // only works on format selector (not text inputs)
+			if m.focused == 2 { // only works on format selector (not text inputs)
 				m.back = true
 				return m, nil
 			}
@@ -143,7 +167,11 @@ func (m genConfigModel) Update(msg tea.Msg) (genConfigModel, tea.Cmd) {
 		var cmd tea.Cmd
 		m.rowsInput, cmd = m.rowsInput.Update(msg)
 		return m, cmd
-	case 2:
+	case 1:
+		var cmd tea.Cmd
+		m.depthInput, cmd = m.depthInput.Update(msg)
+		return m, cmd
+	case 3:
 		var cmd tea.Cmd
 		m.outInput, cmd = m.outInput.Update(msg)
 		return m, cmd
@@ -161,6 +189,7 @@ func (m genConfigModel) View() string {
 		view  string
 	}{
 		{"Rows per table", m.rowsInput.View()},
+		{"Self-ref depth", m.depthInput.View()},
 		{"Format", m.formatView()},
 		{"Output file", m.outInput.View()},
 	}
@@ -224,7 +253,7 @@ type GenModel struct {
 }
 
 // RunGenerate launches the interactive TUI for the generate command.
-func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath string, defaultRows int) error {
+func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath string, defaultRows int, defaultSelfRefDepth ...int) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -244,7 +273,7 @@ func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath 
 		sortedAll: sortedAll,
 		dbType:    dbType,
 		picker:    newTablePicker(items, 40),
-		genConfig: newGenConfig(defaultRows, format, outPath),
+		genConfig: newGenConfig(defaultRows, format, outPath, defaultSelfRefDepth...),
 		height:    40,
 		width:     80,
 	}
@@ -367,7 +396,7 @@ func (m GenModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.execute.dryRun = true // generate is always a "dry run" (no DB)
 		m.step = genStepExecute
 
-		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.volumes.TableRows(), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType))
+		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.genConfig.SelfRefDepth(), m.volumes.TableRows(), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType))
 	}
 	return m, cmd
 }
@@ -425,9 +454,11 @@ func (m GenModel) View() string {
 }
 
 // startGenerate generates data and optionally writes to file.
-func startGenerate(s *schema.Schema, tables []string, rows int, tableRows map[string]int, format, outPath, dbType string) tea.Cmd {
+func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, tableRows map[string]int, format, outPath, dbType string) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithCounts(s, tables, tables, rows, 0, tableRows, nil, dbType)
+		data, err := faker.GenerateFilteredWithOptions(s, tables, tables, rows, 0, tableRows, nil, dbType, faker.GenerateOptions{
+			SelfRefDepth: selfRefDepth,
+		})
 		if err != nil {
 			return generateDoneMsg{err: fmt.Errorf("generation failed: %w", err)}
 		}
