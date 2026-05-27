@@ -221,6 +221,28 @@ func TestTopologicalSort_cycle_returnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "circular") {
 		t.Errorf("error should mention circular dependency, got: %v", err)
 	}
+	for _, tableName := range []string{"a", "b"} {
+		if !strings.Contains(err.Error(), tableName) {
+			t.Errorf("error should name cycle table %q, got: %v", tableName, err)
+		}
+	}
+}
+
+func TestTopologicalSort_hardSelfReferenceSortsSingleTable(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"employees": {
+			"id":         {PK: true},
+			"manager_id": {FK: "employees.id"},
+		},
+	})
+
+	sorted, err := Build(s).TopologicalSort()
+	if err != nil {
+		t.Fatalf("hard self-reference should be handled during generation, got planning error: %v", err)
+	}
+	if len(sorted) != 1 || sorted[0] != "employees" {
+		t.Fatalf("sorted = %v, want [employees]", sorted)
+	}
 }
 
 // ── RenderPlan ────────────────────────────────────────────────────────────────
@@ -297,6 +319,27 @@ func TestRenderPlan_rootHasDash(t *testing.T) {
 	if !strings.Contains(out, "—") {
 		t.Errorf("root table should show '—' for Depends On; got:\n%s", out)
 	}
+}
+
+func TestRenderPlanWithCountsShowsOverrides(t *testing.T) {
+	s := makeSchema(map[string]map[string]schema.Column{
+		"users":  {"id": {PK: true}},
+		"orders": {"id": {PK: true}, "user_id": {FK: "users.id"}},
+	})
+	g := Build(s)
+	sorted, _ := g.TopologicalSort()
+	out := RenderPlanWithCounts(s, sorted, 2, map[string]int{"orders": 5})
+
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "orders") {
+			if !strings.Contains(line, "5") {
+				t.Fatalf("orders row should show override 5 rows, got: %q", line)
+			}
+			return
+		}
+	}
+	t.Fatalf("orders row not found in plan:\n%s", out)
 }
 
 // ── Parents / Children ──────────────────────────────────────────────────────

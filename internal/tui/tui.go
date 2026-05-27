@@ -23,15 +23,16 @@ const (
 
 // seedParams holds everything needed to execute the seed operation.
 type seedParams struct {
-	schema    *schema.Schema
-	tables    []string
-	rows      int
-	enumRows  int
-	tableRows map[string]int
-	batchSize int
-	truncate  bool
-	dbType    string
-	dsn       string
+	schema       *schema.Schema
+	tables       []string
+	rows         int
+	enumRows     int
+	selfRefDepth int
+	tableRows    map[string]int
+	batchSize    int
+	truncate     bool
+	dbType       string
+	dsn          string
 }
 
 // Model is the top-level TUI model orchestrating the wizard steps.
@@ -57,7 +58,7 @@ type Model struct {
 }
 
 // Run launches the interactive TUI and returns when the user completes or aborts.
-func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows, defaultBatchSize, defaultEnumRows int, defaultTruncate bool) error {
+func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows, defaultBatchSize, defaultEnumRows int, defaultTruncate bool, defaultSelfRefDepth ...int) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -84,7 +85,7 @@ func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows,
 		dbType:    dbType,
 		dsn:       dsn,
 		picker:    newTablePicker(items, 24),
-		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, defaultTruncate),
+		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, defaultTruncate, defaultSelfRefDepth...),
 		height:    24,
 		width:     80,
 	}
@@ -247,15 +248,16 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.review.done {
 		params := &seedParams{
-			schema:    m.schema,
-			tables:    m.review.tables,
-			rows:      m.review.rows,
-			enumRows:  m.review.enumRows,
-			tableRows: m.review.tableRows,
-			batchSize: m.review.batch,
-			truncate:  m.review.truncate,
-			dbType:    m.dbType,
-			dsn:       m.dsn,
+			schema:       m.schema,
+			tables:       m.review.tables,
+			rows:         m.review.rows,
+			enumRows:     m.review.enumRows,
+			selfRefDepth: m.config.SelfRefDepth(),
+			tableRows:    m.review.tableRows,
+			batchSize:    m.review.batch,
+			truncate:     m.review.truncate,
+			dbType:       m.dbType,
+			dsn:          m.dsn,
 		}
 
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
@@ -123,6 +124,72 @@ func TestRunGenerateAppliesTableRowOverridesWithoutBreakingDefaults(t *testing.T
 	}
 }
 
+func TestRunSeedDryRunHandlesHardSelfReference(t *testing.T) {
+	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{
+		DBType: "pgx",
+		schema: hardSelfReferenceSchema(),
+	}
+
+	depth := 2
+	result, err := srv.runSeed(context.Background(), sess, SeedRequest{
+		Rows:         3,
+		BatchSize:    100,
+		SelfRefDepth: &depth,
+		DryRun:       true,
+	}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runSeed: %v", err)
+	}
+	if got := result["totalRows"]; got != 3 {
+		t.Fatalf("totalRows = %v, want 3", got)
+	}
+	output, _ := result["output"].(string)
+	if output == "" || !containsAll(output, "employees", "manager_id") {
+		t.Fatalf("dry-run output should include self-referential insert SQL, got %q", output)
+	}
+}
+
+func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
+	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{
+		DBType: "pgx",
+		schema: hardSelfReferenceSchema(),
+	}
+
+	depth := 2
+	result, err := srv.runGenerate(context.Background(), sess, GenerateRequest{
+		Rows:         3,
+		SelfRefDepth: &depth,
+		Format:       "yaml",
+	}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	if got := result["totalRows"]; got != 3 {
+		t.Fatalf("totalRows = %v, want 3", got)
+	}
+	output, _ := result["output"].(string)
+	if output == "" || !containsAll(output, "employees", "manager_id") {
+		t.Fatalf("generated output should include self-referential values, got %q", output)
+	}
+}
+
+func containsAll(value string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(value, part) {
+			return false
+		}
+	}
+	return true
+}
+
 func runnerRowCountSchema() *schema.Schema {
 	return &schema.Schema{
 		Tables: map[string]schema.Table{
@@ -136,6 +203,19 @@ func runnerRowCountSchema() *schema.Schema {
 				Columns: map[string]schema.Column{
 					"id":      {Type: "integer", PK: true},
 					"user_id": {Type: "integer", FK: "users.id"},
+				},
+			},
+		},
+	}
+}
+
+func hardSelfReferenceSchema() *schema.Schema {
+	return &schema.Schema{
+		Tables: map[string]schema.Table{
+			"employees": {
+				Columns: map[string]schema.Column{
+					"id":         {Type: "integer", PK: true},
+					"manager_id": {Type: "integer", FK: "employees.id"},
 				},
 			},
 		},

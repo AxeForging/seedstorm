@@ -36,6 +36,15 @@ func generateCmd() *cli.Command {
 				Usage:   "Rows per table",
 				Value:   10,
 			},
+			&cli.StringSliceFlag{
+				Name:  "table-rows",
+				Usage: "Per-table row override, repeatable or comma-separated (table=rows)",
+			},
+			&cli.IntFlag{
+				Name:  "self-ref-depth",
+				Usage: "Maximum generated depth for self-referential FK chains",
+				Value: faker.DefaultSelfRefDepth,
+			},
 			&cli.StringFlag{
 				Name:    "format",
 				Aliases: []string{"f"},
@@ -68,6 +77,11 @@ func generateCmd() *cli.Command {
 			log := logging.Log
 			schemaPath := cmd.String("schema")
 			rows := cmd.Int("rows")
+			tableRows, err := parseTableRows(cmd.StringSlice("table-rows"))
+			if err != nil {
+				return err
+			}
+			selfRefDepth := cmd.Int("self-ref-depth")
 			format := cmd.String("format")
 			outPath := cmd.String("out")
 			dbType := normalizeDBType(cmd.String("db"))
@@ -85,7 +99,7 @@ func generateCmd() *cli.Command {
 			}
 
 			if cmd.Bool("interactive") {
-				return tui.RunGenerate(ctx, s, dbType, format, outPath, rows)
+				return tui.RunGenerate(ctx, s, dbType, format, outPath, rows, selfRefDepth)
 			}
 
 			log.Info().Msg("Building dependency graph")
@@ -96,7 +110,9 @@ func generateCmd() *cli.Command {
 			}
 
 			log.Info().Int("rows", rows).Msg("Generating data")
-			data, err := faker.Generate(s, sortedTables, rows, 0, nil, dbType)
+			data, err := faker.GenerateFilteredWithOptions(s, sortedTables, sortedTables, rows, 0, tableRows, nil, dbType, faker.GenerateOptions{
+				SelfRefDepth: selfRefDepth,
+			})
 			if err != nil {
 				return fmt.Errorf("generation failed: %w", err)
 			}

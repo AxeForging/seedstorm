@@ -282,7 +282,9 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 			}
 		}
 
-		data, err := faker.GenerateFilteredWithCounts(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType)
+		data, err := faker.GenerateFilteredWithOptions(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType, faker.GenerateOptions{
+			SelfRefDepth: s.selfRefDepth,
+		})
 		if err != nil {
 			return seedDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}
@@ -317,7 +319,9 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 // startDryRun returns a tea.Cmd that generates data and builds a summary.
 func startDryRun(s *seedParams) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithCounts(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType)
+		data, err := faker.GenerateFilteredWithOptions(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType, faker.GenerateOptions{
+			SelfRefDepth: s.selfRefDepth,
+		})
 		if err != nil {
 			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
 		}

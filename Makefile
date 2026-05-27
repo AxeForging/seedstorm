@@ -50,7 +50,18 @@ test:
 
 test-integration: dev-up
 	@echo "Waiting for databases to be healthy..."
-	@docker compose wait mysql postgres 2>/dev/null || sleep 10
+	@for i in $$(seq 1 60); do \
+		pg=$$(docker inspect -f '{{.State.Health.Status}}' seedstorm-postgres-1 2>/dev/null || true); \
+		my=$$(docker inspect -f '{{.State.Health.Status}}' seedstorm-mysql-1 2>/dev/null || true); \
+		if [ "$$pg" = "healthy" ] && [ "$$my" = "healthy" ]; then \
+			break; \
+		fi; \
+		if [ "$$i" = "60" ]; then \
+			docker compose ps; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
 	cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
 
 lint:

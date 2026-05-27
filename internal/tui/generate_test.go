@@ -34,6 +34,20 @@ func buildGenModel() GenModel {
 	}
 }
 
+func TestStartGenerateHandlesHardSelfReference(t *testing.T) {
+	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 3, 2, nil, "yaml", "", "pgx")()
+	done, ok := msg.(generateDoneMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want generateDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("startGenerate: %v", done.err)
+	}
+	if done.total != 3 {
+		t.Fatalf("total = %d, want 3", done.total)
+	}
+}
+
 func sendGenKey(m tea.Model, key string) tea.Model {
 	return sendKey(m, key)
 }

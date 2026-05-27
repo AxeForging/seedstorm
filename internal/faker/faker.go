@@ -15,11 +15,32 @@ import (
 	"github.com/brianvoe/gofakeit/v6"
 )
 
+const DefaultSelfRefDepth = 2
+
+type GenerateOptions struct {
+	SelfRefDepth int
+}
+
+func DefaultGenerateOptions() GenerateOptions {
+	return GenerateOptions{SelfRefDepth: DefaultSelfRefDepth}
+}
+
+func normalizeOptions(opts GenerateOptions) GenerateOptions {
+	if opts.SelfRefDepth < 0 {
+		opts.SelfRefDepth = 0
+	}
+	return opts
+}
+
 // Generate produces fake data rows for each table, respecting FK ordering.
 // If conn is non-nil, existing PKs are read so FKs can reference them.
 // dbType is the driver name ("pgx" or "mysql") used to quote SQL identifiers.
 func Generate(s *schema.Schema, sortedTables []string, rows, enumRows int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
 	return GenerateFiltered(s, sortedTables, sortedTables, rows, enumRows, conn, dbType)
+}
+
+func GenerateWithOptions(s *schema.Schema, sortedTables []string, rows, enumRows int, conn *sql.DB, dbType string, opts GenerateOptions) (map[string][]map[string]interface{}, error) {
+	return GenerateFilteredWithOptions(s, sortedTables, sortedTables, rows, enumRows, nil, conn, dbType, opts)
 }
 
 // GenerateFiltered is like Generate but separates the two roles of sortedTables:
@@ -38,6 +59,13 @@ func GenerateFiltered(s *schema.Schema, allTables, targetTables []string, rows, 
 // GenerateFilteredWithCounts is like GenerateFiltered, but tableRows can
 // override the default row count for individual target tables.
 func GenerateFilteredWithCounts(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, tableRows map[string]int, conn *sql.DB, dbType string) (map[string][]map[string]interface{}, error) {
+	return GenerateFilteredWithOptions(s, allTables, targetTables, rows, enumRows, tableRows, conn, dbType, DefaultGenerateOptions())
+}
+
+// GenerateFilteredWithOptions is like GenerateFilteredWithCounts, with
+// generation guardrails for recursive/self-referential relationships.
+func GenerateFilteredWithOptions(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, tableRows map[string]int, conn *sql.DB, dbType string, opts GenerateOptions) (map[string][]map[string]interface{}, error) {
+	opts = normalizeOptions(opts)
 	data := make(map[string][]map[string]interface{})
 	generatedPKs := make(map[string][]interface{})
 
@@ -76,6 +104,9 @@ func GenerateFilteredWithCounts(s *schema.Schema, allTables, targetTables []stri
 					return nil, fmt.Errorf("table %s enum top-up: %w", tableName, err)
 				}
 			}
+		}
+		if err := backfillSelfReferences(data[tableName], table, tableName, opts.SelfRefDepth); err != nil {
+			return nil, fmt.Errorf("table %s self-reference backfill: %w", tableName, err)
 		}
 	}
 
@@ -336,10 +367,15 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 			fkTable := parts[0]
 			pks := generatedPKs[fkTable]
 			if len(pks) == 0 {
-				if fkTable == tableName || col.Nullable {
-					// Self-referential FK or nullable FK with no parent rows yet:
-					// insert NULL. For nullable FKs this handles near-cycles where
-					// the parent table is seeded after this one.
+				if fkTable == tableName {
+					// Self-referential FKs are resolved after all rows for the
+					// table have PKs, so the first row can be safely rooted and
+					// non-nullable self-FKs can reference an existing generated PK.
+					return nil, nil
+				}
+				if col.Nullable {
+					// Nullable FK with no parent rows yet: insert NULL. This
+					// handles near-cycles where the parent table is seeded later.
 					return nil, nil
 				}
 				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
@@ -367,6 +403,88 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 		}
 	}
 	return val, nil
+}
+
+func backfillSelfReferences(rows []map[string]interface{}, table schema.Table, tableName string, selfRefDepth int) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if selfRefDepth < 0 {
+		selfRefDepth = 0
+	}
+
+	colNames := make([]string, 0, len(table.Columns))
+	for colName, col := range table.Columns {
+		if fkTable, _ := splitFK(col.FK); fkTable == tableName {
+			colNames = append(colNames, colName)
+		}
+	}
+	sort.Strings(colNames)
+
+	for _, colName := range colNames {
+		col := table.Columns[colName]
+		_, refCol := splitFK(col.FK)
+		if refCol == "" {
+			continue
+		}
+		if _, ok := table.Columns[refCol]; !ok {
+			return fmt.Errorf("%s references missing column %s", colName, refCol)
+		}
+
+		levels := make([]int, len(rows))
+		for i := range rows {
+			if _, ok := rows[i][refCol]; !ok {
+				return fmt.Errorf("%s references unavailable generated value %s", colName, refCol)
+			}
+			if i == 0 {
+				if col.Nullable {
+					rows[i][colName] = nil
+				} else {
+					rows[i][colName] = rows[i][refCol]
+				}
+				levels[i] = 0
+				continue
+			}
+
+			parentIdx := chooseSelfRefParent(levels, i, selfRefDepth)
+			if parentIdx < 0 {
+				if col.Nullable {
+					rows[i][colName] = nil
+					levels[i] = 0
+					continue
+				}
+				rows[i][colName] = rows[i][refCol]
+				levels[i] = 0
+				continue
+			}
+			rows[i][colName] = rows[parentIdx][refCol]
+			levels[i] = levels[parentIdx] + 1
+		}
+	}
+	return nil
+}
+
+func chooseSelfRefParent(levels []int, rowIdx, maxDepth int) int {
+	if rowIdx <= 0 {
+		return -1
+	}
+	if maxDepth <= 0 {
+		return -1
+	}
+	for i := rowIdx - 1; i >= 0; i-- {
+		if levels[i] < maxDepth {
+			return i
+		}
+	}
+	return -1
+}
+
+func splitFK(fk string) (string, string) {
+	parts := strings.SplitN(fk, ".", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
 }
 
 // generatePK returns an appropriate primary key value based on the column's DB type.

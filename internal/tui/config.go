@@ -25,11 +25,16 @@ type configField struct {
 	toggled  bool
 }
 
-func newConfig(rows, batchSize, enumRows int, truncate bool) configModel {
+func newConfig(rows, batchSize, enumRows int, truncate bool, selfRefDepth ...int) configModel {
+	depth := 2
+	if len(selfRefDepth) > 0 {
+		depth = selfRefDepth[0]
+	}
 	fields := []configField{
 		makeNumericField("Rows per table", rows),
 		makeNumericField("Batch size", batchSize),
 		makeNumericField("Enum rows (0 = use rows)", enumRows),
+		makeNumericField("Self-ref depth", depth),
 		{label: "Truncate before seeding", isToggle: true, toggled: truncate},
 	}
 	fields[0].input.Focus()
@@ -52,8 +57,11 @@ func (m configModel) BatchSize() int {
 	}
 	return v
 }
-func (m configModel) EnumRows() int  { return m.intVal(2, 0) }
-func (m configModel) Truncate() bool { return m.fields[3].toggled }
+func (m configModel) EnumRows() int { return m.intVal(2, 0) }
+func (m configModel) SelfRefDepth() int {
+	return m.intVal(3, 2)
+}
+func (m configModel) Truncate() bool { return m.fields[4].toggled }
 
 func (m configModel) intVal(idx, fallback int) int {
 	if idx >= len(m.fields) {

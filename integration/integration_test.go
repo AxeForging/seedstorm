@@ -138,6 +138,32 @@ func countRows(t *testing.T, conn *sql.DB, table string) int {
 	return n
 }
 
+func assertHardSelfRefSeeded(t *testing.T, conn *sql.DB) {
+	t.Helper()
+	var total, nulls, orphans int
+	if err := conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM hard_self_employees`).Scan(&total); err != nil {
+		t.Fatalf("hard self-ref count: %v", err)
+	}
+	if total == 0 {
+		t.Fatal("hard_self_employees: expected seeded rows")
+	}
+	if err := conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM hard_self_employees WHERE manager_id IS NULL`).Scan(&nulls); err != nil {
+		t.Fatalf("hard self-ref null check: %v", err)
+	}
+	if nulls != 0 {
+		t.Fatalf("hard_self_employees: found %d NULL manager_id values", nulls)
+	}
+	if err := conn.QueryRowContext(context.Background(), `
+		SELECT COUNT(*) FROM hard_self_employees c
+		LEFT JOIN hard_self_employees p ON c.manager_id = p.id
+		WHERE p.id IS NULL`).Scan(&orphans); err != nil {
+		t.Fatalf("hard self-ref FK check: %v", err)
+	}
+	if orphans != 0 {
+		t.Fatalf("hard_self_employees: found %d orphaned manager_id values", orphans)
+	}
+}
+
 // buildAndSeed runs the full introspect → build schema → generate → seed pipeline.
 // It prints a summary at the end (not per-row during insert).
 func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[string][]map[string]interface{} {
@@ -246,7 +272,7 @@ func TestPostgresIntegration(t *testing.T) {
 	t.Run("row counts", func(t *testing.T) {
 		allTables := []string{
 			// L0
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			// L1
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			// L2
@@ -909,17 +935,18 @@ func TestPostgresIntegration(t *testing.T) {
 
 		expected := map[string]int{
 			// existing
-			"addresses":      1, // user_id
-			"products":       2, // category_id, brand_id
-			"product_tags":   2, // product_id, tag_id
-			"orders":         3, // user_id, address_id, coupon_id
-			"order_items":    2, // order_id, product_id
-			"shipments":      1, // order_id
-			"payments":       1, // order_id
-			"reviews":        2, // user_id, product_id
-			"wishlists":      1, // user_id
-			"wishlist_items": 2, // wishlist_id, product_id
-			"categories":     1, // parent_id (self-ref)
+			"addresses":           1, // user_id
+			"products":            2, // category_id, brand_id
+			"product_tags":        2, // product_id, tag_id
+			"orders":              3, // user_id, address_id, coupon_id
+			"order_items":         2, // order_id, product_id
+			"shipments":           1, // order_id
+			"payments":            1, // order_id
+			"reviews":             2, // user_id, product_id
+			"wishlists":           1, // user_id
+			"wishlist_items":      2, // wishlist_id, product_id
+			"categories":          1, // parent_id (self-ref)
+			"hard_self_employees": 1, // manager_id (hard self-ref)
 			// new
 			"departments":          3, // company_id, parent_dept_id (self-ref), head_employee_id
 			"employees":            2, // department_id, manager_id (self-ref)
@@ -1048,6 +1075,10 @@ func TestPostgresIntegration(t *testing.T) {
 			t.Error("employees: expected at least one root node (NULL manager_id), got 0")
 		}
 		t.Logf("employees root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: hard_self_employees has valid non-null managers", func(t *testing.T) {
+		assertHardSelfRefSeeded(t, conn)
 	})
 
 	// ── Deep chain subtest ──────────────────────────────────────────────────────
@@ -1393,7 +1424,7 @@ func TestPostgresIntegration(t *testing.T) {
 			t.Fatalf("truncate: %v", err)
 		}
 		allTables := []string{
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			"products", "employees",
 			"product_tags", "orders", "projects", "inventory", "purchase_orders",
@@ -1414,7 +1445,7 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 		buildAndSeed(t, "postgres (post-truncate)", postgresDriver, dsn, conn)
 		allTables := []string{
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			"products", "employees",
 			"product_tags", "orders", "projects", "inventory", "purchase_orders",
@@ -1454,7 +1485,7 @@ func TestMySQLIntegration(t *testing.T) {
 	t.Run("row counts", func(t *testing.T) {
 		allTables := []string{
 			// L0
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			// L1
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			// L2
@@ -2116,17 +2147,18 @@ func TestMySQLIntegration(t *testing.T) {
 
 		expected := map[string]int{
 			// existing
-			"addresses":      1, // user_id
-			"products":       2, // category_id, brand_id
-			"product_tags":   2, // product_id, tag_id
-			"orders":         3, // user_id, address_id, coupon_id
-			"order_items":    2, // order_id, product_id
-			"shipments":      1, // order_id
-			"payments":       1, // order_id
-			"reviews":        2, // user_id, product_id
-			"wishlists":      1, // user_id
-			"wishlist_items": 2, // wishlist_id, product_id
-			"categories":     1, // parent_id (self-ref)
+			"addresses":           1, // user_id
+			"products":            2, // category_id, brand_id
+			"product_tags":        2, // product_id, tag_id
+			"orders":              3, // user_id, address_id, coupon_id
+			"order_items":         2, // order_id, product_id
+			"shipments":           1, // order_id
+			"payments":            1, // order_id
+			"reviews":             2, // user_id, product_id
+			"wishlists":           1, // user_id
+			"wishlist_items":      2, // wishlist_id, product_id
+			"categories":          1, // parent_id (self-ref)
+			"hard_self_employees": 1, // manager_id (hard self-ref)
 			// new
 			"departments":          3, // company_id, parent_dept_id (self-ref), head_employee_id
 			"employees":            2, // department_id, manager_id (self-ref)
@@ -2255,6 +2287,10 @@ func TestMySQLIntegration(t *testing.T) {
 			t.Error("employees: expected at least one root node (NULL manager_id), got 0")
 		}
 		t.Logf("employees root nodes: %d", roots)
+	})
+
+	t.Run("self-ref: hard_self_employees has valid non-null managers", func(t *testing.T) {
+		assertHardSelfRefSeeded(t, conn)
 	})
 
 	// ── Deep chain subtest ──────────────────────────────────────────────────────
@@ -2590,7 +2626,7 @@ func TestMySQLIntegration(t *testing.T) {
 			t.Fatalf("truncate: %v", err)
 		}
 		allTables := []string{
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			"products", "employees",
 			"product_tags", "orders", "projects", "inventory", "purchase_orders",
@@ -2611,7 +2647,7 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 		buildAndSeed(t, "mysql (post-truncate)", mysqlDriver, dsn, conn)
 		allTables := []string{
-			"brands", "tags", "users", "coupons", "companies", "suppliers",
+			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",
 			"products", "employees",
 			"product_tags", "orders", "projects", "inventory", "purchase_orders",
@@ -2642,12 +2678,12 @@ func TestMySQLIntegration(t *testing.T) {
 //   5. Idempotent fill: running gap fill a second time when all tables already
 //      have rows adds nothing (no gaps found → no generation).
 
-// gapL0Tables are the root (no FK parents) tables in the 28-table test schema.
-var gapL0Tables = []string{"brands", "tags", "users", "coupons", "companies", "suppliers"}
+// gapL0Tables are the root (no FK parents) tables in the 29-table test schema.
+var gapL0Tables = []string{"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees"}
 
 // gapAllTables lists every table in the test schema (used for count assertions).
 var gapAllTables = []string{
-	"brands", "tags", "users", "coupons", "companies", "suppliers",
+	"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 	"categories", "addresses", "departments", "warehouses", "wishlists",
 	"products", "employees",
 	"product_tags", "orders", "projects", "inventory", "purchase_orders",

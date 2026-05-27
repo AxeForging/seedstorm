@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS hard_self_employees;
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS products;
 DROP TABLE IF EXISTS users;
@@ -14,6 +15,14 @@ CREATE TABLE products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     price DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE hard_self_employees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    manager_id INT NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    title VARCHAR(255),
+    FOREIGN KEY (manager_id) REFERENCES hard_self_employees(id)
 );
 
 CREATE TABLE orders (

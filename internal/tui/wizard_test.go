@@ -38,6 +38,27 @@ func buildTestModel() Model {
 	}
 }
 
+func TestStartDryRunHandlesHardSelfReference(t *testing.T) {
+	params := &seedParams{
+		schema:       hardSelfReferenceTUISchema(),
+		tables:       []string{"employees"},
+		rows:         3,
+		selfRefDepth: 2,
+		dbType:       "pgx",
+	}
+	msg := startDryRun(params)()
+	done, ok := msg.(dryRunDoneMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want dryRunDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("startDryRun: %v", done.err)
+	}
+	if done.total != 3 {
+		t.Fatalf("total = %d, want 3", done.total)
+	}
+}
+
 func sendKey(m tea.Model, key string) tea.Model {
 	var msg tea.Msg
 	switch key {
