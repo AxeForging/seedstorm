@@ -46,6 +46,7 @@ tables:
 | `faker` | Faker hint (see table below). Auto-assigned by `introspect`; overridden by `ai-enrich`. |
 | `nullable` | `true` if the column allows NULL |
 | `unique` | `true` if the column has a UNIQUE constraint (auto-sets faker to `uuid`) |
+| `generated` | `true` for database-generated columns; seedstorm keeps them out of generated INSERT rows |
 
 ## Faker Hints Reference
 

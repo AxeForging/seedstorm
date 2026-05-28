@@ -338,6 +338,9 @@ func generateRow(table schema.Table, tableName string, generatedPKs map[string][
 
 	for _, colName := range colNames {
 		col := table.Columns[colName]
+		if col.Generated {
+			continue
+		}
 		val, err := generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
 		if err != nil {
 			return nil, fmt.Errorf("column %s: %w", colName, err)

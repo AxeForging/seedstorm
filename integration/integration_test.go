@@ -187,13 +187,21 @@ func cloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
 			CREATE TABLE clone_users (
 				id integer PRIMARY KEY,
 				email varchar(255) NOT NULL UNIQUE,
-				status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
+				status varchar(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked')),
+				full_label varchar(300) GENERATED ALWAYS AS (email || ':' || status) STORED
 			);
 			CREATE TABLE clone_orders (
 				id integer PRIMARY KEY,
 				user_id integer NOT NULL REFERENCES clone_users(id),
-				total integer NOT NULL CHECK (total BETWEEN 1 AND 500)
+				subtotal numeric(10,2) NOT NULL DEFAULT 10.00,
+				tax numeric(10,2) NOT NULL DEFAULT 0.00,
+				total numeric(10,2) GENERATED ALWAYS AS (subtotal + tax) STORED,
+				quantity integer NOT NULL CHECK (quantity BETWEEN 1 AND 500)
 			);
+			CREATE INDEX idx_clone_orders_user_total ON clone_orders(user_id, total);
+			CREATE UNIQUE INDEX uq_clone_users_status_email ON clone_users(status, email);
+			COMMENT ON TABLE clone_users IS 'clone source users';
+			COMMENT ON COLUMN clone_users.status IS 'workflow state';
 		`)
 		return
 	}
@@ -205,14 +213,22 @@ func cloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
 		CREATE TABLE clone_users (
 			id integer PRIMARY KEY,
 			email varchar(255) NOT NULL UNIQUE,
-			status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
-		);
+			status varchar(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked')),
+			full_label varchar(300) GENERATED ALWAYS AS (concat(email, ':', status)) STORED,
+			UNIQUE KEY uq_clone_users_status_email (status, email)
+		) COMMENT='clone source users';
+		ALTER TABLE clone_users MODIFY status varchar(20) NOT NULL DEFAULT 'active' COMMENT 'workflow state';
+		CREATE INDEX idx_clone_users_status ON clone_users(status);
 		CREATE TABLE clone_orders (
 			id integer PRIMARY KEY,
 			user_id integer NOT NULL,
-			total integer NOT NULL CHECK (total BETWEEN 1 AND 500),
+			subtotal decimal(10,2) NOT NULL DEFAULT 10.00,
+			tax decimal(10,2) NOT NULL DEFAULT 0.00,
+			total decimal(10,2) GENERATED ALWAYS AS (subtotal + tax) STORED,
+			quantity integer NOT NULL CHECK (quantity BETWEEN 1 AND 500),
 			FOREIGN KEY (user_id) REFERENCES clone_users(id)
 		);
+		CREATE INDEX idx_clone_orders_user_total ON clone_orders(user_id, total);
 	`)
 }
 
@@ -232,10 +248,11 @@ func assertCloneSchemaCanSeed(t *testing.T, driver string, conn *sql.DB, tables 
 		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
-				Type:     col.Type,
-				PK:       col.IsPK,
-				Nullable: col.IsNullable,
-				Faker:    faker.MapColumnToFaker(driver, col),
+				Type:      col.Type,
+				PK:        col.IsPK,
+				Nullable:  col.IsNullable,
+				Generated: col.Generated != "",
+				Faker:     faker.MapColumnToFaker(driver, col),
 			}
 			if col.Name == "email" {
 				sc.Faker = "email"
@@ -272,6 +289,80 @@ func assertCloneSchemaCanSeed(t *testing.T, driver string, conn *sql.DB, tables 
 	}
 }
 
+func assertCloneMetadata(t *testing.T, tables []db.Table) {
+	t.Helper()
+	byName := make(map[string]db.Table, len(tables))
+	for _, tbl := range tables {
+		byName[tbl.Name] = tbl
+	}
+	users, ok := byName["clone_users"]
+	if !ok {
+		t.Fatal("clone_users missing from cloned metadata")
+	}
+	if users.Comment != "clone source users" {
+		t.Fatalf("clone_users comment = %q", users.Comment)
+	}
+	var status, label db.Column
+	for _, col := range users.Columns {
+		switch col.Name {
+		case "status":
+			status = col
+		case "full_label":
+			label = col
+		}
+	}
+	if status.Default == "" {
+		t.Fatal("clone_users.status default was not preserved")
+	}
+	if status.Comment != "workflow state" {
+		t.Fatalf("clone_users.status comment = %q", status.Comment)
+	}
+	if label.Generated == "" {
+		t.Fatal("clone_users.full_label generated expression was not preserved")
+	}
+	if !hasIndex(users.Indexes, "uq_clone_users_status_email", true, []string{"status", "email"}) {
+		t.Fatalf("multi-column unique index not preserved: %#v", users.Indexes)
+	}
+	orders := byName["clone_orders"]
+	if !hasIndex(orders.Indexes, "idx_clone_orders_user_total", false, []string{"user_id", "total"}) {
+		t.Fatalf("multi-column index not preserved: %#v", orders.Indexes)
+	}
+	var subtotal, total db.Column
+	for _, col := range orders.Columns {
+		switch col.Name {
+		case "subtotal":
+			subtotal = col
+		case "total":
+			total = col
+		}
+	}
+	if subtotal.Default == "" {
+		t.Fatal("clone_orders.subtotal default was not preserved")
+	}
+	if total.Generated == "" {
+		t.Fatal("clone_orders.total generated expression was not preserved")
+	}
+}
+
+func hasIndex(indexes []db.Index, name string, unique bool, columns []string) bool {
+	for _, idx := range indexes {
+		if idx.Name != name || idx.Unique != unique || len(idx.Columns) != len(columns) {
+			continue
+		}
+		match := true
+		for i := range columns {
+			if idx.Columns[i] != columns[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // buildAndSeed runs the full introspect → build schema → generate → seed pipeline.
 // It prints a summary at the end (not per-row during insert).
 func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[string][]map[string]interface{} {
@@ -292,10 +383,11 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
-				Type:     col.Type,
-				PK:       col.IsPK,
-				Nullable: col.IsNullable,
-				Faker:    faker.MapColumnToFaker(driver, col),
+				Type:      col.Type,
+				PK:        col.IsPK,
+				Nullable:  col.IsNullable,
+				Generated: col.Generated != "",
+				Faker:     faker.MapColumnToFaker(driver, col),
 			}
 			if col.FK != nil {
 				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
@@ -1508,7 +1600,7 @@ func TestPostgresIntegration(t *testing.T) {
 		for _, tbl := range tables {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
-				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable}
+				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
 				}
@@ -1603,6 +1695,7 @@ func TestPostgresSchemaCloneDDL(t *testing.T) {
 	if len(cloned) != 2 {
 		t.Fatalf("cloned tables = %d, want 2", len(cloned))
 	}
+	assertCloneMetadata(t, cloned)
 	assertCloneSchemaCanSeed(t, postgresDriver, conn, cloned)
 	dropCloneSmokeSchema(t, postgresDriver, conn)
 }
@@ -2744,7 +2837,7 @@ func TestMySQLIntegration(t *testing.T) {
 		for _, tbl := range tables {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
-				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable}
+				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
 				}
@@ -2839,6 +2932,7 @@ func TestMySQLSchemaCloneDDL(t *testing.T) {
 	if len(cloned) != 2 {
 		t.Fatalf("cloned tables = %d, want 2", len(cloned))
 	}
+	assertCloneMetadata(t, cloned)
 	assertCloneSchemaCanSeed(t, mysqlDriver, conn, cloned)
 	dropCloneSmokeSchema(t, mysqlDriver, conn)
 }
@@ -2882,10 +2976,11 @@ func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
 		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
-				Type:     col.Type,
-				PK:       col.IsPK,
-				Nullable: col.IsNullable,
-				Faker:    faker.MapColumnToFaker(driver, col),
+				Type:      col.Type,
+				PK:        col.IsPK,
+				Nullable:  col.IsNullable,
+				Generated: col.Generated != "",
+				Faker:     faker.MapColumnToFaker(driver, col),
 			}
 			if col.FK != nil {
 				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
@@ -3001,10 +3096,11 @@ func TestPostgresGaps(t *testing.T) {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
 				sc := schema.Column{
-					Type:     col.Type,
-					PK:       col.IsPK,
-					Nullable: col.IsNullable,
-					Faker:    faker.MapColumnToFaker(postgresDriver, col),
+					Type:      col.Type,
+					PK:        col.IsPK,
+					Nullable:  col.IsNullable,
+					Generated: col.Generated != "",
+					Faker:     faker.MapColumnToFaker(postgresDriver, col),
 				}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
@@ -3185,10 +3281,11 @@ func TestMySQLGaps(t *testing.T) {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
 				sc := schema.Column{
-					Type:     col.Type,
-					PK:       col.IsPK,
-					Nullable: col.IsNullable,
-					Faker:    faker.MapColumnToFaker(mysqlDriver, col),
+					Type:      col.Type,
+					PK:        col.IsPK,
+					Nullable:  col.IsNullable,
+					Generated: col.Generated != "",
+					Faker:     faker.MapColumnToFaker(mysqlDriver, col),
 				}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)

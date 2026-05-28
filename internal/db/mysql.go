@@ -63,13 +63,23 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 		}
 	}
 
+	indexMap, err := mysqlIndexMap(db, dbName)
+	if err != nil {
+		return nil, err
+	}
+
+	tableComments, err := mysqlTableCommentMap(db, dbName)
+	if err != nil {
+		return nil, err
+	}
+
 	var tables []Table
 	for _, tableName := range tableNames {
 		cols, err := mysqlColumns(db, dbName, tableName, fkMap, checkMap, rangeMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
-		tables = append(tables, Table{Name: tableName, Columns: cols})
+		tables = append(tables, Table{Name: tableName, Columns: cols, Indexes: indexMap[tableName], Comment: tableComments[tableName]})
 	}
 
 	return tables, nil
@@ -133,7 +143,11 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 			DATA_TYPE,
 			COLUMN_TYPE,
 			IS_NULLABLE,
-			COLUMN_KEY
+			COLUMN_KEY,
+			COLUMN_DEFAULT,
+			EXTRA,
+			GENERATION_EXPRESSION,
+			COLUMN_COMMENT
 		FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = ?
 		  AND TABLE_NAME = ?
@@ -145,17 +159,30 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 
 	var columns []Column
 	for rows.Next() {
-		var name, dataType, columnType, isNullable, columnKey string
-		if err := rows.Scan(&name, &dataType, &columnType, &isNullable, &columnKey); err != nil {
+		var name, dataType, columnType, isNullable, columnKey, extra, generationExpr, comment string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&name, &dataType, &columnType, &isNullable, &columnKey, &defaultValue, &extra, &generationExpr, &comment); err != nil {
 			return nil, err
 		}
 
 		col := Column{
 			Name:       name,
 			Type:       strings.ToLower(dataType),
+			DDLType:    columnType,
 			IsNullable: isNullable == "YES",
 			IsPK:       columnKey == "PRI",
 			Unique:     columnKey == "UNI",
+			Comment:    comment,
+		}
+		if defaultValue.Valid && !strings.Contains(strings.ToLower(extra), "generated") {
+			col.Default = mysqlDefaultLiteral(defaultValue.String, dataType)
+		}
+		if strings.Contains(strings.ToLower(extra), "auto_increment") {
+			col.AutoIncrement = true
+			col.Default = ""
+		}
+		if strings.Contains(strings.ToLower(extra), "generated") {
+			col.Generated = mysqlGeneratedExpression(generationExpr)
 		}
 
 		// Parse enum values from COLUMN_TYPE e.g. enum('a','b','c')
@@ -322,4 +349,76 @@ func parseEnumValues(columnType string) []string {
 		}
 	}
 	return values
+}
+
+func mysqlIndexMap(db *sql.DB, dbName string) (map[string][]Index, error) {
+	rows, err := db.Query(`
+		SELECT
+			TABLE_NAME,
+			INDEX_NAME,
+			NON_UNIQUE,
+			GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',')
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ?
+		  AND INDEX_NAME <> 'PRIMARY'
+		GROUP BY TABLE_NAME, INDEX_NAME, NON_UNIQUE`, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query indexes: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string][]Index)
+	for rows.Next() {
+		var table, name, columns string
+		var nonUnique int
+		if err := rows.Scan(&table, &name, &nonUnique, &columns); err != nil {
+			return nil, err
+		}
+		cols := strings.Split(columns, ",")
+		if len(cols) == 1 && nonUnique == 0 {
+			continue
+		}
+		m[table] = append(m[table], Index{Name: name, Columns: cols, Unique: nonUnique == 0})
+	}
+	return m, nil
+}
+
+func mysqlTableCommentMap(db *sql.DB, dbName string) (map[string]string, error) {
+	rows, err := db.Query(`
+		SELECT TABLE_NAME, TABLE_COMMENT
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_TYPE = 'BASE TABLE'
+		  AND TABLE_COMMENT <> ''`, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table comments: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]string)
+	for rows.Next() {
+		var table, comment string
+		if err := rows.Scan(&table, &comment); err != nil {
+			return nil, err
+		}
+		m[table] = comment
+	}
+	return m, nil
+}
+
+func mysqlDefaultLiteral(value, dataType string) string {
+	switch strings.ToLower(dataType) {
+	case "char", "varchar", "text", "mediumtext", "longtext", "enum", "set", "date", "time", "datetime", "timestamp":
+		upper := strings.ToUpper(value)
+		if upper == "CURRENT_TIMESTAMP" || strings.HasSuffix(upper, "()") {
+			return value
+		}
+		return quoteStringLiteral(value)
+	default:
+		return value
+	}
+}
+
+func mysqlGeneratedExpression(expr string) string {
+	return strings.ReplaceAll(expr, `\'`, `'`)
 }

@@ -274,7 +274,7 @@ seedstorm export --data data.yaml --format csv --out data.csv
 
 ## `clone-schema`
 
-Copies schema-only table structure from a source database into a target database of the same engine. This is designed for local/test database setup before running `seed`; it recreates the metadata seedstorm understands: tables, columns, nullability, PKs, FKs, single-column UNIQUE constraints, enum values, and simple CHECK constraints.
+Copies schema-only table structure from a source database into a target database of the same engine. This is designed for local/test database setup before running `seed`; it recreates compatible table metadata seedstorm understands: tables, columns, exact introspected column DDL types, nullability, defaults, stored generated columns, PKs, FKs, single-column UNIQUE constraints, multi-column indexes, enum values, simple CHECK constraints, and table/column comments.
 
 ```bash
 seedstorm clone-schema \
@@ -309,6 +309,8 @@ seedstorm clone-schema \
 | `--drop-existing` | false | Drop target tables before creating the cloned schema |
 | `--dry-run` / `-n` | false | Print generated DDL, do not execute |
 | `--interactive` / `-i` | false | Confirm the clone in the terminal UI |
+
+Boundaries: `clone-schema` is same-engine only. It does not attempt cross-engine translation, and it does not clone views, triggers, functions/procedures, partial/expression indexes, grants, ownership, or non-public/non-current schemas.
 
 ---
 
