@@ -42,7 +42,7 @@
         <details class="conn-switcher">
           <summary class="conn-pill" title="{{.Session.Info.DBType}}://{{.Session.Info.User}}@{{.Session.Info.Host}}:{{.Session.Info.Port}}/{{.Session.Info.DBName}}">
             <span class="conn-dot {{.Session.Info.DBType}}"></span>
-            <span class="conn-label">{{.Session.Info.DBName}}</span>
+            <span class="conn-label">{{connName .Session.Info}}</span>
             <span class="muted small">@{{.Session.Info.Host}}</span>
             <span class="caret">▾</span>
           </summary>
@@ -51,10 +51,10 @@
               {{range .Connections}}
                 <form method="post" action="/switch" class="conn-menu-row {{if eq .ID $.Session.ID}}active{{end}}">
                   <input type="hidden" name="id" value="{{.ID}}">
-                  <button type="submit" class="conn-menu-btn">
+                  <button type="submit" class="conn-menu-btn" {{if eq .ID $.Session.ID}}disabled{{end}}>
                     <span class="conn-dot {{.Info.DBType}}"></span>
                     <div class="conn-menu-text">
-                      <strong>{{.Info.DBName}}</strong>
+                      <strong>{{connName .Info}}</strong>
                       <span class="muted small">{{.Info.User}}@{{.Info.Host}}:{{.Info.Port}}</span>
                     </div>
                     {{if eq .ID $.Session.ID}}<span class="muted small">active</span>{{end}}
@@ -62,6 +62,7 @@
                 </form>
               {{end}}
             </div>
+            <div class="conn-menu-list conn-preset-list" id="conn-preset-list"></div>
             <div class="conn-menu-actions">
               <a class="btn-ghost" href="/connect">+ New connection</a>
               <a class="btn-ghost" href="/disconnect">Disconnect this</a>

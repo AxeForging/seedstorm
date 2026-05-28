@@ -34,6 +34,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
 	info := ConnectionInfo{
+		Label:  strings.TrimSpace(r.FormValue("label")),
 		DBType: strings.TrimSpace(r.FormValue("dbType")),
 		Host:   strings.TrimSpace(r.FormValue("host")),
 		Port:   port,
@@ -42,6 +43,33 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		SSL:    strings.TrimSpace(r.FormValue("ssl")),
 	}
 	password := r.FormValue("password")
+	rawDSN := strings.TrimSpace(r.FormValue("dsn"))
+	if rawDSN != "" {
+		driver, dsn, displayInfo, err := buildRawDSN(info.DBType, rawDSN)
+		if err != nil {
+			s.render(w, r, "connect", pageData{
+				Title:  "Connect",
+				Active: "connect",
+				Error:  err.Error(),
+				Data:   info,
+			})
+			return
+		}
+		displayInfo.Label = info.Label
+		sess, err := s.sessions.OpenDSN(driver, dsn, displayInfo)
+		if err != nil {
+			s.render(w, r, "connect", pageData{
+				Title:  "Connect",
+				Active: "connect",
+				Error:  err.Error(),
+				Data:   info,
+			})
+			return
+		}
+		setSessionCookie(w, sess.ID)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	if info.DBType == "" || info.DBName == "" || info.User == "" {
 		s.render(w, r, "connect", pageData{
 			Title:  "Connect",
@@ -106,11 +134,15 @@ func (s *Server) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		Active bool           `json:"active"`
 	}
 	out := []entry{}
-	for _, sess := range s.sessions.All() {
+	activeID := ""
+	if current != nil {
+		activeID = current.Value
+	}
+	for _, sess := range dedupeConnections(s.sessions.All(), activeID) {
 		out = append(out, entry{
 			ID:     sess.ID,
 			Info:   sess.Info,
-			Active: current != nil && current.Value == sess.ID,
+			Active: activeID == sess.ID,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

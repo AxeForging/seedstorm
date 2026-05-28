@@ -61,3 +61,7 @@ func (s *Server) handleEnrichRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportRun(w http.ResponseWriter, r *http.Request) {
 	startRun(s, w, r, "export", s.runExport)
 }
+
+func (s *Server) handleCloneSchemaRun(w http.ResponseWriter, r *http.Request) {
+	startRun(s, w, r, "clone-schema", s.runCloneSchema)
+}

@@ -91,6 +91,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/generate", s.handleGenerateRun)
 	s.mux.HandleFunc("/api/enrich", s.handleEnrichRun)
 	s.mux.HandleFunc("/api/export", s.handleExportRun)
+	s.mux.HandleFunc("/api/clone-schema", s.handleCloneSchemaRun)
 }
 
 // loadTemplates parses each page template as its own template set, with the
@@ -138,6 +139,15 @@ func templateFuncs() template.FuncMap {
 				return a
 			}
 			return b
+		},
+		"connName": func(info ConnectionInfo) string {
+			if info.Label != "" {
+				return info.Label
+			}
+			if info.DBName != "" {
+				return info.DBName
+			}
+			return info.Host
 		},
 	}
 }

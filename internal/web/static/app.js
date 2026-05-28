@@ -20,11 +20,21 @@
     const picker = document.getElementById("preset-picker");
     const deleteBtn = document.getElementById("preset-delete");
     const includePw = document.getElementById("preset-include-pw");
+    const labelInput = document.getElementById("connection-label");
     const pwInput = document.getElementById("conn-password");
     const eyeBtn = document.getElementById("toggle-password");
     const dbType = form.querySelector('[name="dbType"]');
     const port = form.querySelector('[name="port"]');
+    const rawDSN = form.querySelector('[name="dsn"]');
     const defaultPorts = { postgres: "5432", mysql: "3306" };
+    const syncRawDSNMode = () => {
+      if (!rawDSN) return;
+      const usingRaw = rawDSN.value.trim() !== "";
+      ["host", "port", "dbName", "user"].forEach((name) => {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (el) el.required = !usingRaw;
+      });
+    };
 
     // Eye toggle: closed by default, click reveals
     if (eyeBtn && pwInput) {
@@ -51,6 +61,10 @@
         const el = form.querySelector(`[name="${k}"]`);
         if (el) el.value = v;
       }
+      const nameInput = document.getElementById("preset-name");
+      if (nameInput) nameInput.value = picker.value;
+      if (labelInput) labelInput.value = picker.value;
+      syncRawDSNMode();
       // Reset eye to closed after auto-fill, regardless of whether password
       // was loaded — never show secrets without an explicit click.
       if (eyeBtn) {
@@ -65,6 +79,9 @@
         if (next && (port.value === "" || known)) port.value = next;
       });
     }
+    if (rawDSN) {
+      rawDSN.addEventListener("input", syncRawDSNMode);
+    }
     deleteBtn.addEventListener("click", () => {
       const all = loadPresets();
       delete all[picker.value];
@@ -76,10 +93,11 @@
     form.addEventListener("submit", () => {
       const nameInput = document.getElementById("preset-name");
       const name = nameInput ? nameInput.value.trim() : "";
+      if (labelInput) labelInput.value = name || picker.value || "";
       if (!name) return;
       const data = new FormData(form);
       const preset = {};
-      ["dbType", "host", "port", "dbName", "user", "ssl"].forEach((k) => {
+      ["dbType", "dsn", "host", "port", "dbName", "user", "ssl"].forEach((k) => {
         preset[k] = data.get(k) || "";
       });
       if (includePw && includePw.checked) {
@@ -88,6 +106,107 @@
       const all = loadPresets();
       all[name] = preset;
       savePresets(all);
+    });
+  }
+
+  function presetConnectionInfo(name, p) {
+    p = p || {};
+    return {
+      label: name || "",
+      dbType: p.dbType || "postgres",
+      dsn: p.dsn || "",
+      host: p.host || "",
+      port: Number(p.port || 0) || 0,
+      dbName: p.dbName || "",
+      user: p.user || "",
+      ssl: p.ssl || "",
+    };
+  }
+
+  function connectionKey(info) {
+    info = info || {};
+    const dbType = String(info.dbType || "").toLowerCase();
+    const dsn = String(info.dsn || "").trim();
+    if (dsn && !info.host && !info.dbName && !info.user) return `dsn:${dbType}:${dsn}`;
+    return [
+      dbType,
+      String(info.host || "").toLowerCase(),
+      String(info.port || ""),
+      String(info.dbName || ""),
+      String(info.user || ""),
+    ].join("|");
+  }
+
+  function connectionLabel(info) {
+    info = info || {};
+    const name = info.label || info.dbName || "database";
+    const host = info.host || "connection";
+    const port = info.port ? `:${info.port}` : "";
+    return `${name} @ ${host}${port}`;
+  }
+
+  async function fetchConnections() {
+    try {
+      const res = await fetch("/api/connections");
+      if (!res.ok) return [];
+      const conns = await res.json();
+      return Array.isArray(conns) ? conns : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function setupConnectionMenuPresets() {
+    const list = document.getElementById("conn-preset-list");
+    if (!list) return;
+    const presets = loadPresets();
+    const live = await fetchConnections();
+    const liveKeys = new Set(live.map((c) => connectionKey(c.info)));
+    const liveLabels = new Set(live.map((c) => c.info?.label).filter(Boolean));
+    const names = Object.keys(presets).sort().filter((name) => {
+      const info = presetConnectionInfo(name, presets[name]);
+      return !liveLabels.has(name) && !liveKeys.has(connectionKey(info));
+    });
+    if (!names.length) return;
+    const heading = document.createElement("div");
+    heading.className = "conn-menu-heading";
+    heading.textContent = "Saved presets";
+    list.appendChild(heading);
+    names.forEach((name) => {
+      const p = presets[name] || {};
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = "/connect";
+      form.className = "conn-menu-row";
+      const fields = {
+        label: name,
+        dbType: p.dbType || "postgres",
+        dsn: p.dsn || "",
+        host: p.host || "",
+        port: p.port || "",
+        dbName: p.dbName || "",
+        user: p.user || "",
+        password: p.password || "",
+        ssl: p.ssl || "",
+      };
+      Object.entries(fields).forEach(([k, v]) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = k;
+        input.value = v;
+        form.appendChild(input);
+      });
+      const btn = document.createElement("button");
+      btn.type = "submit";
+      btn.className = "conn-menu-btn";
+      btn.disabled = !p.password && !p.dsn;
+      btn.innerHTML =
+        `<span class="conn-dot ${escapeHTML(p.dbType || "postgres")}"></span>` +
+        `<div class="conn-menu-text"><strong>${escapeHTML(name)}</strong>` +
+        `<span class="muted small">${escapeHTML(p.dbName || p.dsn || "open preset")}</span></div>` +
+        (btn.disabled ? '<span class="muted small">needs secret</span>' : "");
+      form.appendChild(btn);
+      list.appendChild(form);
     });
   }
 
@@ -652,6 +771,7 @@
     modal: { table: "", limit: 50, offset: 0 },
     peek: new Set(),
     schemaColumns: {},
+    connections: [],
   };
 
   function setupWorkspace() {
@@ -672,6 +792,7 @@
         document.querySelectorAll(".ws-mode-pill").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
         ws.mode = b.dataset.mode;
+        updateCloneControls();
         recomputeAuto();
         refreshSelectionUI();
       });
@@ -710,7 +831,65 @@
     // Run
     document.getElementById("ws-run").addEventListener("click", runMode);
 
+    loadCloneTargets();
     fetch("/api/graph").then(r => r.json()).then(initGraph);
+  }
+
+  async function loadCloneTargets() {
+    const target = document.getElementById("cfg-clone-target");
+    if (!target) return;
+    ws.connections = await fetchConnections();
+    const active = ws.connections.find(c => c.active);
+    target.innerHTML = "";
+    const activeInfo = active?.info || {};
+    const activeKey = connectionKey(activeInfo);
+    const seen = new Set([activeKey]);
+    ws.connections.filter(c => !c.active && (!active || c.info.dbType === active.info.dbType)).forEach((c) => {
+      const key = connectionKey(c.info);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const opt = document.createElement("option");
+      opt.value = c.id;
+      opt.dataset.kind = "connection";
+      opt.textContent = connectionLabel(c.info);
+      target.appendChild(opt);
+    });
+    const presets = loadPresets();
+    Object.keys(presets).sort().forEach((name) => {
+      const p = presets[name] || {};
+      const info = presetConnectionInfo(name, p);
+      const key = connectionKey(info);
+      if (active && info.dbType !== activeInfo.dbType) return;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.dataset.kind = "preset";
+      opt.dataset.preset = name;
+      opt.textContent = connectionLabel(info);
+      if (!p.password && !p.dsn) {
+        opt.disabled = true;
+        opt.textContent += " (needs secret)";
+      }
+      target.appendChild(opt);
+    });
+    if (!target.options.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.dataset.kind = "empty";
+      opt.textContent = "connect another matching database";
+      target.appendChild(opt);
+    }
+    updateCloneControls();
+  }
+
+  function updateCloneControls() {
+    const clone = ws.mode === "clone";
+    const cloneCfg = document.getElementById("ws-clone-config");
+    if (cloneCfg) cloneCfg.hidden = !clone;
+    document.querySelectorAll(".ws-config, .ws-risk").forEach((el) => {
+      el.hidden = clone;
+    });
   }
 
   function activateTab(name) {
@@ -1182,7 +1361,8 @@
   }
 
   function defaultRows() {
-    return Number(document.getElementById("cfg-rows")?.value || 0) || 20;
+    const value = Number(document.getElementById("cfg-rows")?.value);
+    return Number.isFinite(value) && value >= 0 ? value : 20;
   }
 
   function selectedChildCount(tableName) {
@@ -1259,18 +1439,22 @@
     const effective = explicit + auto;
     const scope = document.getElementById("ws-scope");
     const run = document.getElementById("ws-run");
-    const modeLabel = ws.mode === "gaps" ? "Fill empty" : (ws.mode === "generate" ? "Generate" : "Seed");
+    const modeLabel = ws.mode === "gaps" ? "Fill empty" : (ws.mode === "generate" ? "Generate" : (ws.mode === "clone" ? "Clone schema" : "Seed"));
     if (scope) {
       const overrideCount = Object.keys(tableRowPayload()).length;
       const volumeText = overrideCount > 0
         ? ` · ${overrideCount} customized`
         : "";
-      scope.textContent = effective === 0
+      scope.textContent = ws.mode === "clone"
+        ? "Run scope: full source schema"
+        : effective === 0
         ? `Run scope: all ${total} tables`
         : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)${volumeText}`;
     }
     if (run) {
-      run.textContent = effective === 0 ? `${modeLabel} all tables` : `${modeLabel} ${effective} tables`;
+      run.textContent = ws.mode === "clone"
+        ? modeLabel
+        : effective === 0 ? `${modeLabel} all tables` : `${modeLabel} ${effective} tables`;
     }
   }
 
@@ -1559,6 +1743,9 @@
 
   // ── run dispatcher ────────────────────────────────────────────────────
   async function runMode() {
+    if (ws.mode === "clone") {
+      return runCloneSchema();
+    }
     const tables = [...ws.selected];
     const cfg = {
       rows: Number(document.getElementById("cfg-rows").value || 0),
@@ -1595,6 +1782,43 @@
     streamJob(j.id, j.name, {
       onLog: (line) => onLogPulse(line),
       onEnd: (job) => onJobEnd(job),
+    });
+  }
+
+  async function runCloneSchema() {
+    const target = document.getElementById("cfg-clone-target");
+    const selected = target?.selectedOptions?.[0];
+    const cfg = {
+      dropExisting: !!document.getElementById("cfg-clone-drop")?.checked,
+      dryRun: !!document.getElementById("cfg-clone-dryrun")?.checked,
+    };
+    if (selected?.dataset.kind === "connection") {
+      cfg.targetId = selected.value;
+    } else if (selected?.dataset.kind === "preset") {
+      const name = selected.dataset.preset || selected.value;
+      const p = loadPresets()[name] || {};
+      cfg.target = presetConnectionInfo(name, p);
+      cfg.targetDsn = p.dsn || "";
+      cfg.password = p.password || "";
+    }
+    activateTab("logs");
+    resetPhases();
+    document.getElementById("job-result").innerHTML = "";
+    const res = await fetch("/api/clone-schema", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      appendLog("ERROR: " + (j.error || res.statusText));
+      return;
+    }
+    streamJob(j.id, j.name, {
+      onEnd: (job) => {
+        const out = document.getElementById("job-result");
+        if (out) renderJobResult(out, job.result || {}, "clone-schema");
+      },
     });
   }
 
@@ -1656,6 +1880,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     setupConnectForm();
+    setupConnectionMenuPresets();
     setupRunForm();
     setupWorkspace();
     document.addEventListener("keydown", (ev) => {
