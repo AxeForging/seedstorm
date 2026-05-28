@@ -164,6 +164,114 @@ func assertHardSelfRefSeeded(t *testing.T, conn *sql.DB) {
 	}
 }
 
+func filterTables(tables []db.Table, names ...string) []db.Table {
+	want := make(map[string]bool, len(names))
+	for _, name := range names {
+		want[name] = true
+	}
+	var out []db.Table
+	for _, tbl := range tables {
+		if want[tbl.Name] {
+			out = append(out, tbl)
+		}
+	}
+	return out
+}
+
+func cloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
+	t.Helper()
+	if driver == postgresDriver {
+		execSQL(t, conn, `
+			DROP TABLE IF EXISTS clone_orders;
+			DROP TABLE IF EXISTS clone_users;
+			CREATE TABLE clone_users (
+				id integer PRIMARY KEY,
+				email varchar(255) NOT NULL UNIQUE,
+				status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
+			);
+			CREATE TABLE clone_orders (
+				id integer PRIMARY KEY,
+				user_id integer NOT NULL REFERENCES clone_users(id),
+				total integer NOT NULL CHECK (total BETWEEN 1 AND 500)
+			);
+		`)
+		return
+	}
+	execSQL(t, conn, `
+		SET FOREIGN_KEY_CHECKS=0;
+		DROP TABLE IF EXISTS clone_orders;
+		DROP TABLE IF EXISTS clone_users;
+		SET FOREIGN_KEY_CHECKS=1;
+		CREATE TABLE clone_users (
+			id integer PRIMARY KEY,
+			email varchar(255) NOT NULL UNIQUE,
+			status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
+		);
+		CREATE TABLE clone_orders (
+			id integer PRIMARY KEY,
+			user_id integer NOT NULL,
+			total integer NOT NULL CHECK (total BETWEEN 1 AND 500),
+			FOREIGN KEY (user_id) REFERENCES clone_users(id)
+		);
+	`)
+}
+
+func dropCloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
+	t.Helper()
+	if driver == postgresDriver {
+		execSQL(t, conn, `DROP TABLE IF EXISTS clone_orders; DROP TABLE IF EXISTS clone_users;`)
+		return
+	}
+	execSQL(t, conn, `SET FOREIGN_KEY_CHECKS=0; DROP TABLE IF EXISTS clone_orders; DROP TABLE IF EXISTS clone_users; SET FOREIGN_KEY_CHECKS=1;`)
+}
+
+func assertCloneSchemaCanSeed(t *testing.T, driver string, conn *sql.DB, tables []db.Table) {
+	t.Helper()
+	s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
+	for _, tbl := range tables {
+		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+		for _, col := range tbl.Columns {
+			sc := schema.Column{
+				Type:     col.Type,
+				PK:       col.IsPK,
+				Nullable: col.IsNullable,
+				Faker:    faker.MapColumnToFaker(driver, col),
+			}
+			if col.Name == "email" {
+				sc.Faker = "email"
+			}
+			if col.FK != nil {
+				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
+			}
+			st.Columns[col.Name] = sc
+		}
+		s.Tables[tbl.Name] = st
+	}
+	g := graph.Build(s)
+	order, err := g.TopologicalSort()
+	if err != nil {
+		t.Fatalf("topological sort cloned schema: %v", err)
+	}
+	data, err := faker.Generate(s, order, 5, 0, conn, driver)
+	if err != nil {
+		t.Fatalf("generate cloned schema data: %v", err)
+	}
+	for _, tableName := range order {
+		for _, row := range data[tableName] {
+			query, values := db.BuildInsert(tableName, row, driver)
+			if _, err := conn.ExecContext(context.Background(), query, values...); err != nil {
+				t.Fatalf("insert cloned table %s: %v", tableName, err)
+			}
+		}
+	}
+	if got := countRows(t, conn, "clone_users"); got == 0 {
+		t.Fatal("clone_users was not seeded")
+	}
+	if got := countRows(t, conn, "clone_orders"); got == 0 {
+		t.Fatal("clone_orders was not seeded")
+	}
+}
+
 // buildAndSeed runs the full introspect → build schema → generate → seed pipeline.
 // It prints a summary at the end (not per-row during insert).
 func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[string][]map[string]interface{} {
@@ -1465,6 +1573,40 @@ func TestPostgresIntegration(t *testing.T) {
 	})
 }
 
+func TestPostgresSchemaCloneDDL(t *testing.T) {
+	dsn := envOrDefault("POSTGRES_DSN", postgresDSN)
+	conn := openDB(t, postgresDriver, dsn)
+	defer conn.Close()
+	dropCloneSmokeSchema(t, postgresDriver, conn)
+	cloneSmokeSchema(t, postgresDriver, conn)
+
+	sourceTables, err := db.Introspect(postgresDriver, dsn)
+	if err != nil {
+		t.Fatalf("introspect source: %v", err)
+	}
+	sourceTables = filterTables(sourceTables, "clone_users", "clone_orders")
+	if len(sourceTables) != 2 {
+		t.Fatalf("source tables = %d, want 2", len(sourceTables))
+	}
+	stmts, err := db.BuildSchemaDDL(sourceTables, postgresDriver, true)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	if err := db.ExecSchemaDDL(context.Background(), conn, postgresDriver, stmts); err != nil {
+		t.Fatalf("ExecSchemaDDL: %v", err)
+	}
+	cloned, err := db.Introspect(postgresDriver, dsn)
+	if err != nil {
+		t.Fatalf("introspect cloned: %v", err)
+	}
+	cloned = filterTables(cloned, "clone_users", "clone_orders")
+	if len(cloned) != 2 {
+		t.Fatalf("cloned tables = %d, want 2", len(cloned))
+	}
+	assertCloneSchemaCanSeed(t, postgresDriver, conn, cloned)
+	dropCloneSmokeSchema(t, postgresDriver, conn)
+}
+
 // ── MySQL ──────────────────────────────────────────────────────────────────────
 
 func TestMySQLIntegration(t *testing.T) {
@@ -2665,6 +2807,40 @@ func TestMySQLIntegration(t *testing.T) {
 	t.Run("teardown", func(t *testing.T) {
 		execMySQLSchema(t, conn, "schema_mysql.sql") // re-run drops everything
 	})
+}
+
+func TestMySQLSchemaCloneDDL(t *testing.T) {
+	dsn := envOrDefault("MYSQL_DSN", mysqlDSN)
+	conn := openDB(t, mysqlDriver, dsn)
+	defer conn.Close()
+	dropCloneSmokeSchema(t, mysqlDriver, conn)
+	cloneSmokeSchema(t, mysqlDriver, conn)
+
+	sourceTables, err := db.Introspect(mysqlDriver, dsn)
+	if err != nil {
+		t.Fatalf("introspect source: %v", err)
+	}
+	sourceTables = filterTables(sourceTables, "clone_users", "clone_orders")
+	if len(sourceTables) != 2 {
+		t.Fatalf("source tables = %d, want 2", len(sourceTables))
+	}
+	stmts, err := db.BuildSchemaDDL(sourceTables, mysqlDriver, true)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	if err := db.ExecSchemaDDL(context.Background(), conn, mysqlDriver, stmts); err != nil {
+		t.Fatalf("ExecSchemaDDL: %v", err)
+	}
+	cloned, err := db.Introspect(mysqlDriver, dsn)
+	if err != nil {
+		t.Fatalf("introspect cloned: %v", err)
+	}
+	cloned = filterTables(cloned, "clone_users", "clone_orders")
+	if len(cloned) != 2 {
+		t.Fatalf("cloned tables = %d, want 2", len(cloned))
+	}
+	assertCloneSchemaCanSeed(t, mysqlDriver, conn, cloned)
+	dropCloneSmokeSchema(t, mysqlDriver, conn)
 }
 
 // ── Gap Analysis ──────────────────────────────────────────────────────────────

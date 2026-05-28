@@ -51,14 +51,107 @@ type SeedRequest struct {
 	TableRows    map[string]int `json:"tableRows,omitempty"`
 }
 
+type CloneSchemaRequest struct {
+	TargetID     string         `json:"targetId"`
+	Target       ConnectionInfo `json:"target,omitempty"`
+	TargetDSN    string         `json:"targetDsn,omitempty"`
+	Password     string         `json:"password,omitempty"`
+	DropExisting bool           `json:"dropExisting"`
+	DryRun       bool           `json:"dryRun"`
+}
+
+func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSchemaRequest, jc JobControl) (map[string]any, error) {
+	target, err := s.resolveCloneTarget(req, sess)
+	if err != nil {
+		return nil, err
+	}
+	if sess.DBType != target.DBType {
+		return nil, fmt.Errorf("schema clone requires matching database types: source %q target %q", sess.Info.DBType, target.Info.DBType)
+	}
+
+	jc.Phase("introspect")
+	tables, err := sess.RawTables()
+	if err != nil {
+		return nil, fmt.Errorf("source introspection: %w", err)
+	}
+	jc.Phase("plan")
+	stmts, err := db.BuildSchemaDDL(tables, sess.DBType, req.DropExisting)
+	if err != nil {
+		return nil, err
+	}
+	if req.DryRun {
+		return map[string]any{
+			"tables":     len(tables),
+			"statements": len(stmts),
+			"dryRun":     true,
+			"format":     "sql",
+			"output":     strings.Join(stmts, ";\n") + ";",
+		}, nil
+	}
+
+	if !req.DropExisting {
+		existing, err := target.RawTables()
+		if err != nil {
+			return nil, fmt.Errorf("target inspection: %w", err)
+		}
+		if len(existing) > 0 {
+			return nil, fmt.Errorf("target database is not empty (%d tables); enable drop existing to replace it", len(existing))
+		}
+	}
+	jc.Phase("create")
+	conn, err := target.OpenRunConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if err := db.ExecSchemaDDL(ctx, conn, target.DBType, stmts); err != nil {
+		return nil, err
+	}
+	target.SetSchema(nil)
+	jc.Phase("done")
+	return map[string]any{
+		"tables":     len(tables),
+		"statements": len(stmts),
+		"target":     target.Info.DBName,
+	}, nil
+}
+
+func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*Session, error) {
+	if req.TargetID != "" {
+		if req.TargetID == source.ID {
+			return nil, fmt.Errorf("target connection must be different from source")
+		}
+		target, ok := s.sessions.Get(req.TargetID)
+		if !ok {
+			return nil, fmt.Errorf("target connection not found")
+		}
+		return target, nil
+	}
+	if strings.TrimSpace(req.TargetDSN) != "" {
+		driver, dsn, info, err := buildRawDSN(req.Target.DBType, req.TargetDSN)
+		if err != nil {
+			return nil, err
+		}
+		info.Label = req.Target.Label
+		return s.sessions.OpenDSN(driver, dsn, info)
+	}
+	if req.Target.DBType == "" || req.Target.DBName == "" || req.Target.User == "" {
+		return nil, fmt.Errorf("target connection is required")
+	}
+	return s.sessions.Open(req.Target, req.Password)
+}
+
 func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc JobControl) (map[string]any, error) {
 	log := jobLogger(jc)
-	if req.Rows <= 0 {
+	tableRows := cleanTableRows(req.TableRows)
+	truncateOnly := req.Truncate && req.Rows == 0 && req.EnumRows == 0 && len(tableRows) == 0
+	if req.Rows < 0 || (req.Rows == 0 && !truncateOnly) {
 		req.Rows = 100
 	}
 	if req.BatchSize <= 0 {
 		req.BatchSize = 100
 	}
+	start := time.Now()
 	jc.Phase("build")
 	sc, err := sess.Schema(false)
 	if err != nil {
@@ -121,7 +214,33 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		log.Info().Msg("Truncate complete")
 	}
 
-	start := time.Now()
+	if truncateOnly {
+		tableCounts := make(map[string]int, len(targetTables))
+		for _, tableName := range targetTables {
+			tableCounts[tableName] = 0
+		}
+		elapsed := time.Since(start).Round(time.Millisecond)
+		jc.Phase("done")
+		log.Info().
+			Int("tables", len(targetTables)).
+			Dur("duration", elapsed).
+			Msg("Truncate-only seed run complete")
+		autoList := make([]string, 0, len(autoSelected))
+		for t := range autoSelected {
+			autoList = append(autoList, t)
+		}
+		return map[string]any{
+			"tables":      len(targetTables),
+			"totalRows":   0,
+			"durationMs":  elapsed.Milliseconds(),
+			"dryRun":      req.DryRun,
+			"truncated":   true,
+			"order":       targetTables,
+			"auto":        autoList,
+			"tableCounts": tableCounts,
+		}, nil
+	}
+
 	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Msg("Generating fake data")
 	connArg := conn
@@ -130,7 +249,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	}
 	// GenerateFiltered preloads PKs from allSorted so target tables can FK-ref
 	// already-populated parents; targetTables alone is what gets generated.
-	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, req.EnumRows, cleanTableRows(req.TableRows), connArg, sess.DBType, faker.GenerateOptions{
+	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, req.EnumRows, tableRows, connArg, sess.DBType, faker.GenerateOptions{
 		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 	})
 	if err != nil {

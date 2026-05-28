@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -49,4 +51,74 @@ func buildDSN(info ConnectionInfo, password string) (driver, dsn string, err err
 	default:
 		return "", "", errors.New("unsupported database type (use postgres or mysql)")
 	}
+}
+
+func buildRawDSN(dbType, raw string) (driver, dsn string, info ConnectionInfo, err error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", ConnectionInfo{}, errors.New("connection string is required")
+	}
+	switch strings.ToLower(dbType) {
+	case "postgres", "postgresql", "pgx":
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", "", ConnectionInfo{}, fmt.Errorf("parse postgres connection string: %w", err)
+		}
+		if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+			return "", "", ConnectionInfo{}, errors.New("postgres connection string must start with postgres:// or postgresql://")
+		}
+		port := 5432
+		if p := u.Port(); p != "" {
+			if n, err := strconv.Atoi(p); err == nil {
+				port = n
+			}
+		}
+		info := ConnectionInfo{
+			DBType: "postgres",
+			Host:   u.Hostname(),
+			Port:   port,
+			DBName: strings.TrimPrefix(u.Path, "/"),
+			User:   u.User.Username(),
+			SSL:    u.Query().Get("sslmode"),
+		}
+		if info.Host == "" {
+			info.Host = "localhost"
+		}
+		return "pgx", raw, info, nil
+	case "mysql":
+		info := parseMySQLDisplayInfo(raw)
+		return "mysql", ensureMySQLParams(raw), info, nil
+	default:
+		return "", "", ConnectionInfo{}, errors.New("unsupported database type (use postgres or mysql)")
+	}
+}
+
+var mysqlDSNRe = regexp.MustCompile(`^([^:]+)(?::[^@]*)?@tcp\(([^:)]+)(?::(\d+))?\)/([^?]+)`)
+
+func parseMySQLDisplayInfo(raw string) ConnectionInfo {
+	info := ConnectionInfo{DBType: "mysql", Host: "localhost", Port: 3306}
+	if m := mysqlDSNRe.FindStringSubmatch(raw); len(m) == 5 {
+		info.User = m[1]
+		info.Host = m[2]
+		if m[3] != "" {
+			if n, err := strconv.Atoi(m[3]); err == nil {
+				info.Port = n
+			}
+		}
+		info.DBName = m[4]
+	}
+	return info
+}
+
+func ensureMySQLParams(raw string) string {
+	if strings.Contains(raw, "?") {
+		if !strings.Contains(raw, "multiStatements=") {
+			raw += "&multiStatements=true"
+		}
+		if !strings.Contains(raw, "parseTime=") {
+			raw += "&parseTime=true"
+		}
+		return raw
+	}
+	return raw + "?parseTime=true&multiStatements=true"
 }

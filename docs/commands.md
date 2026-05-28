@@ -10,6 +10,7 @@ Every seedstorm command, with all flags and examples.
 - [`gaps`](#gaps) — find and fill empty tables
 - [`generate`](#generate) — generate data without a DB connection
 - [`export`](#export) — convert data between formats
+- [`clone-schema`](#clone-schema) — copy schema structure into another DB
 - [`serve`](#serve) — local web UI for every feature
 - [`version`](#version) / [`completion`](#completion)
 
@@ -271,6 +272,46 @@ seedstorm export --data data.yaml --format csv --out data.csv
 
 ---
 
+## `clone-schema`
+
+Copies schema-only table structure from a source database into a target database of the same engine. This is designed for local/test database setup before running `seed`; it recreates the metadata seedstorm understands: tables, columns, nullability, PKs, FKs, single-column UNIQUE constraints, enum values, and simple CHECK constraints.
+
+```bash
+seedstorm clone-schema \
+  --source-db postgres \
+  --source-dsn "postgres://user:pass@prod.example/app" \
+  --target-db postgres \
+  --target-dsn "postgres://seedstorm:seedstorm@localhost:5432/testdb"
+
+# Replace existing target tables
+seedstorm clone-schema \
+  --source-db mysql \
+  --source-dsn "user:pass@tcp(staging.example:3306)/app" \
+  --target-db mysql \
+  --target-dsn "seedstorm:seedstorm@tcp(localhost:3306)/testdb" \
+  --drop-existing
+
+# Preview generated DDL
+seedstorm clone-schema \
+  --source-db postgres \
+  --source-dsn "postgres://..." \
+  --target-db postgres \
+  --target-dsn "postgres://..." \
+  --dry-run
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source-db` / `$SEEDSTORM_SOURCE_DB` | `postgres` | Source database type |
+| `--source-dsn` / `$SEEDSTORM_SOURCE_DSN` | — | Source connection string (required) |
+| `--target-db` / `$SEEDSTORM_TARGET_DB` | `postgres` | Target database type |
+| `--target-dsn` / `$SEEDSTORM_TARGET_DSN` | — | Target connection string (required) |
+| `--drop-existing` | false | Drop target tables before creating the cloned schema |
+| `--dry-run` / `-n` | false | Print generated DDL, do not execute |
+| `--interactive` / `-i` | false | Confirm the clone in the terminal UI |
+
+---
+
 ## `serve`
 
 Starts a local web UI that exposes every seedstorm feature behind an interactive graph workspace. The UI is bundled into the binary via `go:embed` — no extra files to ship.
@@ -284,7 +325,8 @@ SEEDSTORM_ADDR=127.0.0.1:9000 seedstorm serve
 What the UI gives you:
 
 - **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. `Self-ref` controls bounded generated depth for self-referential FK chains. Live SSE log stream + status pill.
-- **Connection management** — multi-session: hold several DBs open in one browser and switch from a topbar dropdown. Saved connection presets in `localStorage` with optional password (eye-icon reveal, closed by default). Passwords are kept in process memory only on the server.
+- **Seed controls** — `Rows = 0` with `truncate` enabled is a truncate-only run for the selected scope, including auto-required parents. No rows are generated afterward.
+- **Connection management** — multi-session: hold several DBs open in one browser and switch from a topbar dropdown. Saved connection presets in `localStorage` with optional password (eye-icon reveal, closed by default). Passwords are kept in process memory only on the server. The workspace can clone schema from the active connection into another matching connected database.
 - **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
 
 | Flag | Default | Description |

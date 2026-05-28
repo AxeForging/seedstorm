@@ -19,7 +19,11 @@ type pageData struct {
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, data pageData) {
 	sess, _ := s.sessions.fromRequest(r)
 	data.Session = sess
-	data.Connections = s.sessions.All()
+	activeID := ""
+	if sess != nil {
+		activeID = sess.ID
+	}
+	data.Connections = dedupeConnections(s.sessions.All(), activeID)
 	if data.Title == "" {
 		data.Title = "seedstorm"
 	}

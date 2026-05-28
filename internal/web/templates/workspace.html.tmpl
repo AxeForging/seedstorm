@@ -116,13 +116,17 @@
           <strong>Generate</strong>
           <span>no DB write</span>
         </button>
+        <button class="ws-mode-pill" data-mode="clone" type="button">
+          <strong>Clone schema</strong>
+          <span>to another DB</span>
+        </button>
       </div>
     </div>
     <div class="ws-config ws-run-group">
       <span class="ws-run-label">Volume</span>
       <label class="field-tight">
         <span>Rows</span>
-        <input id="cfg-rows" type="number" value="20" min="1">
+        <input id="cfg-rows" type="number" value="20" min="0">
       </label>
       <label class="field-tight">
         <span>Batch</span>
@@ -147,6 +151,19 @@
       </label>
       <label class="field-tight inline">
         <input id="cfg-disablefk" type="checkbox"> disable FK
+      </label>
+    </div>
+    <div class="ws-run-group ws-clone" id="ws-clone-config" hidden>
+      <span class="ws-run-label">Clone target</span>
+      <label class="field-tight">
+        <span>Target</span>
+        <select id="cfg-clone-target"></select>
+      </label>
+      <label class="field-tight inline">
+        <input id="cfg-clone-drop" type="checkbox"> drop existing
+      </label>
+      <label class="field-tight inline">
+        <input id="cfg-clone-dryrun" type="checkbox"> dry-run
       </label>
     </div>
     <button class="btn-primary" id="ws-run">Run all tables</button>

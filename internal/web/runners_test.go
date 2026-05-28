@@ -198,6 +198,62 @@ func TestRunSeedUsesFreshConnectionForMutatingServeJob(t *testing.T) {
 	}
 }
 
+func TestRunSeedTruncateWithZeroRowsDoesNotReSeed(t *testing.T) {
+	registerServeRunnerTestDriver()
+	staleConn, err := sql.Open(serveRunnerTestDriverName, "stale")
+	if err != nil {
+		t.Fatalf("open stale conn: %v", err)
+	}
+	defer staleConn.Close()
+
+	oldOpen := sqlOpen
+	sqlOpen = func(driverName, dataSourceName string) (*sql.DB, error) {
+		if driverName != "pgx" || dataSourceName != "truncate-only" {
+			t.Fatalf("sqlOpen called with %s %s, want pgx truncate-only", driverName, dataSourceName)
+		}
+		return sql.Open(serveRunnerTestDriverName, "truncate-only")
+	}
+	defer func() { sqlOpen = oldOpen }()
+
+	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{
+		DBType: "pgx",
+		DSN:    "truncate-only",
+		conn:   staleConn,
+		schema: runnerRowCountSchema(),
+	}
+
+	result, err := srv.runSeed(context.Background(), sess, SeedRequest{
+		Rows:      0,
+		BatchSize: 0,
+		Truncate:  true,
+		Tables:    []string{"orders"},
+	}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runSeed truncate-only should not generate inserts: %v", err)
+	}
+	if got := result["totalRows"]; got != 0 {
+		t.Fatalf("totalRows = %v, want 0", got)
+	}
+	if got := result["truncated"]; got != true {
+		t.Fatalf("truncated = %v, want true", got)
+	}
+	counts, ok := result["tableCounts"].(map[string]int)
+	if !ok {
+		t.Fatalf("tableCounts type = %T, want map[string]int", result["tableCounts"])
+	}
+	if counts["users"] != 0 || counts["orders"] != 0 {
+		t.Fatalf("tableCounts = %+v, want users=0 orders=0", counts)
+	}
+	auto, ok := result["auto"].([]string)
+	if !ok || len(auto) != 1 || auto[0] != "users" {
+		t.Fatalf("auto = %#v, want users auto-selected for orders", result["auto"])
+	}
+}
+
 func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
 	srv, err := New(Options{Addr: "127.0.0.1:0"})
 	if err != nil {
@@ -278,6 +334,9 @@ func (c *serveRunnerTestConn) QueryContext(context.Context, string, []driver.Nam
 func (c *serveRunnerTestConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	if c.name == "stale" && strings.Contains(query, "INSERT") {
 		return nil, errors.New("cache lookup failed for type 34868 (SQLSTATE XX000)")
+	}
+	if c.name == "truncate-only" && strings.Contains(query, "INSERT") {
+		return nil, errors.New("truncate-only run should not insert rows")
 	}
 	return driver.RowsAffected(1), nil
 }

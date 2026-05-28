@@ -37,6 +37,7 @@
     </div>
 
     <form method="post" action="/connect" id="connect-form" class="connect-form">
+      <input name="label" id="connection-label" type="hidden">
       <label class="field">
         <span class="field-label">Driver</span>
         <select name="dbType" required>
@@ -52,6 +53,11 @@
           <option value="verify-ca">verify-ca</option>
           <option value="verify-full">verify-full</option>
         </select>
+      </label>
+
+      <label class="field span-2">
+        <span class="field-label">Connection string</span>
+        <input name="dsn" placeholder="optional: postgres://user:pass@host:5432/db or user:pass@tcp(host:3306)/db">
       </label>
 
       <label class="field">

@@ -73,8 +73,9 @@ seedstorm gaps \
 - **Enum coverage** — every enum value appears at least `--rows` times, independently per column
 - **AI enrichment** — Gemini rewrites faker hints for domain-meaningful data; supply `--prompt` for richer context
 - **Gap analysis** — `gaps` shows which tables are empty with row counts and FK context; `--fill` seeds only the empty ones
+- **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, then seed it with safe fake data
 - **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
-- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, live SSE job logs, multi-DB session switcher, and connection presets in `localStorage`
+- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs, schema clone between connected DBs, multi-DB session switcher, and connection presets in `localStorage`
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, or SQL without a live connection
 

@@ -103,9 +103,24 @@ body.modal-open { overflow: hidden; }
   text-align: left;
 }
 .conn-menu-btn:hover { background: var(--panel-2); border-color: var(--line); }
+.conn-menu-btn:disabled { cursor: default; opacity: 0.78; }
+.conn-menu-btn:disabled:hover { background: var(--panel-2); border-color: var(--accent); }
 .conn-menu-row.active .conn-menu-btn { background: var(--panel-2); border-color: var(--accent); }
 .conn-menu-text { display: flex; flex-direction: column; flex: 1; }
 .conn-menu-text strong { font-size: 13px; font-family: var(--mono); }
+.conn-preset-list {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.conn-menu-heading {
+  padding: 4px 8px 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
 .conn-menu-actions {
   display: flex; gap: 6px;
   border-top: 1px solid var(--line);
@@ -1530,7 +1545,7 @@ textarea { font-family: var(--mono); font-size: 12px; }
 }
 .ws-mode {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   flex: 1;
   min-width: 0;
@@ -1575,6 +1590,12 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .ws-config { flex-wrap: wrap; flex: 1; align-items: center; }
 .ws-risk {
   flex-wrap: wrap;
+}
+.ws-config[hidden],
+.ws-risk[hidden],
+.ws-clone[hidden],
+.ws-run-group[hidden] {
+  display: none !important;
 }
 .field-tight { display: flex; flex-direction: column; gap: 2px; }
 .field-tight > span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }

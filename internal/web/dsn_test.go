@@ -80,3 +80,35 @@ func TestBuildDSN_unsupported(t *testing.T) {
 		t.Fatal("expected error for unsupported db type")
 	}
 }
+
+func TestBuildRawDSN_postgresDisplayInfo(t *testing.T) {
+	driver, dsn, info, err := buildRawDSN("postgres", "postgres://alice:secret@db.example:5439/targetdb?sslmode=require")
+	if err != nil {
+		t.Fatalf("buildRawDSN: %v", err)
+	}
+	if driver != "pgx" {
+		t.Fatalf("driver = %q, want pgx", driver)
+	}
+	if dsn != "postgres://alice:secret@db.example:5439/targetdb?sslmode=require" {
+		t.Fatalf("dsn changed: %q", dsn)
+	}
+	if info.DBName != "targetdb" || info.User != "alice" || info.Host != "db.example" || info.Port != 5439 || info.SSL != "require" {
+		t.Fatalf("display info = %+v", info)
+	}
+}
+
+func TestBuildRawDSN_mysqlDisplayInfoAndParams(t *testing.T) {
+	driver, dsn, info, err := buildRawDSN("mysql", "bob:secret@tcp(mysql.example:3310)/targetdb")
+	if err != nil {
+		t.Fatalf("buildRawDSN: %v", err)
+	}
+	if driver != "mysql" {
+		t.Fatalf("driver = %q, want mysql", driver)
+	}
+	if !strings.Contains(dsn, "parseTime=true") || !strings.Contains(dsn, "multiStatements=true") {
+		t.Fatalf("mysql params not added: %q", dsn)
+	}
+	if info.DBName != "targetdb" || info.User != "bob" || info.Host != "mysql.example" || info.Port != 3310 {
+		t.Fatalf("display info = %+v", info)
+	}
+}

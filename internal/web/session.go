@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ var sqlOpen = sql.Open
 // ConnectionInfo is the non-secret view of an active connection, safe to
 // surface in templates and logs.
 type ConnectionInfo struct {
+	Label  string `json:"label,omitempty"`
 	DBType string `json:"dbType"`
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
@@ -63,7 +66,18 @@ func (r *SessionRegistry) Open(info ConnectionInfo, password string) (*Session, 
 	if err != nil {
 		return nil, err
 	}
+	return r.open(driver, dsn, info)
+}
 
+// OpenDSN dials an already-built DSN and registers a new session.
+func (r *SessionRegistry) OpenDSN(driver, dsn string, info ConnectionInfo) (*Session, error) {
+	return r.open(driver, dsn, info)
+}
+
+func (r *SessionRegistry) open(driver, dsn string, info ConnectionInfo) (*Session, error) {
+	if existing := r.findByDSN(driver, dsn); existing != nil {
+		return existing, nil
+	}
 	conn, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open connection: %w", err)
@@ -89,6 +103,17 @@ func (r *SessionRegistry) Open(info ConnectionInfo, password string) (*Session, 
 	return s, nil
 }
 
+func (r *SessionRegistry) findByDSN(driver, dsn string) *Session {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, s := range r.sessions {
+		if s.DBType == driver && s.DSN == dsn {
+			return s
+		}
+	}
+	return nil
+}
+
 // Get fetches a session by ID.
 func (r *SessionRegistry) Get(id string) (*Session, bool) {
 	r.mu.RLock()
@@ -111,6 +136,37 @@ func (r *SessionRegistry) All() []*Session {
 				out[i], out[j] = out[j], out[i]
 			}
 		}
+	}
+	return out
+}
+
+func sessionConnectionKey(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	info := s.Info
+	return strings.Join([]string{
+		strings.ToLower(info.DBType),
+		strings.ToLower(info.Host),
+		strconv.Itoa(info.Port),
+		info.DBName,
+		info.User,
+	}, "|")
+}
+
+func dedupeConnections(conns []*Session, activeID string) []*Session {
+	seen := make(map[string]int, len(conns))
+	out := make([]*Session, 0, len(conns))
+	for _, sess := range conns {
+		key := sessionConnectionKey(sess)
+		if idx, ok := seen[key]; ok {
+			if sess.ID == activeID && out[idx].ID != activeID {
+				out[idx] = sess
+			}
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, sess)
 	}
 	return out
 }

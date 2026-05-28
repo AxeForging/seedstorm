@@ -118,9 +118,9 @@ All tests run automatically on every PR via GitHub Actions (`.github/workflows/p
 | `validate` | Directory/file structure via structlint |
 | `test` | `go test ./...` + `make build` |
 | `lint` | `golangci-lint` |
-| `integration` | Full 29-table suite on Postgres 15 + MySQL 8 |
+| `integration` | Full 29-table suite plus schema-clone smoke tests on the configured Postgres/MySQL pair |
 
-The integration job in CI uses `--timeout 120s`. Use `300s` locally when running both engines back-to-back.
+The integration job in CI uses `--timeout 300s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
 
 ### Supported database versions
 

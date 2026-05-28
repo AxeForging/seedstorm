@@ -93,6 +93,15 @@ func TestNormalizeDBType(t *testing.T) {
 	}
 }
 
+func TestCommandsIncludesCloneSchema(t *testing.T) {
+	for _, cmd := range Commands() {
+		if cmd.Name == "clone-schema" {
+			return
+		}
+	}
+	t.Fatal("clone-schema command is not registered")
+}
+
 // --- Tests from batch-inserts branch ---
 
 func TestBuildInsert_Postgres(t *testing.T) {
