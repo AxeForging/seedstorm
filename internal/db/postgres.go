@@ -54,13 +54,23 @@ func introspectPostgres(db *sql.DB) ([]Table, error) {
 		return nil, err
 	}
 
+	indexMap, err := postgresIndexMap(db, uniqueMap)
+	if err != nil {
+		return nil, err
+	}
+
+	tableComments, columnComments, err := postgresCommentMaps(db)
+	if err != nil {
+		return nil, err
+	}
+
 	var tables []Table
 	for _, tableName := range tableNames {
-		cols, err := postgresColumns(db, tableName, fkMap, pkMap, uniqueMap, checkMap, rangeMap)
+		cols, err := postgresColumns(db, tableName, fkMap, pkMap, uniqueMap, checkMap, rangeMap, columnComments)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
-		tables = append(tables, Table{Name: tableName, Columns: cols})
+		tables = append(tables, Table{Name: tableName, Columns: cols, Indexes: indexMap[tableName], Comment: tableComments[tableName]})
 	}
 
 	return tables, nil
@@ -131,17 +141,24 @@ func postgresPKMap(db *sql.DB) (map[string]map[string]bool, error) {
 
 type rangeConstraint struct{ Min, Max int64 }
 
-func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool, uniqueMap map[string]map[string]bool, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint) ([]Column, error) {
+func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool, uniqueMap map[string]map[string]bool, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint, columnComments map[string]map[string]string) ([]Column, error) {
 	rows, err := db.Query(`
 		SELECT
-			column_name,
-			data_type,
-			udt_name,
-			is_nullable
-		FROM information_schema.columns
-		WHERE table_schema = 'public'
-		  AND table_name = $1
-		ORDER BY ordinal_position`, tableName)
+			c.column_name,
+			c.data_type,
+			c.udt_name,
+			c.is_nullable,
+			c.column_default,
+			c.is_generated,
+			c.generation_expression,
+			format_type(a.atttypid, a.atttypmod)
+		FROM information_schema.columns c
+		JOIN pg_class t ON t.relname = c.table_name
+		JOIN pg_namespace n ON n.oid = t.relnamespace AND n.nspname = c.table_schema
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name
+		WHERE c.table_schema = 'public'
+		  AND c.table_name = $1
+		ORDER BY c.ordinal_position`, tableName)
 	if err != nil {
 		return nil, err
 	}
@@ -149,8 +166,10 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 
 	var columns []Column
 	for rows.Next() {
-		var name, dataType, udtName, isNullable string
-		if err := rows.Scan(&name, &dataType, &udtName, &isNullable); err != nil {
+		var name, dataType, udtName, isNullable, isGenerated, ddlType string
+		var generationExpr sql.NullString
+		var defaultValue sql.NullString
+		if err := rows.Scan(&name, &dataType, &udtName, &isNullable, &defaultValue, &isGenerated, &generationExpr, &ddlType); err != nil {
 			return nil, err
 		}
 
@@ -163,9 +182,19 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 		col := Column{
 			Name:       name,
 			Type:       colType,
+			DDLType:    ddlType,
 			IsNullable: isNullable == "YES",
 			IsPK:       pkMap[tableName] != nil && pkMap[tableName][name],
 			Unique:     uniqueMap[tableName] != nil && uniqueMap[tableName][name],
+		}
+		if defaultValue.Valid && isGenerated != "ALWAYS" {
+			col.Default = defaultValue.String
+		}
+		if isGenerated == "ALWAYS" {
+			col.Generated = generationExpr.String
+		}
+		if columnComments[tableName] != nil {
+			col.Comment = columnComments[tableName][name]
 		}
 
 		// Resolve enum values for user-defined enum types
@@ -358,4 +387,95 @@ func postgresEnumValues(db *sql.DB, typeName string) ([]string, error) {
 		values = append(values, v)
 	}
 	return values, nil
+}
+
+func postgresIndexMap(db *sql.DB, uniqueMap map[string]map[string]bool) (map[string][]Index, error) {
+	rows, err := db.Query(`
+		SELECT
+			t.relname AS table_name,
+			i.relname AS index_name,
+			ix.indisunique,
+			string_agg(a.attname, ',' ORDER BY ord.ordinality) AS columns
+		FROM pg_index ix
+		JOIN pg_class t ON t.oid = ix.indrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_class i ON i.oid = ix.indexrelid
+		JOIN unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, ordinality) ON true
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ord.attnum
+		WHERE n.nspname = 'public'
+		  AND NOT ix.indisprimary
+		  AND ix.indpred IS NULL
+		  AND array_position(ix.indkey, 0) IS NULL
+		GROUP BY t.relname, i.relname, ix.indisunique`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query indexes: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string][]Index)
+	for rows.Next() {
+		var table, name string
+		var unique bool
+		var columns string
+		if err := rows.Scan(&table, &name, &unique, &columns); err != nil {
+			return nil, err
+		}
+		cols := strings.Split(strings.Trim(columns, "{}"), ",")
+		if len(cols) == 1 && unique && uniqueMap[table] != nil && uniqueMap[table][cols[0]] {
+			continue
+		}
+		m[table] = append(m[table], Index{Name: name, Columns: cols, Unique: unique})
+	}
+	return m, nil
+}
+
+func postgresCommentMaps(db *sql.DB) (map[string]string, map[string]map[string]string, error) {
+	tableRows, err := db.Query(`
+		SELECT c.relname, obj_description(c.oid, 'pg_class')
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public'
+		  AND c.relkind = 'r'
+		  AND obj_description(c.oid, 'pg_class') IS NOT NULL`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query table comments: %w", err)
+	}
+	defer tableRows.Close()
+
+	tableComments := make(map[string]string)
+	for tableRows.Next() {
+		var table, comment string
+		if err := tableRows.Scan(&table, &comment); err != nil {
+			return nil, nil, err
+		}
+		tableComments[table] = comment
+	}
+
+	columnRows, err := db.Query(`
+		SELECT c.relname, a.attname, col_description(c.oid, a.attnum)
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		JOIN pg_attribute a ON a.attrelid = c.oid
+		WHERE n.nspname = 'public'
+		  AND c.relkind = 'r'
+		  AND a.attnum > 0
+		  AND NOT a.attisdropped
+		  AND col_description(c.oid, a.attnum) IS NOT NULL`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query column comments: %w", err)
+	}
+	defer columnRows.Close()
+
+	columnComments := make(map[string]map[string]string)
+	for columnRows.Next() {
+		var table, column, comment string
+		if err := columnRows.Scan(&table, &column, &comment); err != nil {
+			return nil, nil, err
+		}
+		if columnComments[table] == nil {
+			columnComments[table] = make(map[string]string)
+		}
+		columnComments[table][column] = comment
+	}
+	return tableComments, columnComments, nil
 }

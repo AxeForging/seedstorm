@@ -67,10 +67,11 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 				}
 				for _, c := range t.Columns {
 					sc := schema.Column{
-						Type:     c.Type,
-						PK:       c.IsPK,
-						Nullable: c.IsNullable,
-						Faker:    faker.MapColumnToFaker(dbType, c),
+						Type:      c.Type,
+						PK:        c.IsPK,
+						Nullable:  c.IsNullable,
+						Generated: c.Generated != "",
+						Faker:     faker.MapColumnToFaker(dbType, c),
 					}
 					if c.FK != nil {
 						sc.FK = fmt.Sprintf("%s.%s", c.FK.TableName, c.FK.ColumnName)

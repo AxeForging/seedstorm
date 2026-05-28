@@ -227,10 +227,11 @@ func (s *Session) Schema(force bool) (*schema.Schema, error) {
 		st := schema.Table{Columns: make(map[string]schema.Column, len(t.Columns))}
 		for _, c := range t.Columns {
 			sc := schema.Column{
-				Type:     c.Type,
-				PK:       c.IsPK,
-				Nullable: c.IsNullable,
-				Faker:    faker.MapColumnToFaker(s.DBType, c),
+				Type:      c.Type,
+				PK:        c.IsPK,
+				Nullable:  c.IsNullable,
+				Generated: c.Generated != "",
+				Faker:     faker.MapColumnToFaker(s.DBType, c),
 			}
 			if c.FK != nil {
 				sc.FK = fmt.Sprintf("%s.%s", c.FK.TableName, c.FK.ColumnName)

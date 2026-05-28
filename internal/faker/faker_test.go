@@ -300,6 +300,22 @@ func TestGenerate_noEnumColumns_rowCountUnchanged(t *testing.T) {
 	}
 }
 
+func TestGenerate_skipsGeneratedColumns(t *testing.T) {
+	s := &schema.Schema{Tables: map[string]schema.Table{
+		"orders": {Columns: map[string]schema.Column{
+			"id":    {Type: "integer", PK: true},
+			"total": {Type: "integer", Generated: true, Faker: "number(1,10)"},
+		}},
+	}}
+	rows, err := Generate(s, []string{"orders"}, 1, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := rows["orders"][0]["total"]; ok {
+		t.Fatalf("generated column should not be present in insert rows: %#v", rows["orders"][0])
+	}
+}
+
 // ── generatePK ───────────────────────────────────────────────────────────────
 
 func TestGeneratePK_integerType(t *testing.T) {

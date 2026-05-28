@@ -149,3 +149,80 @@ func TestBuildSchemaDDL_mysqlColumnConstraintOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSchemaDDL_preservesDefaultsGeneratedIndexesAndComments(t *testing.T) {
+	tables := []Table{{
+		Name:    "orders",
+		Comment: "order table",
+		Columns: []Column{
+			{Name: "id", DDLType: "integer", Type: "integer", IsPK: true},
+			{Name: "status", DDLType: "varchar(20)", Type: "character varying", IsNullable: false, Default: "'new'::character varying", Comment: "workflow state"},
+			{Name: "subtotal", DDLType: "numeric(10,2)", Type: "numeric", IsNullable: false, Default: "0"},
+			{Name: "tax", DDLType: "numeric(10,2)", Type: "numeric", IsNullable: false, Default: "0"},
+			{Name: "total", DDLType: "numeric(10,2)", Type: "numeric", Generated: "(subtotal + tax)"},
+		},
+		Indexes: []Index{
+			{Name: "idx_orders_status_subtotal", Columns: []string{"status", "subtotal"}},
+			{Name: "uq_orders_status_total", Columns: []string{"status", "total"}, Unique: true},
+		},
+	}}
+	stmts, err := BuildSchemaDDL(tables, "pgx", false)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	ddl := strings.Join(stmts, "\n")
+	for _, want := range []string{
+		`"status" varchar(20) NOT NULL DEFAULT 'new'::character varying`,
+		`"subtotal" numeric(10,2) NOT NULL DEFAULT 0`,
+		`"total" numeric(10,2) GENERATED ALWAYS AS ((subtotal + tax)) STORED`,
+		`CREATE INDEX "idx_orders_status_subtotal" ON "orders" ("status", "subtotal")`,
+		`CREATE UNIQUE INDEX "uq_orders_status_total" ON "orders" ("status", "total")`,
+		`COMMENT ON TABLE "orders" IS 'order table'`,
+		`COMMENT ON COLUMN "orders"."status" IS 'workflow state'`,
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Fatalf("missing %q in:\n%s", want, ddl)
+		}
+	}
+}
+
+func TestBuildSchemaDDL_mysqlPreservesDefaultsGeneratedIndexesAndComments(t *testing.T) {
+	tables := []Table{{
+		Name:    "orders",
+		Comment: "order table",
+		Columns: []Column{
+			{Name: "id", DDLType: "int", Type: "integer", IsPK: true},
+			{Name: "status", DDLType: "varchar(20)", Type: "varchar", IsNullable: false, Default: "'new'", Comment: "workflow state"},
+			{Name: "subtotal", DDLType: "decimal(10,2)", Type: "decimal", IsNullable: false, Default: "0.00"},
+			{Name: "tax", DDLType: "decimal(10,2)", Type: "decimal", IsNullable: false, Default: "0.00"},
+			{Name: "total", DDLType: "decimal(10,2)", Type: "decimal", Generated: "`subtotal` + `tax`"},
+		},
+		Indexes: []Index{
+			{Name: "idx_orders_status_subtotal", Columns: []string{"status", "subtotal"}},
+		},
+	}}
+	stmts, err := BuildSchemaDDL(tables, "mysql", false)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	ddl := strings.Join(stmts, "\n")
+	for _, want := range []string{
+		"`status` varchar(20) NOT NULL DEFAULT 'new' COMMENT 'workflow state'",
+		"`subtotal` decimal(10,2) NOT NULL DEFAULT 0.00",
+		"`total` decimal(10,2) GENERATED ALWAYS AS (`subtotal` + `tax`) STORED",
+		"CREATE INDEX `idx_orders_status_subtotal` ON `orders` (`status`, `subtotal`)",
+		"COMMENT='order table'",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Fatalf("missing %q in:\n%s", want, ddl)
+		}
+	}
+}
+
+func TestMySQLGeneratedExpressionNormalizesEscapedStringLiterals(t *testing.T) {
+	got := mysqlGeneratedExpression("concat(`email`,_utf8mb4\\':\\',`status`)")
+	want := "concat(`email`,_utf8mb4':',`status`)"
+	if got != want {
+		t.Fatalf("mysqlGeneratedExpression() = %q, want %q", got, want)
+	}
+}
