@@ -177,6 +177,10 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 		if defaultValue.Valid && !strings.Contains(strings.ToLower(extra), "generated") {
 			col.Default = mysqlDefaultLiteral(defaultValue.String, dataType)
 		}
+		if strings.Contains(strings.ToLower(extra), "auto_increment") {
+			col.AutoIncrement = true
+			col.Default = ""
+		}
 		if strings.Contains(strings.ToLower(extra), "generated") {
 			col.Generated = mysqlGeneratedExpression(generationExpr)
 		}

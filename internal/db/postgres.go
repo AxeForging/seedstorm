@@ -187,7 +187,9 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 			IsPK:       pkMap[tableName] != nil && pkMap[tableName][name],
 			Unique:     uniqueMap[tableName] != nil && uniqueMap[tableName][name],
 		}
-		if defaultValue.Valid && isGenerated != "ALWAYS" {
+		if defaultValue.Valid && isPostgresSerialDefault(defaultValue.String) {
+			col.AutoIncrement = true
+		} else if defaultValue.Valid && isGenerated != "ALWAYS" {
 			col.Default = defaultValue.String
 		}
 		if isGenerated == "ALWAYS" {
@@ -387,6 +389,10 @@ func postgresEnumValues(db *sql.DB, typeName string) ([]string, error) {
 		values = append(values, v)
 	}
 	return values, nil
+}
+
+func isPostgresSerialDefault(value string) bool {
+	return strings.HasPrefix(value, "nextval(")
 }
 
 func postgresIndexMap(db *sql.DB, uniqueMap map[string]map[string]bool) (map[string][]Index, error) {
