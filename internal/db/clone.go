@@ -96,9 +96,7 @@ func BuildSchemaDDL(tables []Table, dbType string, dropExisting bool) ([]string,
 		}
 		stmts = append(stmts, stmt)
 	}
-	for _, stmt := range buildForeignKeyDDL(ordered, dbType) {
-		stmts = append(stmts, stmt)
-	}
+	stmts = append(stmts, buildForeignKeyDDL(ordered, dbType)...)
 	return stmts, nil
 }
 

@@ -125,3 +125,27 @@ func TestBuildSchemaDDL_postgresEnumValuesBecomeCheck(t *testing.T) {
 		t.Fatalf("Postgres enum values should be preserved as a CHECK over TEXT:\n%s", ddl)
 	}
 }
+
+func TestBuildSchemaDDL_mysqlColumnConstraintOrder(t *testing.T) {
+	tables := []Table{{
+		Name: "users",
+		Columns: []Column{
+			{Name: "id", Type: "integer", IsPK: true},
+			{Name: "email", Type: "varchar", IsNullable: false, Unique: true},
+			{Name: "status", Type: "varchar", IsNullable: false, CheckValues: []string{"active", "blocked"}},
+		},
+	}}
+	stmts, err := BuildSchemaDDL(tables, "mysql", false)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	ddl := strings.Join(stmts, "\n")
+	for _, want := range []string{
+		"`email` VARCHAR(255) NOT NULL UNIQUE",
+		"`status` VARCHAR(255) NOT NULL CHECK (`status` IN ('active', 'blocked'))",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Fatalf("missing %q in:\n%s", want, ddl)
+		}
+	}
+}

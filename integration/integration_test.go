@@ -186,13 +186,13 @@ func cloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
 			DROP TABLE IF EXISTS clone_users;
 			CREATE TABLE clone_users (
 				id integer PRIMARY KEY,
-				email varchar(255) UNIQUE NOT NULL,
-				status varchar(20) CHECK (status IN ('active', 'blocked')) NOT NULL
+				email varchar(255) NOT NULL UNIQUE,
+				status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
 			);
 			CREATE TABLE clone_orders (
 				id integer PRIMARY KEY,
 				user_id integer NOT NULL REFERENCES clone_users(id),
-				total integer CHECK (total BETWEEN 1 AND 500) NOT NULL
+				total integer NOT NULL CHECK (total BETWEEN 1 AND 500)
 			);
 		`)
 		return
@@ -204,13 +204,13 @@ func cloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
 		SET FOREIGN_KEY_CHECKS=1;
 		CREATE TABLE clone_users (
 			id integer PRIMARY KEY,
-			email varchar(255) UNIQUE NOT NULL,
-			status varchar(20) CHECK (status IN ('active', 'blocked')) NOT NULL
+			email varchar(255) NOT NULL UNIQUE,
+			status varchar(20) NOT NULL CHECK (status IN ('active', 'blocked'))
 		);
 		CREATE TABLE clone_orders (
 			id integer PRIMARY KEY,
 			user_id integer NOT NULL,
-			total integer CHECK (total BETWEEN 1 AND 500) NOT NULL,
+			total integer NOT NULL CHECK (total BETWEEN 1 AND 500),
 			FOREIGN KEY (user_id) REFERENCES clone_users(id)
 		);
 	`)
