@@ -396,23 +396,7 @@ func isPostgresSerialDefault(value string) bool {
 }
 
 func postgresIndexMap(db *sql.DB, uniqueMap map[string]map[string]bool) (map[string][]Index, error) {
-	rows, err := db.Query(`
-		SELECT
-			t.relname AS table_name,
-			i.relname AS index_name,
-			ix.indisunique,
-			string_agg(a.attname, ',' ORDER BY ord.ordinality) AS columns
-		FROM pg_index ix
-		JOIN pg_class t ON t.oid = ix.indrelid
-		JOIN pg_namespace n ON n.oid = t.relnamespace
-		JOIN pg_class i ON i.oid = ix.indexrelid
-		JOIN unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, ordinality) ON true
-		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ord.attnum
-		WHERE n.nspname = 'public'
-		  AND NOT ix.indisprimary
-		  AND ix.indpred IS NULL
-		  AND array_position(ix.indkey, 0) IS NULL
-		GROUP BY t.relname, i.relname, ix.indisunique`)
+	rows, err := db.Query(postgresIndexQuery())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query indexes: %w", err)
 	}
@@ -433,6 +417,30 @@ func postgresIndexMap(db *sql.DB, uniqueMap map[string]map[string]bool) (map[str
 		m[table] = append(m[table], Index{Name: name, Columns: cols, Unique: unique})
 	}
 	return m, nil
+}
+
+func postgresIndexQuery() string {
+	return `
+		SELECT
+			t.relname AS table_name,
+			i.relname AS index_name,
+			ix.indisunique,
+			string_agg(a.attname, ',' ORDER BY ord.ordinality) AS columns
+		FROM pg_index ix
+		JOIN pg_class t ON t.oid = ix.indrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_class i ON i.oid = ix.indexrelid
+		JOIN unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, ordinality) ON true
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ord.attnum
+		WHERE n.nspname = 'public'
+		  AND NOT ix.indisprimary
+		  AND ix.indpred IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM unnest(ix.indkey) AS key(attnum)
+		    WHERE key.attnum = 0
+		  )
+		GROUP BY t.relname, i.relname, ix.indisunique`
 }
 
 func postgresCommentMaps(db *sql.DB) (map[string]string, map[string]map[string]string, error) {

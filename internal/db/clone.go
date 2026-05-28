@@ -190,7 +190,7 @@ func buildColumnDDL(col Column, dbType string) string {
 		def += " NOT NULL"
 	}
 	if col.Default != "" && !col.AutoIncrement {
-		def += " DEFAULT " + col.Default
+		def += " DEFAULT " + cloneColumnDefault(col, dbType)
 	}
 	if col.Unique && !col.IsPK {
 		def += " UNIQUE"
@@ -281,18 +281,18 @@ func buildCommentDDL(tables []Table, dbType string) []string {
 }
 
 func cloneColumnType(col Column, dbType string) string {
+	if dbType == "mysql" && len(col.EnumValues) > 0 {
+		return "ENUM(" + quotedLiterals(col.EnumValues) + ")"
+	}
+	if dbType == "pgx" && len(col.EnumValues) > 0 {
+		return "TEXT"
+	}
 	if typ := strings.TrimSpace(col.DDLType); typ != "" {
 		return typ
 	}
 	t := strings.ToLower(strings.TrimSpace(col.Type))
 	if t == "" {
 		t = "text"
-	}
-	if dbType == "mysql" && len(col.EnumValues) > 0 {
-		return "ENUM(" + quotedLiterals(col.EnumValues) + ")"
-	}
-	if dbType == "pgx" && len(col.EnumValues) > 0 {
-		return "TEXT"
 	}
 	switch t {
 	case "character varying":
@@ -334,6 +334,15 @@ func cloneColumnType(col Column, dbType string) string {
 		return strings.ToUpper(t)
 	}
 	return "TEXT"
+}
+
+func cloneColumnDefault(col Column, dbType string) string {
+	if dbType == "pgx" && len(col.EnumValues) > 0 {
+		if idx := strings.Index(col.Default, "::"); idx > 0 {
+			return col.Default[:idx]
+		}
+	}
+	return col.Default
 }
 
 func quotedLiterals(values []string) string {

@@ -126,6 +126,33 @@ func TestBuildSchemaDDL_postgresEnumValuesBecomeCheck(t *testing.T) {
 	}
 }
 
+func TestBuildSchemaDDL_postgresEnumDDLTypeDoesNotRequireSourceEnumType(t *testing.T) {
+	tables := []Table{{
+		Name: "coupons",
+		Columns: []Column{
+			{Name: "id", DDLType: "integer", Type: "integer", IsPK: true},
+			{Name: "discount_type", DDLType: "discount_type", Type: "discount_type", EnumValues: []string{"percentage", "fixed"}, Default: "'percentage'::discount_type"},
+		},
+	}}
+	stmts, err := BuildSchemaDDL(tables, "pgx", false)
+	if err != nil {
+		t.Fatalf("BuildSchemaDDL: %v", err)
+	}
+	ddl := strings.Join(stmts, "\n")
+	if strings.Contains(ddl, `"discount_type" discount_type`) {
+		t.Fatalf("clone DDL should not require source enum type to exist:\n%s", ddl)
+	}
+	if !strings.Contains(ddl, `CHECK ("discount_type" IN ('percentage', 'fixed'))`) {
+		t.Fatalf("expected enum to clone as TEXT with CHECK:\n%s", ddl)
+	}
+	if strings.Contains(ddl, "::discount_type") {
+		t.Fatalf("clone DDL should not require source enum type in defaults:\n%s", ddl)
+	}
+	if !strings.Contains(ddl, `"discount_type" TEXT NOT NULL DEFAULT 'percentage' CHECK`) {
+		t.Fatalf("expected enum default cast to be stripped:\n%s", ddl)
+	}
+}
+
 func TestBuildSchemaDDL_mysqlColumnConstraintOrder(t *testing.T) {
 	tables := []Table{{
 		Name: "users",
@@ -193,6 +220,16 @@ func TestIsPostgresSerialDefault(t *testing.T) {
 	}
 	if isPostgresSerialDefault("'pending'::text") {
 		t.Fatal("ordinary string default should not be serial")
+	}
+}
+
+func TestPostgresIndexQueryAvoidsArrayPositionOnInt2Vector(t *testing.T) {
+	query := postgresIndexQuery()
+	if strings.Contains(query, "array_position(ix.indkey") {
+		t.Fatalf("Postgres index query must avoid array_position(int2vector, ...) for PG13 compatibility:\n%s", query)
+	}
+	if !strings.Contains(query, "FROM unnest(ix.indkey)") {
+		t.Fatalf("Postgres index query should filter expression indexes through unnest(ix.indkey):\n%s", query)
 	}
 }
 
