@@ -61,6 +61,7 @@ type CloneSchemaRequest struct {
 }
 
 func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSchemaRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
 	target, err := s.resolveCloneTarget(req, sess)
 	if err != nil {
 		return nil, err
@@ -70,15 +71,26 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 	}
 
 	jc.Phase("introspect")
+	log.Info().
+		Str("source", connectionLabelForLog(sess.Info)).
+		Str("target", connectionLabelForLog(target.Info)).
+		Msg("Inspecting source schema")
 	tables, err := sess.RawTables()
 	if err != nil {
 		return nil, fmt.Errorf("source introspection: %w", err)
 	}
+	log.Info().Int("tables", len(tables)).Msg("Source schema introspected")
 	jc.Phase("plan")
 	stmts, err := db.BuildSchemaDDL(tables, sess.DBType, req.DropExisting)
 	if err != nil {
 		return nil, err
 	}
+	log.Info().
+		Int("tables", len(tables)).
+		Int("statements", len(stmts)).
+		Bool("drop_existing", req.DropExisting).
+		Bool("dry_run", req.DryRun).
+		Msg("Clone DDL planned")
 	if req.DryRun {
 		return map[string]any{
 			"tables":     len(tables),
@@ -90,6 +102,8 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 	}
 
 	if !req.DropExisting {
+		jc.Phase("target")
+		log.Info().Msg("Checking target database is empty")
 		existing, err := target.RawTables()
 		if err != nil {
 			return nil, fmt.Errorf("target inspection: %w", err)
@@ -97,18 +111,30 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 		if len(existing) > 0 {
 			return nil, fmt.Errorf("target database is not empty (%d tables); enable drop existing to replace it", len(existing))
 		}
+		log.Info().Msg("Target database is empty")
 	}
 	jc.Phase("create")
+	log.Info().Int("statements", len(stmts)).Msg("Executing schema DDL")
 	conn, err := target.OpenRunConn(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
-	if err := db.ExecSchemaDDL(ctx, conn, target.DBType, stmts); err != nil {
+	if err := db.ExecSchemaDDLWithProgress(ctx, conn, target.DBType, stmts, func(done, total int, label string) {
+		if done == 1 || done == total || done%10 == 0 {
+			jc.Progress(done, total, label)
+		}
+	}); err != nil {
 		return nil, err
 	}
+	log.Info().Int("statements", len(stmts)).Msg("Schema DDL executed")
 	target.SetSchema(nil)
 	jc.Phase("done")
+	log.Info().
+		Int("tables", len(tables)).
+		Int("statements", len(stmts)).
+		Str("target", connectionLabelForLog(target.Info)).
+		Msg("Schema clone complete")
 	return map[string]any{
 		"tables":     len(tables),
 		"statements": len(stmts),
@@ -247,10 +273,20 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	if req.DryRun {
 		connArg = nil
 	}
+	warnings := make([]faker.GenerationWarning, 0)
 	// GenerateFiltered preloads PKs from allSorted so target tables can FK-ref
 	// already-populated parents; targetTables alone is what gets generated.
 	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, req.EnumRows, tableRows, connArg, sess.DBType, faker.GenerateOptions{
 		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+		OnWarning: func(w faker.GenerationWarning) {
+			warnings = append(warnings, w)
+			log.Warn().
+				Str("table", w.Table).
+				Int("requested", w.Requested).
+				Int("generated", w.Generated).
+				Str("reason", w.Reason).
+				Msg("Generation volume capped")
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("generation: %w", err)
@@ -302,6 +338,9 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		"order":       targetTables,
 		"auto":        autoList,
 		"tableCounts": tableCounts,
+	}
+	if len(warnings) > 0 {
+		result["warnings"] = generationWarningsView(warnings)
 	}
 	if req.DryRun {
 		result["output"] = dryRunSQL.String()
@@ -399,8 +438,18 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 
 	jc.Phase("generate")
 	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Msg("Generating data for empty tables")
+	warnings := make([]faker.GenerationWarning, 0)
 	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, gapTables, req.Rows, req.EnumRows, cleanTableRows(req.TableRows), conn, sess.DBType, faker.GenerateOptions{
 		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+		OnWarning: func(w faker.GenerationWarning) {
+			warnings = append(warnings, w)
+			log.Warn().
+				Str("table", w.Table).
+				Int("requested", w.Requested).
+				Int("generated", w.Generated).
+				Str("reason", w.Reason).
+				Msg("Generation volume capped")
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -427,6 +476,9 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		jc.Progress(idx+1, len(gapTables), tableName)
 	}
 	result["filled"] = totalRows
+	if len(warnings) > 0 {
+		result["warnings"] = generationWarningsView(warnings)
+	}
 	jc.Phase("done")
 	log.Info().Int("filled_rows", totalRows).Msg("Gap fill complete")
 	return result, nil
@@ -472,9 +524,19 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 
 	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
+	warnings := make([]faker.GenerationWarning, 0)
 	// GenerateFiltered is fine here too: with conn=nil it skips PK preload.
 	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, 0, cleanTableRows(req.TableRows), nil, sess.DBType, faker.GenerateOptions{
 		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+		OnWarning: func(w faker.GenerationWarning) {
+			warnings = append(warnings, w)
+			log.Warn().
+				Str("table", w.Table).
+				Int("requested", w.Requested).
+				Int("generated", w.Generated).
+				Str("reason", w.Reason).
+				Msg("Generation volume capped")
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -487,13 +549,30 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 	tableCounts, totalRows := tableRowCounts(data, targetTables)
 	jc.Phase("done")
 	log.Info().Int("tables", len(targetTables)).Str("format", req.Format).Msg("Generation complete")
-	return map[string]any{
+	result := map[string]any{
 		"output":      output,
 		"format":      req.Format,
 		"tables":      targetTables,
 		"tableCounts": tableCounts,
 		"totalRows":   totalRows,
-	}, nil
+	}
+	if len(warnings) > 0 {
+		result["warnings"] = generationWarningsView(warnings)
+	}
+	return result, nil
+}
+
+func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any {
+	out := make([]map[string]any, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, map[string]any{
+			"table":     w.Table,
+			"requested": w.Requested,
+			"generated": w.Generated,
+			"reason":    w.Reason,
+		})
+	}
+	return out
 }
 
 func tableRowCounts(data map[string][]map[string]any, sortedTables []string) (map[string]int, int) {
@@ -555,6 +634,24 @@ func encodeData(data map[string][]map[string]any, sortedTables []string, format,
 		}
 		return string(b), nil
 	}
+}
+
+func connectionLabelForLog(info ConnectionInfo) string {
+	name := info.Label
+	if name == "" {
+		name = info.DBName
+	}
+	if name == "" {
+		name = "database"
+	}
+	host := info.Host
+	if host == "" {
+		host = "connection"
+	}
+	if info.Port > 0 {
+		return fmt.Sprintf("%s @ %s:%d", name, host, info.Port)
+	}
+	return fmt.Sprintf("%s @ %s", name, host)
 }
 
 // EnrichRequest mirrors the enrich CLI flags.

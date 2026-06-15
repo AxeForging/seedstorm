@@ -35,13 +35,37 @@ func MapColumnToFaker(dbType string, col db.Column) string {
 		return "uuid"
 	}
 
-	// 6. Semantic mapping based on column name
+	// 6. Strict scalar DB types should not be overridden by semantic names.
+	if m := strictTypeMapper(dbType, col.Type); m != "" {
+		return m
+	}
+
+	// 7. Semantic mapping based on column name
 	if m := semanticMapper(col.Name); m != "" {
 		return m
 	}
 
-	// 7. Fall back to type-based mapping
+	// 8. Fall back to type-based mapping
 	return typeMapper(dbType, col.Type)
+}
+
+func strictTypeMapper(dbType, colType string) string {
+	t := strings.ToLower(colType)
+	switch dbType {
+	case "mysql":
+		switch t {
+		case "bit", "tinyint", "bool", "boolean", "date", "time", "datetime", "timestamp", "json":
+			return mysqlTypeMapper(t)
+		}
+	case "pgx":
+		switch t {
+		case "boolean", "bool", "date", "time", "time without time zone", "time with time zone",
+			"timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz",
+			"json", "jsonb", "uuid":
+			return postgresTypeMapper(t)
+		}
+	}
+	return ""
 }
 
 func semanticMapper(name string) string {
@@ -71,6 +95,12 @@ func semanticMapper(name string) string {
 		return "state"
 	case n == "url" || n == "website" || strings.HasSuffix(n, "_url"):
 		return "url"
+	case n == "date" || strings.HasSuffix(n, "_date") || n == "day" || strings.HasSuffix(n, "_day"):
+		return "date"
+	case n == "time" || strings.HasSuffix(n, "_time"):
+		return "time"
+	case n == "datetime" || n == "timestamp" || n == "created_at" || n == "updated_at" || strings.HasSuffix(n, "_at"):
+		return "datetime"
 	case n == "title" || strings.HasSuffix(n, "_title"):
 		return "sentence"
 	case n == "description" || n == "bio" || n == "summary" || n == "notes":
@@ -118,6 +148,8 @@ func typeMapper(dbType, colType string) string {
 
 func mysqlTypeMapper(t string) string {
 	switch {
+	case t == "bit":
+		return "bool"
 	case t == "tinyint" || t == "bool" || t == "boolean":
 		return "bool"
 	case t == "tinyint" && strings.Contains(t, "(1)"):

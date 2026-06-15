@@ -63,7 +63,9 @@ CREATE TYPE return_status   AS ENUM ('pending','approved','rejected','refunded')
 CREATE TABLE brands (
     id      SERIAL PRIMARY KEY,
     name    VARCHAR(100) NOT NULL,
-    country VARCHAR(100),
+    country VARCHAR(2),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    total   DATE,
     website VARCHAR(255)
 );
 

@@ -19,6 +19,14 @@ const DefaultSelfRefDepth = 2
 
 type GenerateOptions struct {
 	SelfRefDepth int
+	OnWarning    func(GenerationWarning)
+}
+
+type GenerationWarning struct {
+	Table     string
+	Requested int
+	Generated int
+	Reason    string
 }
 
 func DefaultGenerateOptions() GenerateOptions {
@@ -91,6 +99,17 @@ func GenerateFilteredWithOptions(s *schema.Schema, allTables, targetTables []str
 		if enumCol != "" && enumRows > 0 && !hasRowOverride {
 			if err := generateEnumRows(data, generatedPKs, table, tableName, enumCol, enumVals, enumRows); err != nil {
 				return nil, fmt.Errorf("table %s: %w", tableName, err)
+			}
+		} else if generated, ok, err := generateCompositeFKPKRows(data, generatedPKs, table, tableName, tableRowCount); err != nil {
+			return nil, fmt.Errorf("table %s: %w", tableName, err)
+		} else if ok {
+			if generated < tableRowCount && opts.OnWarning != nil {
+				opts.OnWarning(GenerationWarning{
+					Table:     tableName,
+					Requested: tableRowCount,
+					Generated: generated,
+					Reason:    "finite FK primary-key combinations",
+				})
 			}
 		} else {
 			if err := generateStandardRows(data, generatedPKs, table, tableName, tableRowCount); err != nil {
@@ -189,9 +208,13 @@ const maxEnumTopUpValues = 12
 func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int) error {
 	// Seed seenKeys from already-generated rows so top-up rows don't collide on
 	// composite PKs (e.g., junction tables that also carry an enum column).
-	seenKeys := make(map[string]bool, len(data[tableName]))
-	for _, row := range data[tableName] {
-		seenKeys[compositePKKey(row, table)] = true
+	enforceUniquePK := pkColumnCount(table) > 0
+	seenKeys := make(map[string]bool)
+	if enforceUniquePK {
+		seenKeys = make(map[string]bool, len(data[tableName]))
+		for _, row := range data[tableName] {
+			seenKeys[compositePKKey(row, table)] = true
+		}
 	}
 
 	for colName, vals := range enumCols {
@@ -217,8 +240,10 @@ func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs ma
 						return err
 					}
 					key := compositePKKey(row, table)
-					if !seenKeys[key] {
-						seenKeys[key] = true
+					if !enforceUniquePK || !seenKeys[key] {
+						if enforceUniquePK {
+							seenKeys[key] = true
+						}
 						generated = true
 						break
 					}
@@ -237,6 +262,7 @@ func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs ma
 
 func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int) error {
 	seenKeys := make(map[string]bool)
+	enforceUniquePK := pkColumnCount(table) > 0
 	for _, enumVal := range enumVals {
 		v := enumVal
 		for i := 0; i < enumRows; i++ {
@@ -249,8 +275,10 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 					return err
 				}
 				key := compositePKKey(row, table)
-				if !seenKeys[key] {
-					seenKeys[key] = true
+				if !enforceUniquePK || !seenKeys[key] {
+					if enforceUniquePK {
+						seenKeys[key] = true
+					}
 					generated = true
 					break
 				}
@@ -267,6 +295,7 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 
 func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int) error {
 	seenKeys := make(map[string]bool) // guards composite PK uniqueness
+	enforceUniquePK := pkColumnCount(table) > 0
 	for i := 0; i < rows; i++ {
 		var row map[string]interface{}
 		generated := false
@@ -277,8 +306,10 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 				return err
 			}
 			key := compositePKKey(row, table)
-			if !seenKeys[key] {
-				seenKeys[key] = true
+			if !enforceUniquePK || !seenKeys[key] {
+				if enforceUniquePK {
+					seenKeys[key] = true
+				}
 				generated = true
 				break
 			}
@@ -292,6 +323,81 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 		data[tableName] = append(data[tableName], row)
 	}
 	return nil
+}
+
+func pkColumnCount(table schema.Table) int {
+	count := 0
+	for _, col := range table.Columns {
+		if col.PK {
+			count++
+		}
+	}
+	return count
+}
+
+// generateCompositeFKPKRows deterministically generates rows for tables whose
+// whole primary key is composed of FK columns. This covers both many-to-many
+// junction tables and one-to-one identifying tables where the PK is also an FK.
+// Random retries can exhaust quickly when the parent pools are small;
+// enumerating combinations avoids false failures and caps impossible requests
+// to the available pool.
+func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int) (int, bool, error) {
+	pkCols := make([]string, 0)
+	for colName, col := range table.Columns {
+		if col.PK {
+			pkCols = append(pkCols, colName)
+		}
+	}
+	if len(pkCols) == 0 {
+		return 0, false, nil
+	}
+	sort.Strings(pkCols)
+
+	pools := make([][]interface{}, 0, len(pkCols))
+	for _, colName := range pkCols {
+		col := table.Columns[colName]
+		fkTable, _ := splitFK(col.FK)
+		if fkTable == "" {
+			return 0, false, nil
+		}
+		pool := generatedPKs[fkTable]
+		if len(pool) == 0 {
+			if col.Nullable {
+				return 0, false, nil
+			}
+			return 0, true, fmt.Errorf("column %s: no PKs available for FK table %s", colName, fkTable)
+		}
+		pools = append(pools, pool)
+	}
+
+	capacity := 1
+	for _, pool := range pools {
+		if rows > 0 && capacity > rows/len(pool) {
+			capacity = rows
+			break
+		}
+		capacity *= len(pool)
+	}
+	limit := rows
+	if capacity < limit {
+		limit = capacity
+	}
+
+	for i := 0; i < limit; i++ {
+		overrides := make(map[string]interface{}, len(pkCols))
+		n := i
+		for colIdx, colName := range pkCols {
+			pool := pools[colIdx]
+			overrides[colName] = pool[n%len(pool)]
+			n /= len(pool)
+		}
+		row, err := generateRowWithOverrides(table, tableName, generatedPKs, nil, "", overrides)
+		if err != nil {
+			return len(data[tableName]), true, err
+		}
+		data[tableName] = append(data[tableName], row)
+	}
+	return limit, true, nil
 }
 
 // compositePKKey returns a deterministic string key for the composite PK values
@@ -325,6 +431,10 @@ func rollbackLastRowPKs(generatedPKs map[string][]interface{}, tableName string,
 }
 
 func generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
+	return generateRowWithOverrides(table, tableName, generatedPKs, enumVal, enumCol, nil)
+}
+
+func generateRowWithOverrides(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string, overrides map[string]interface{}) (map[string]interface{}, error) {
 	row := make(map[string]interface{})
 	var pksToAdd []interface{}
 
@@ -341,9 +451,13 @@ func generateRow(table schema.Table, tableName string, generatedPKs map[string][
 		if col.Generated {
 			continue
 		}
-		val, err := generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
-		if err != nil {
-			return nil, fmt.Errorf("column %s: %w", colName, err)
+		val, ok := overrides[colName]
+		if !ok {
+			var err error
+			val, err = generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
+			if err != nil {
+				return nil, fmt.Errorf("column %s: %w", colName, err)
+			}
 		}
 		row[colName] = val
 		if col.PK {
@@ -398,12 +512,15 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 	if val != nil && isStringColType(col.Type) {
 		switch v := val.(type) {
 		case int:
-			return fmt.Sprintf("%d", v), nil
+			return constrainStringValue(fmt.Sprintf("%d", v), col), nil
 		case int64:
-			return fmt.Sprintf("%d", v), nil
+			return constrainStringValue(fmt.Sprintf("%d", v), col), nil
 		case float64:
-			return fmt.Sprintf("%g", v), nil
+			return constrainStringValue(fmt.Sprintf("%g", v), col), nil
 		}
+	}
+	if s, ok := val.(string); ok {
+		return constrainStringValue(s, col), nil
 	}
 	return val, nil
 }
@@ -511,6 +628,39 @@ func isStringColType(colType string) bool {
 		t == "clob" || t == "tinytext" || t == "mediumtext" || t == "longtext"
 }
 
+func constrainStringValue(value string, col schema.Column) string {
+	maxLen := stringLengthLimit(col)
+	if maxLen <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxLen {
+		return value
+	}
+	return string(runes[:maxLen])
+}
+
+func stringLengthLimit(col schema.Column) int {
+	for _, typ := range []string{col.DDLType, col.Type} {
+		if n := parseStringLength(typ); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func parseStringLength(colType string) int {
+	m := reStringLength.FindStringSubmatch(strings.ToLower(strings.TrimSpace(colType)))
+	if len(m) != 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
 // knownFakers is the set of valid bare faker function names (no args).
 var knownFakers = map[string]bool{
 	"name": true, "firstname": true, "lastname": true, "username": true,
@@ -546,8 +696,9 @@ func ValidFaker(faker string) bool {
 }
 
 var (
-	reParens = regexp.MustCompile(`\((.+)\)`)
-	reArgs   = regexp.MustCompile(`^(\w+)\((.*)\)$`)
+	reParens       = regexp.MustCompile(`\((.+)\)`)
+	reArgs         = regexp.MustCompile(`^(\w+)\((.*)\)$`)
+	reStringLength = regexp.MustCompile(`^(?:varchar|char|character varying|character)\((\d+)\)$`)
 )
 
 func generate(fakerStr string) (interface{}, error) {

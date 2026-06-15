@@ -249,6 +249,7 @@ func assertCloneSchemaCanSeed(t *testing.T, driver string, conn *sql.DB, tables 
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
 				Type:      col.Type,
+				DDLType:   col.DDLType,
 				PK:        col.IsPK,
 				Nullable:  col.IsNullable,
 				Generated: col.Generated != "",
@@ -384,6 +385,7 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
 				Type:      col.Type,
+				DDLType:   col.DDLType,
 				PK:        col.IsPK,
 				Nullable:  col.IsNullable,
 				Generated: col.Generated != "",
@@ -1116,6 +1118,42 @@ func TestPostgresIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("value constraints: short varchar values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE country IS NOT NULL AND char_length(country) > 2`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("length constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with country length > 2", bad)
+		}
+	})
+
+	t.Run("value constraints: boolean values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE enabled NOT IN (TRUE, FALSE)`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("boolean constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with invalid boolean values", bad)
+		}
+	})
+
+	t.Run("value constraints: date values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE total IS NOT NULL AND total::text !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("date constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with invalid date values", bad)
+		}
+	})
+
 	// ── FK discovery subtest ────────────────────────────────────────────────────
 
 	t.Run("FK discovery: all relationships detected", func(t *testing.T) {
@@ -1600,7 +1638,7 @@ func TestPostgresIntegration(t *testing.T) {
 		for _, tbl := range tables {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
-				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
+				sc := schema.Column{Type: col.Type, DDLType: col.DDLType, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
 				}
@@ -2363,6 +2401,42 @@ func TestMySQLIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("value constraints: short varchar values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE country IS NOT NULL AND CHAR_LENGTH(country) > 2`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("length constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with country length > 2", bad)
+		}
+	})
+
+	t.Run("value constraints: bit boolean values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE enabled + 0 NOT IN (0, 1)`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("bit boolean constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with invalid bit boolean values", bad)
+		}
+	})
+
+	t.Run("value constraints: date values fit", func(t *testing.T) {
+		var bad int
+		err := conn.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM brands WHERE total IS NOT NULL AND CAST(total AS CHAR) NOT REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`).Scan(&bad)
+		if err != nil {
+			t.Fatalf("date constraint check: %v", err)
+		}
+		if bad > 0 {
+			t.Errorf("found %d rows with invalid date values", bad)
+		}
+	})
+
 	// ── FK discovery subtest ────────────────────────────────────────────────────
 
 	t.Run("FK discovery: all relationships detected", func(t *testing.T) {
@@ -2837,7 +2911,7 @@ func TestMySQLIntegration(t *testing.T) {
 		for _, tbl := range tables {
 			st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
 			for _, col := range tbl.Columns {
-				sc := schema.Column{Type: col.Type, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
+				sc := schema.Column{Type: col.Type, DDLType: col.DDLType, PK: col.IsPK, Nullable: col.IsNullable, Generated: col.Generated != ""}
 				if col.FK != nil {
 					sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
 				}
@@ -2977,6 +3051,7 @@ func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
 		for _, col := range tbl.Columns {
 			sc := schema.Column{
 				Type:      col.Type,
+				DDLType:   col.DDLType,
 				PK:        col.IsPK,
 				Nullable:  col.IsNullable,
 				Generated: col.Generated != "",
@@ -3097,6 +3172,7 @@ func TestPostgresGaps(t *testing.T) {
 			for _, col := range tbl.Columns {
 				sc := schema.Column{
 					Type:      col.Type,
+					DDLType:   col.DDLType,
 					PK:        col.IsPK,
 					Nullable:  col.IsNullable,
 					Generated: col.Generated != "",
@@ -3282,6 +3358,7 @@ func TestMySQLGaps(t *testing.T) {
 			for _, col := range tbl.Columns {
 				sc := schema.Column{
 					Type:      col.Type,
+					DDLType:   col.DDLType,
 					PK:        col.IsPK,
 					Nullable:  col.IsNullable,
 					Generated: col.Generated != "",

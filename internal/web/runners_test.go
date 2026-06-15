@@ -282,6 +282,35 @@ func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
 	}
 }
 
+func TestRunGenerateReturnsCapacityWarnings(t *testing.T) {
+	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{
+		DBType: "pgx",
+		schema: manyToManyCapacitySchema(),
+	}
+
+	result, err := srv.runGenerate(context.Background(), sess, GenerateRequest{
+		Rows:   2,
+		Format: "yaml",
+		TableRows: map[string]int{
+			"entity_links": 10,
+		},
+	}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	warnings, ok := result["warnings"].([]map[string]any)
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one warning", result["warnings"])
+	}
+	if warnings[0]["table"] != "entity_links" || warnings[0]["requested"] != 10 || warnings[0]["generated"] != 4 {
+		t.Fatalf("warning = %#v, want entity_links requested=10 generated=4", warnings[0])
+	}
+}
+
 func containsAll(value string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(value, part) {
@@ -390,6 +419,29 @@ func hardSelfReferenceSchema() *schema.Schema {
 				Columns: map[string]schema.Column{
 					"id":         {Type: "integer", PK: true},
 					"manager_id": {Type: "integer", FK: "employees.id"},
+				},
+			},
+		},
+	}
+}
+
+func manyToManyCapacitySchema() *schema.Schema {
+	return &schema.Schema{
+		Tables: map[string]schema.Table{
+			"left_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"right_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"entity_links": {
+				Columns: map[string]schema.Column{
+					"left_id":  {Type: "integer", PK: true, FK: "left_entities.id"},
+					"right_id": {Type: "integer", PK: true, FK: "right_entities.id"},
 				},
 			},
 		},

@@ -467,6 +467,10 @@
       shell.appendChild(renderTableList("Empty tables", result.gapTables, "No empty tables found."));
     }
 
+    if (Array.isArray(result.warnings) && result.warnings.length > 0) {
+      shell.appendChild(renderWarnings(result.warnings));
+    }
+
     const output = typeof result.output === "string" ? result.output : (typeof result.yaml === "string" ? result.yaml : "");
     if (output) {
       shell.appendChild(renderOutputPanel(output, result, jobName));
@@ -490,6 +494,24 @@
     if (Array.isArray(result.auto) && result.auto.length > 0) items.push({ label: "auto-required", value: String(result.auto.length) });
     if (typeof result.durationMs === "number") items.push({ label: "duration", value: result.durationMs < 1000 ? `${result.durationMs}ms` : `${(result.durationMs / 1000).toFixed(1)}s` });
     return items;
+  }
+
+  function renderWarnings(warnings) {
+    const wrap = document.createElement("div");
+    wrap.className = "result-warnings";
+    const title = document.createElement("strong");
+    title.textContent = "Run notes";
+    wrap.appendChild(title);
+    warnings.forEach((w) => {
+      const row = document.createElement("p");
+      const table = w.table || "table";
+      const requested = typeof w.requested === "number" ? formatCount(w.requested) : "requested";
+      const generated = typeof w.generated === "number" ? formatCount(w.generated) : "generated";
+      const reason = w.reason || "generation limit";
+      row.textContent = `${table}: generated ${generated} of ${requested} rows because of ${reason}.`;
+      wrap.appendChild(row);
+    });
+    return wrap;
   }
 
   function renderTableList(title, tables, emptyText) {
@@ -832,7 +854,36 @@
     document.getElementById("ws-run").addEventListener("click", runMode);
 
     loadCloneTargets();
-    fetch("/api/graph").then(r => r.json()).then(initGraph);
+    loadGraph();
+  }
+
+  async function loadGraph() {
+    setGraphLoading("Loading schema", "Introspecting tables and relationships from the active connection.");
+    try {
+      const res = await fetch("/api/graph", { cache: "no-store" });
+      setGraphLoading("Loading schema", "Received schema response; parsing graph payload.");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      initGraph(data);
+    } catch (err) {
+      setGraphLoading("Graph failed", err.message || String(err), true);
+    }
+  }
+
+  function setGraphLoading(title, detail, failed) {
+    const box = document.getElementById("ws-graph-loading");
+    if (!box) return;
+    box.hidden = false;
+    box.dataset.state = failed ? "failed" : "loading";
+    const titleEl = box.querySelector(".ws-loading-title");
+    const detailEl = box.querySelector(".ws-loading-detail");
+    if (titleEl) titleEl.textContent = title;
+    if (detailEl) detailEl.textContent = detail || "";
+  }
+
+  function clearGraphLoading() {
+    const box = document.getElementById("ws-graph-loading");
+    if (box) box.hidden = true;
   }
 
   async function loadCloneTargets() {
@@ -902,6 +953,7 @@
   }
 
   function initGraph(data) {
+    setGraphLoading("Building graph", `${(data.nodes || []).length} tables and ${(data.edges || []).length} relationships loaded.`);
     ws.nodes = data.nodes || [];
     ws.edges = data.edges || [];
     // Compute hard FK parents per table (from non-nullable edges).
@@ -933,11 +985,12 @@
       })),
     ];
 
+    setGraphLoading("Rendering graph", "Creating nodes and relationships.");
     ws.cy = cytoscape({
       container: document.getElementById("cy"),
       elements,
       style: cyStyle(),
-      layout: dagreLayout(),
+      layout: { name: "preset" },
       wheelSensitivity: 0.3,
     });
 
@@ -961,6 +1014,13 @@
 
     document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
     applyEdgeRoute();
+    setGraphLoading("Laying out graph", "Positioning tables by dependency level.");
+    const layout = ws.cy.layout(dagreLayout());
+    layout.on("layoutstop", () => {
+      fitGraph();
+      clearGraphLoading();
+    });
+    layout.run();
     updateStats();
     refreshSelectionUI();
   }
@@ -1854,6 +1914,7 @@
 
   function refreshCounts() {
     if (!ws.cy) return;
+    setGraphLoading("Refreshing counts", "Reading row counts for every table.");
     fetch("/api/counts").then(r => r.json()).then((counts) => {
       ws.cy.batch(() => {
         ws.cy.nodes().forEach((n) => {
@@ -1875,6 +1936,9 @@
       updateStats();
       recomputeAuto();
       refreshSelectionUI();
+      clearGraphLoading();
+    }).catch((err) => {
+      setGraphLoading("Count refresh failed", err.message || String(err), true);
     });
   }
 

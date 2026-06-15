@@ -126,6 +126,69 @@ func TestMapColumnToFaker_MySQLUniqueGetsUUID(t *testing.T) {
 	}
 }
 
+func TestMapColumnToFaker_MySQLBitGetsBool(t *testing.T) {
+	col := db.Column{
+		Name:    "enabled",
+		Type:    "bit",
+		DDLType: "bit(1)",
+	}
+	got := MapColumnToFaker("mysql", col)
+	if got != "bool" {
+		t.Errorf("got %q, want %q", got, "bool")
+	}
+}
+
+func TestMapColumnToFaker_StrictTemporalTypeWinsOverSemanticName(t *testing.T) {
+	tests := []struct {
+		name   string
+		driver string
+		col    db.Column
+		want   string
+	}{
+		{
+			name:   "mysql date",
+			driver: "mysql",
+			col:    db.Column{Name: "total", Type: "date", DDLType: "date"},
+			want:   "date",
+		},
+		{
+			name:   "postgres timestamp",
+			driver: "pgx",
+			col:    db.Column{Name: "score", Type: "timestamp without time zone", DDLType: "timestamp without time zone"},
+			want:   "datetime",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MapColumnToFaker(tt.driver, tt.col)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMapColumnToFaker_SemanticTemporalNames(t *testing.T) {
+	tests := []struct {
+		name string
+		col  db.Column
+		want string
+	}{
+		{name: "date suffix", col: db.Column{Name: "completed_date", Type: "varchar"}, want: "date"},
+		{name: "day suffix", col: db.Column{Name: "business_day", Type: "varchar"}, want: "date"},
+		{name: "time suffix", col: db.Column{Name: "cutoff_time", Type: "varchar"}, want: "time"},
+		{name: "at suffix", col: db.Column{Name: "processed_at", Type: "varchar"}, want: "datetime"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MapColumnToFaker("mysql", tt.col)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMapColumnToFaker_CheckRangeGetsNumber(t *testing.T) {
 	min, max := int64(0), int64(5)
 	col := db.Column{

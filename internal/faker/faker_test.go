@@ -300,6 +300,26 @@ func TestGenerate_noEnumColumns_rowCountUnchanged(t *testing.T) {
 	}
 }
 
+func TestGenerate_noPrimaryKeyTableAllowsMultipleRows(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"counter_state": {
+				Columns: map[string]schema.Column{
+					"next_val": {Type: "bigint", Faker: "number(1,1000000)"},
+				},
+			},
+		},
+	}
+
+	data, err := Generate(s, []string{"counter_state"}, 25, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := len(data["counter_state"]); got != 25 {
+		t.Fatalf("counter_state rows = %d, want 25", got)
+	}
+}
+
 func TestGenerate_skipsGeneratedColumns(t *testing.T) {
 	s := &schema.Schema{Tables: map[string]schema.Table{
 		"orders": {Columns: map[string]schema.Column{
@@ -313,6 +333,150 @@ func TestGenerate_skipsGeneratedColumns(t *testing.T) {
 	}
 	if _, ok := rows["orders"][0]["total"]; ok {
 		t.Fatalf("generated column should not be present in insert rows: %#v", rows["orders"][0])
+	}
+}
+
+func TestGenerate_manyToManyCompositeFKPKEnumeratesUniquePairs(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"left_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"right_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"entity_links": {
+				Columns: map[string]schema.Column{
+					"left_id":  {Type: "integer", PK: true, FK: "left_entities.id"},
+					"right_id": {Type: "integer", PK: true, FK: "right_entities.id"},
+				},
+			},
+		},
+	}
+
+	data, err := Generate(s, []string{"left_entities", "right_entities", "entity_links"}, 3, 0, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	rows := data["entity_links"]
+	if got := len(rows); got != 3 {
+		t.Fatalf("entity_links rows = %d, want 3", got)
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		key := fmt.Sprintf("%v:%v", row["left_id"], row["right_id"])
+		if seen[key] {
+			t.Fatalf("duplicate entity_links PK pair %s in rows %#v", key, rows)
+		}
+		seen[key] = true
+	}
+}
+
+func TestGenerate_manyToManyCompositeFKPKCapsImpossibleVolume(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"left_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"right_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"entity_links": {
+				Columns: map[string]schema.Column{
+					"left_id":  {Type: "integer", PK: true, FK: "left_entities.id"},
+					"right_id": {Type: "integer", PK: true, FK: "right_entities.id"},
+				},
+			},
+		},
+	}
+	var warnings []GenerationWarning
+	data, err := GenerateFilteredWithOptions(s,
+		[]string{"left_entities", "right_entities", "entity_links"},
+		[]string{"left_entities", "right_entities", "entity_links"},
+		2,
+		0,
+		map[string]int{"entity_links": 10},
+		nil,
+		"pgx",
+		GenerateOptions{
+			SelfRefDepth: DefaultSelfRefDepth,
+			OnWarning: func(w GenerationWarning) {
+				warnings = append(warnings, w)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithOptions: %v", err)
+	}
+	if got := len(data["entity_links"]); got != 4 {
+		t.Fatalf("entity_links rows = %d, want capped capacity 4", got)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one capacity warning", warnings)
+	}
+	if warnings[0].Table != "entity_links" || warnings[0].Requested != 10 || warnings[0].Generated != 4 {
+		t.Fatalf("warning = %#v, want entity_links requested=10 generated=4", warnings[0])
+	}
+}
+
+func TestGenerate_singleFKPrimaryKeyCapsToParentPool(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"parent_entities": {
+				Columns: map[string]schema.Column{
+					"id": {Type: "integer", PK: true},
+				},
+			},
+			"identifying_children": {
+				Columns: map[string]schema.Column{
+					"parent_id": {Type: "integer", PK: true, FK: "parent_entities.id"},
+					"name":      {Type: "varchar", Faker: "word"},
+				},
+			},
+		},
+	}
+	var warnings []GenerationWarning
+	data, err := GenerateFilteredWithOptions(s,
+		[]string{"parent_entities", "identifying_children"},
+		[]string{"parent_entities", "identifying_children"},
+		2,
+		0,
+		map[string]int{"identifying_children": 5},
+		nil,
+		"pgx",
+		GenerateOptions{
+			SelfRefDepth: DefaultSelfRefDepth,
+			OnWarning: func(w GenerationWarning) {
+				warnings = append(warnings, w)
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("GenerateFilteredWithOptions: %v", err)
+	}
+	if got := len(data["identifying_children"]); got != 2 {
+		t.Fatalf("identifying_children rows = %d, want capped parent capacity 2", got)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one capacity warning", warnings)
+	}
+	if warnings[0].Table != "identifying_children" || warnings[0].Requested != 5 || warnings[0].Generated != 2 {
+		t.Fatalf("warning = %#v, want identifying_children requested=5 generated=2", warnings[0])
+	}
+	seen := map[interface{}]bool{}
+	for _, row := range data["identifying_children"] {
+		if seen[row["parent_id"]] {
+			t.Fatalf("duplicate identifying_children parent_id in rows %#v", data["identifying_children"])
+		}
+		seen[row["parent_id"]] = true
 	}
 }
 
@@ -501,6 +665,65 @@ func TestGenerate_numericFakers(t *testing.T) {
 	}
 	if n < 1 || n > 100 {
 		t.Errorf("number(1,100) = %d, want 1-100", n)
+	}
+}
+
+func TestGenerate_stringValueRespectsDDLLength(t *testing.T) {
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"short_text_rows": {
+				Columns: map[string]schema.Column{
+					"id":         {Type: "integer", PK: true},
+					"short_code": {Type: "varchar", DDLType: "varchar(2)", Faker: "country"},
+				},
+			},
+		},
+	}
+
+	data, err := Generate(s, []string{"short_text_rows"}, 20, 0, nil, "mysql")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for i, row := range data["short_text_rows"] {
+		got, ok := row["short_code"].(string)
+		if !ok {
+			t.Fatalf("row %d short_code type = %T, want string", i, row["short_code"])
+		}
+		if len([]rune(got)) > 2 {
+			t.Fatalf("row %d short_code length = %d, want <= 2: %q", i, len([]rune(got)), got)
+		}
+	}
+}
+
+func TestGenerate_stringValueRespectsTypeLength(t *testing.T) {
+	col := schema.Column{Type: "varchar(3)", Faker: "randomstring(alpha,beta)"}
+	pks := map[string][]interface{}{}
+	val, err := generateValue(col, "short_label", "short_text_rows", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := val.(string)
+	if !ok {
+		t.Fatalf("value type = %T, want string", val)
+	}
+	if len([]rune(got)) > 3 {
+		t.Fatalf("value length = %d, want <= 3: %q", len([]rune(got)), got)
+	}
+}
+
+func TestGenerate_numericStringCoercionRespectsLength(t *testing.T) {
+	col := schema.Column{Type: "varchar", DDLType: "varchar(2)", Faker: "number(1000,9999)"}
+	pks := map[string][]interface{}{}
+	val, err := generateValue(col, "short_number", "short_text_rows", pks, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := val.(string)
+	if !ok {
+		t.Fatalf("value type = %T, want string", val)
+	}
+	if len([]rune(got)) > 2 {
+		t.Fatalf("value length = %d, want <= 2: %q", len([]rune(got)), got)
 	}
 }
 

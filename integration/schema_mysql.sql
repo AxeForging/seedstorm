@@ -34,7 +34,9 @@ DROP TABLE IF EXISTS brands;
 CREATE TABLE brands (
     id      INT AUTO_INCREMENT PRIMARY KEY,
     name    VARCHAR(100) NOT NULL,
-    country VARCHAR(100),
+    country VARCHAR(2),
+    enabled BIT(1) NOT NULL DEFAULT b'1',
+    total   DATE,
     website VARCHAR(255)
 );
 

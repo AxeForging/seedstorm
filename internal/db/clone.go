@@ -104,31 +104,73 @@ func BuildSchemaDDL(tables []Table, dbType string, dropExisting bool) ([]string,
 
 // ExecSchemaDDL executes generated DDL in order.
 func ExecSchemaDDL(ctx context.Context, conn *sql.DB, dbType string, stmts []string) error {
+	return ExecSchemaDDLWithProgress(ctx, conn, dbType, stmts, nil)
+}
+
+func ExecSchemaDDLWithProgress(ctx context.Context, conn *sql.DB, dbType string, stmts []string, progress func(done, total int, label string)) error {
 	if len(stmts) == 0 {
 		return nil
+	}
+	emit := func(done int, stmt string) {
+		if progress == nil {
+			return
+		}
+		progress(done, len(stmts), ddlProgressLabel(stmt))
 	}
 	if dbType == "pgx" {
 		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin schema clone: %w", err)
 		}
-		for _, stmt := range stmts {
+		for i, stmt := range stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("execute DDL %q: %w", stmt, err)
 			}
+			emit(i+1, stmt)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit schema clone: %w", err)
 		}
 		return nil
 	}
-	for _, stmt := range stmts {
+	for i, stmt := range stmts {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("execute DDL %q: %w", stmt, err)
 		}
+		emit(i+1, stmt)
 	}
 	return nil
+}
+
+func ddlProgressLabel(stmt string) string {
+	stmt = strings.TrimSpace(stmt)
+	if stmt == "" {
+		return "DDL"
+	}
+	parts := strings.Fields(stmt)
+	if len(parts) == 0 {
+		return "DDL"
+	}
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "CREATE") && strings.EqualFold(parts[1], "TABLE") {
+		return "create " + strings.Trim(parts[2], "`\"")
+	}
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "ALTER") && strings.EqualFold(parts[1], "TABLE") {
+		return "fk " + strings.Trim(parts[2], "`\"")
+	}
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "DROP") && strings.EqualFold(parts[1], "TABLE") {
+		return "drop " + strings.Trim(parts[len(parts)-1], "`\"")
+	}
+	if len(parts) >= 3 && strings.EqualFold(parts[0], "CREATE") && strings.EqualFold(parts[1], "INDEX") {
+		return "index " + strings.Trim(parts[2], "`\"")
+	}
+	if len(parts) >= 4 && strings.EqualFold(parts[0], "CREATE") && strings.EqualFold(parts[1], "UNIQUE") && strings.EqualFold(parts[2], "INDEX") {
+		return "index " + strings.Trim(parts[3], "`\"")
+	}
+	if strings.EqualFold(parts[0], "COMMENT") {
+		return "comment"
+	}
+	return strings.ToLower(parts[0])
 }
 
 func introspectWithConn(conn *sql.DB, dbType string) ([]Table, error) {
