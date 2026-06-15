@@ -164,6 +164,130 @@ func assertHardSelfRefSeeded(t *testing.T, conn *sql.DB) {
 	}
 }
 
+// assertRegressionTablesSeeded checks the tables that cover previously-broken
+// type/PK seeding paths. The seeding step itself (buildAndSeed) fails loudly on
+// an invalid INSERT value; these assertions confirm the rows actually landed and
+// that the type-specific invariants hold.
+func assertRegressionTablesSeeded(t *testing.T, conn *sql.DB) {
+	t.Helper()
+
+	// external_refs: UNIQUE numeric column (external_order_id) must not be
+	// seeded with a uuid string, and big_amount NUMERIC(_,0) must not be
+	// seeded with a fractional value — both previously failed with truncation.
+	if n := countRows(t, conn, "external_refs"); n == 0 {
+		t.Error("external_refs has 0 rows — UNIQUE numeric / scale-0 decimal seeding regressed")
+	}
+	var total, distinct int
+	if err := conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*), COUNT(DISTINCT external_order_id) FROM external_refs`).Scan(&total, &distinct); err != nil {
+		t.Fatalf("external_refs uniqueness check: %v", err)
+	}
+	if total != distinct {
+		t.Errorf("external_refs.external_order_id: %d rows but only %d distinct — UNIQUE violated", total, distinct)
+	}
+
+	// Temporal primary keys (single-column DATE/TIME/DATETIME, and a composite
+	// FK+TIME) must be seeded with real temporal values, not sequential
+	// integers. A bad value like "1" would have failed the INSERT in
+	// buildAndSeed before reaching here; these row counts confirm the rows
+	// actually landed across both engines.
+	//   time_logs       — single-column DATE PK
+	//   time_marks      — single-column TIME PK
+	//   event_log       — single-column DATETIME/TIMESTAMP PK (time.Time value)
+	//   metric_snapshots/shift_schedule — composite FK + DATE/TIME PK
+	for _, tbl := range []string{"time_logs", "time_marks", "event_log", "metric_snapshots", "shift_schedule"} {
+		if n := countRows(t, conn, tbl); n == 0 {
+			t.Errorf("%s has 0 rows — temporal PK seeding regressed", tbl)
+		}
+	}
+
+	for _, tc := range []struct{ child, parent, fk string }{
+		{"metric_snapshots", "metric_sources", "source_id"},
+		{"shift_schedule", "metric_sources", "source_id"},
+	} {
+		var orphans int
+		q := fmt.Sprintf(`SELECT COUNT(*) FROM %s c LEFT JOIN %s p ON c.%s = p.id WHERE p.id IS NULL`, tc.child, tc.parent, tc.fk) //nolint:gosec
+		if err := conn.QueryRowContext(context.Background(), q).Scan(&orphans); err != nil {
+			t.Fatalf("%s FK check: %v", tc.child, err)
+		}
+		if orphans > 0 {
+			t.Errorf("found %d orphaned rows in %s (%s)", orphans, tc.child, tc.fk)
+		}
+	}
+}
+
+// assertUniqueNumericScales seeds external_refs at a high row count and confirms
+// the UNIQUE numeric column (external_order_id) gets distinct values that satisfy
+// the DB constraint. A random number() faker collides ("Duplicate entry") well
+// before this many rows; the unique-sequence mapping must not.
+func assertUniqueNumericScales(t *testing.T, driver, dsn string, conn *sql.DB) {
+	t.Helper()
+	tables, err := db.Introspect(driver, dsn)
+	if err != nil {
+		t.Fatalf("introspect: %v", err)
+	}
+	s := &schema.Schema{Tables: make(map[string]schema.Table)}
+	for _, tbl := range tables {
+		if tbl.Name != "external_refs" {
+			continue
+		}
+		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
+		for _, col := range tbl.Columns {
+			st.Columns[col.Name] = schema.Column{
+				Type: col.Type, DDLType: col.DDLType, PK: col.IsPK,
+				Nullable: col.IsNullable, Generated: col.Generated != "",
+				Faker: faker.MapColumnToFaker(driver, col),
+			}
+		}
+		s.Tables["external_refs"] = st
+	}
+	if _, ok := s.Tables["external_refs"]; !ok {
+		t.Fatal("external_refs not found in introspection")
+	}
+	const n = 2000
+	data, err := faker.GenerateFilteredWithCounts(s, []string{"external_refs"}, []string{"external_refs"},
+		n, 0, map[string]int{"external_refs": n}, nil, driver)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := db.Truncate(context.Background(), conn, driver, []string{"external_refs"}); err != nil {
+		t.Fatalf("truncate external_refs: %v", err)
+	}
+	query, values := db.BuildBatchInsert("external_refs", data["external_refs"], driver)
+	if _, err := conn.ExecContext(context.Background(), query, values...); err != nil {
+		t.Fatalf("insert external_refs at %d rows (UNIQUE numeric collision regression): %v", n, err)
+	}
+	var total, distinct int
+	if err := conn.QueryRowContext(context.Background(),
+		`SELECT COUNT(*), COUNT(DISTINCT external_order_id) FROM external_refs`).Scan(&total, &distinct); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != n || distinct != n {
+		t.Errorf("external_refs at %d rows: total=%d distinct=%d — UNIQUE numeric collided", n, total, distinct)
+	}
+}
+
+// truncateWithProgressChecked truncates via TruncateWithProgress and asserts the
+// callback reports completion (and, on MySQL, one step per table).
+func truncateWithProgressChecked(t *testing.T, driver string, conn *sql.DB, order []string) {
+	t.Helper()
+	var lastDone, lastTotal, namedTables int
+	if err := db.TruncateWithProgress(context.Background(), conn, driver, order, func(done, total int, table string) {
+		lastDone, lastTotal = done, total
+		if table != "" {
+			namedTables++
+		}
+	}); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if lastDone != len(order) || lastTotal != len(order) {
+		t.Errorf("truncate progress: final %d/%d, want %d/%d", lastDone, lastTotal, len(order), len(order))
+	}
+	if driver == mysqlDriver && namedTables != len(order) {
+		t.Errorf("mysql truncate: expected per-table progress for all %d tables, got %d", len(order), namedTables)
+	}
+}
+
 func filterTables(tables []db.Table, names ...string) []db.Table {
 	want := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -469,6 +593,14 @@ func TestPostgresIntegration(t *testing.T) {
 
 	t.Run("introspect and seed", func(t *testing.T) {
 		data = buildAndSeed(t, "postgres", postgresDriver, dsn, conn)
+	})
+
+	t.Run("regression: type/PK edge-case tables seeded", func(t *testing.T) {
+		assertRegressionTablesSeeded(t, conn)
+	})
+
+	t.Run("regression: UNIQUE numeric scales without collision", func(t *testing.T) {
+		assertUniqueNumericScales(t, postgresDriver, dsn, conn)
 	})
 
 	t.Run("row counts", func(t *testing.T) {
@@ -1658,9 +1790,7 @@ func TestPostgresIntegration(t *testing.T) {
 		if len(truncateSortedTables) == 0 {
 			t.Skip("table order not resolved — previous subtest failed")
 		}
-		if err := db.Truncate(context.Background(), conn, postgresDriver, truncateSortedTables); err != nil {
-			t.Fatalf("truncate: %v", err)
-		}
+		truncateWithProgressChecked(t, postgresDriver, conn, truncateSortedTables)
 		allTables := []string{
 			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",
@@ -1753,6 +1883,14 @@ func TestMySQLIntegration(t *testing.T) {
 
 	t.Run("introspect and seed", func(t *testing.T) {
 		data = buildAndSeed(t, "mysql", mysqlDriver, dsn, conn)
+	})
+
+	t.Run("regression: type/PK edge-case tables seeded", func(t *testing.T) {
+		assertRegressionTablesSeeded(t, conn)
+	})
+
+	t.Run("regression: UNIQUE numeric scales without collision", func(t *testing.T) {
+		assertUniqueNumericScales(t, mysqlDriver, dsn, conn)
 	})
 
 	t.Run("row counts", func(t *testing.T) {
@@ -2931,9 +3069,7 @@ func TestMySQLIntegration(t *testing.T) {
 		if len(truncateSortedTablesMy) == 0 {
 			t.Skip("table order not resolved — previous subtest failed")
 		}
-		if err := db.Truncate(context.Background(), conn, mysqlDriver, truncateSortedTablesMy); err != nil {
-			t.Fatalf("truncate: %v", err)
-		}
+		truncateWithProgressChecked(t, mysqlDriver, conn, truncateSortedTablesMy)
 		allTables := []string{
 			"brands", "tags", "users", "coupons", "companies", "suppliers", "hard_self_employees",
 			"categories", "addresses", "departments", "warehouses", "wishlists",

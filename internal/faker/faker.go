@@ -127,9 +127,48 @@ func GenerateFilteredWithOptions(s *schema.Schema, allTables, targetTables []str
 		if err := backfillSelfReferences(data[tableName], table, tableName, opts.SelfRefDepth); err != nil {
 			return nil, fmt.Errorf("table %s self-reference backfill: %w", tableName, err)
 		}
+		assignUniqueSequences(data[tableName], table)
 	}
 
 	return data, nil
+}
+
+// seqBaseTime anchors generated unique temporal sequences. Kept fixed (not
+// time.Now) so output is reproducible and the date range stays valid.
+var seqBaseTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// assignUniqueSequences fills every column flagged with the uniqueSequenceFaker
+// with a distinct, monotonically increasing value sized to the column type. This
+// guarantees UNIQUE numeric/temporal columns never collide regardless of row
+// count — random fakers can't promise that, and non-PK UNIQUE columns have no
+// retry loop. Values for non-PK columns are independent (nothing references
+// them), so reassigning them after generation is safe.
+func assignUniqueSequences(rows []map[string]interface{}, table schema.Table) {
+	for colName, col := range table.Columns {
+		if col.Faker != uniqueSequenceFaker {
+			continue
+		}
+		for i := range rows {
+			rows[i][colName] = uniqueSequenceValue(col.Type, i)
+		}
+	}
+}
+
+// uniqueSequenceValue returns the i-th value (0-based) of a unique sequence for
+// the given column type: a monotonic integer for numerics, or a stepped
+// date/time/datetime for temporal columns.
+func uniqueSequenceValue(colType string, i int) interface{} {
+	switch temporalPKFaker(strings.ToLower(strings.TrimSpace(colType))) {
+	case "date":
+		return seqBaseTime.AddDate(0, 0, i).Format("2006-01-02")
+	case "time":
+		// 86400 distinct seconds in a day; wraps for very large row counts.
+		return seqBaseTime.Add(time.Duration(i) * time.Second).Format("15:04:05")
+	case "datetime":
+		return seqBaseTime.Add(time.Duration(i) * time.Second)
+	default:
+		return i + 1
+	}
 }
 
 func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string) error {
@@ -616,10 +655,30 @@ func generatePK(colType string, existingCount int) (interface{}, error) {
 		return gofakeit.UUID(), nil
 	case strings.Contains(t, "char") || strings.Contains(t, "text"):
 		return gofakeit.UUID(), nil
+	case temporalPKFaker(t) != "":
+		// Temporal PK columns (e.g. a DATE in a composite key) can't take a
+		// sequential integer — that inserts "1" into a date/timestamp column.
+		// Uniqueness is enforced by the caller's composite-PK retry loop.
+		return generate(temporalPKFaker(t))
 	default:
 		// integer / serial / bigserial — sequential
 		return existingCount + 1, nil
 	}
+}
+
+// temporalPKFaker maps a temporal column type to the faker that produces a
+// valid value for it, or "" when the type is not temporal. datetime/timestamp
+// is checked before date/time because those substrings overlap.
+func temporalPKFaker(t string) string {
+	switch {
+	case strings.Contains(t, "datetime"), strings.Contains(t, "timestamp"):
+		return "datetime"
+	case strings.Contains(t, "date"):
+		return "date"
+	case strings.Contains(t, "time"):
+		return "time"
+	}
+	return ""
 }
 
 func isStringColType(colType string) bool {
@@ -662,6 +721,12 @@ func parseStringLength(colType string) int {
 }
 
 // knownFakers is the set of valid bare faker function names (no args).
+// uniqueSequenceFaker marks a column whose values must be globally unique and
+// can't be a uuid string (numeric/temporal types). Values are filled after row
+// generation with a monotonic sequence (see assignUniqueSequences) — the numeric
+// analog of uuid, guaranteeing distinct values without a per-row retry loop.
+const uniqueSequenceFaker = "sequence"
+
 var knownFakers = map[string]bool{
 	"name": true, "firstname": true, "lastname": true, "username": true,
 	"email": true, "phone": true, "street": true, "city": true,
@@ -670,7 +735,7 @@ var knownFakers = map[string]bool{
 	"productname": true, "company": true, "jobtitle": true,
 	"latitude": true, "longitude": true, "bool": true, "float64": true,
 	"word": true, "sentence": true, "date": true, "time": true,
-	"datetime": true, "json": true,
+	"datetime": true, "json": true, uniqueSequenceFaker: true,
 }
 
 // knownParamFakers is the set of valid faker functions that take arguments.
@@ -805,6 +870,10 @@ func generate(fakerStr string) (interface{}, error) {
 		return gofakeit.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Now()), nil
 	case "json":
 		return fmt.Sprintf(`{"key":"%s","value":"%s"}`, gofakeit.Word(), gofakeit.Word()), nil
+	case uniqueSequenceFaker:
+		// Placeholder — overwritten per row by assignUniqueSequences once the
+		// full row count for the table is known.
+		return nil, nil
 	case "":
 		return nil, nil
 	default:

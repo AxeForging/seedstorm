@@ -46,7 +46,7 @@ tables:
 | `fk` | Foreign key reference in `table.column` format |
 | `faker` | Faker hint (see table below). Auto-assigned by `introspect`; overridden by `ai-enrich`. |
 | `nullable` | `true` if the column allows NULL |
-| `unique` | `true` if the column has a UNIQUE constraint (auto-sets faker to `uuid`) |
+| `unique` | `true` if the column has a UNIQUE constraint (auto-sets faker to `uuid` for string columns; numeric/temporal columns get a monotonic `sequence` so values never collide) |
 | `generated` | `true` for database-generated columns; seedstorm keeps them out of generated INSERT rows |
 
 ## Faker Hints Reference
@@ -74,6 +74,7 @@ tables:
 | `company` | Company name |
 | `productname` | Product name |
 | `randomstring(a,b,c)` | Random pick from list — also used for CHECK IN constraints |
+| `sequence` | Distinct monotonic values for UNIQUE numeric/temporal columns (no collisions at any row count) |
 
 ## Constraint auto-detection
 
@@ -81,9 +82,14 @@ tables:
 
 | Constraint type | Example | Assigned faker |
 |-----------------|---------|---------------|
-| UNIQUE | `users.email` | `uuid` |
+| UNIQUE (string) | `users.email` | `uuid` |
+| UNIQUE (numeric / temporal) | `refs.external_order_id BIGINT UNIQUE` | `sequence` — a monotonic series; a `uuid` string can't fit a numeric column and a random value collides at high row counts |
 | CHECK IN | `status IN ('active','inactive')` | `randomstring(active,inactive)` |
 | CHECK range | `rating BETWEEN 1 AND 5` | `number(1,5)` |
+| Fixed-point sized to precision | `amount NUMERIC(20,0)` → `number(1,…)`; `ratio NUMERIC(3,2)` → `price(1,9)` | scale-0 columns can't store a fractional value, and a small-precision column can't hold `price(1,1000)` ("Out of range value") |
+
+Primary-key columns of a temporal type (e.g. a `DATE` inside a composite PK) are
+seeded with a real generated date/time rather than a sequential integer.
 
 These auto-assignments can be refined further with `ai-enrich`.
 

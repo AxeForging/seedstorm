@@ -1,4 +1,11 @@
 -- Teardown (always safe to re-run)
+DROP TABLE IF EXISTS shift_schedule CASCADE;
+DROP TABLE IF EXISTS event_log CASCADE;
+DROP TABLE IF EXISTS time_marks CASCADE;
+DROP TABLE IF EXISTS time_logs CASCADE;
+DROP TABLE IF EXISTS metric_snapshots CASCADE;
+DROP TABLE IF EXISTS metric_sources CASCADE;
+DROP TABLE IF EXISTS external_refs CASCADE;
 DROP TABLE IF EXISTS return_requests CASCADE;
 DROP TABLE IF EXISTS audit_logs CASCADE;
 DROP TABLE IF EXISTS hard_self_employees CASCADE;
@@ -346,4 +353,58 @@ CREATE TABLE return_requests (
     status        return_status NOT NULL DEFAULT 'pending',
     refund_amount NUMERIC(10,2),
     requested_at  TIMESTAMP     NOT NULL DEFAULT NOW()
+);
+
+-- Regression coverage: type/PK edge cases that previously produced invalid
+-- INSERT values (see faker.generatePK and faker.MapColumnToFaker).
+--   external_order_id: UNIQUE numeric must NOT be seeded with a uuid string.
+--   big_amount:        NUMERIC(_,0) must be seeded with an integer, not a float.
+--   usage_ratio:          NUMERIC(3,2) can only hold up to 9.99, so the generator
+--                      must be bounded to its precision, not price(1,1000).
+CREATE TABLE external_refs (
+    id                SERIAL        PRIMARY KEY,
+    big_amount        NUMERIC(20,0) NOT NULL,
+    external_order_id BIGINT        NOT NULL UNIQUE,
+    usage_ratio          NUMERIC(3,2)  NOT NULL
+);
+
+-- metric_snapshots: composite PK combining an FK and a DATE column. The DATE
+-- PK column must be seeded with a real date, not a sequential integer.
+CREATE TABLE metric_sources (
+    id   SERIAL       PRIMARY KEY,
+    name VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE metric_snapshots (
+    source_id    INTEGER NOT NULL REFERENCES metric_sources(id),
+    snapshot_day DATE    NOT NULL,
+    total        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (source_id, snapshot_day)
+);
+
+-- Single-column temporal primary keys: each must be seeded with a real
+-- date/time/timestamp value, not a sequential integer. PK uniqueness is
+-- guaranteed by the generator's retry loop, so these are collision-safe.
+CREATE TABLE time_logs (
+    log_date DATE PRIMARY KEY,
+    note     TEXT
+);
+
+CREATE TABLE time_marks (
+    mark_time TIME PRIMARY KEY,
+    label     VARCHAR(40)
+);
+
+CREATE TABLE event_log (
+    occurred_at TIMESTAMP PRIMARY KEY,
+    kind        VARCHAR(40)
+);
+
+-- Composite PK mixing an FK with a TIME column — generalises metric_snapshots
+-- beyond DATE.
+CREATE TABLE shift_schedule (
+    source_id INTEGER     NOT NULL REFERENCES metric_sources(id),
+    shift_time  TIME        NOT NULL,
+    note        VARCHAR(40),
+    PRIMARY KEY (source_id, shift_time)
 );

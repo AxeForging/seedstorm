@@ -234,7 +234,12 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	if req.Truncate && !req.DryRun {
 		jc.Phase("truncate")
 		log.Info().Int("tables", len(targetTables)).Msg("Truncating tables")
-		if err := db.Truncate(ctx, conn, sess.DBType, targetTables); err != nil {
+		if err := db.TruncateWithProgress(ctx, conn, sess.DBType, targetTables, func(done, total int, table string) {
+			if table != "" {
+				log.Info().Str("table", table).Msg("Truncating table")
+			}
+			jc.Progress(done, total, table)
+		}); err != nil {
 			return nil, fmt.Errorf("truncate: %w", err)
 		}
 		log.Info().Msg("Truncate complete")

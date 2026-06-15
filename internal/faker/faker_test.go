@@ -2,7 +2,9 @@ package faker
 
 import (
 	"fmt"
+	"regexp"
 	"testing"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/brianvoe/gofakeit/v6"
@@ -533,6 +535,51 @@ func TestGeneratePK_textType(t *testing.T) {
 	}
 }
 
+func TestGeneratePK_temporalType(t *testing.T) {
+	// A PK column of a temporal type must not get a sequential integer — that
+	// produces values like "1" which a DATE/TIMESTAMP column rejects. It must
+	// generate a type-appropriate value instead.
+	t.Run("date returns YYYY-MM-DD string", func(t *testing.T) {
+		v, err := generatePK("date", 5)
+		if err != nil {
+			t.Fatalf("generatePK(date): %v", err)
+		}
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("expected string for date PK, got %T (%v)", v, v)
+		}
+		if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(s) {
+			t.Errorf("expected date format YYYY-MM-DD, got %q", s)
+		}
+	})
+
+	t.Run("time returns HH:MM:SS string", func(t *testing.T) {
+		v, err := generatePK("time", 0)
+		if err != nil {
+			t.Fatalf("generatePK(time): %v", err)
+		}
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("expected string for time PK, got %T (%v)", v, v)
+		}
+		if !regexp.MustCompile(`^\d{2}:\d{2}:\d{2}$`).MatchString(s) {
+			t.Errorf("expected time format HH:MM:SS, got %q", s)
+		}
+	})
+
+	for _, colType := range []string{"datetime", "timestamp", "timestamp without time zone"} {
+		t.Run(colType+" returns time.Time", func(t *testing.T) {
+			v, err := generatePK(colType, 0)
+			if err != nil {
+				t.Fatalf("generatePK(%q): %v", colType, err)
+			}
+			if _, ok := v.(time.Time); !ok {
+				t.Fatalf("expected time.Time for %s PK, got %T (%v)", colType, v, v)
+			}
+		})
+	}
+}
+
 func TestGenerate_uuidPKTable(t *testing.T) {
 	s := &schema.Schema{
 		Tables: map[string]schema.Table{
@@ -561,6 +608,97 @@ func TestGenerate_uuidPKTable(t *testing.T) {
 			t.Errorf("duplicate UUID PK: %s", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestGenerate_compositeTemporalPK_uniqueAcrossManyRows(t *testing.T) {
+	// A hybrid composite PK (FK column + DATE column) must produce unique
+	// (source_id, snapshot_day) pairs even when many rows are requested against
+	// a small parent pool — the DATE component must vary, not collapse to "1".
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"sources": {
+				Columns: map[string]schema.Column{
+					"id":   {Type: "integer", PK: true},
+					"name": {Type: "varchar", Faker: "word"},
+				},
+			},
+			"snapshots": {
+				Columns: map[string]schema.Column{
+					"source_id":    {Type: "integer", PK: true, FK: "sources.id"},
+					"snapshot_day": {Type: "date", PK: true, Faker: "date"},
+					"total":        {Type: "integer", Faker: "number(0,100)"},
+				},
+			},
+		},
+	}
+	// 5 parents, 150 child rows: the FK component alone can't make rows unique,
+	// so the DATE component must carry real, varied date values.
+	data, err := GenerateFilteredWithCounts(s, []string{"sources", "snapshots"}, []string{"sources", "snapshots"},
+		5, 0, map[string]int{"snapshots": 150}, nil, "pgx")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(data["snapshots"]) != 150 {
+		t.Fatalf("expected 150 snapshot rows, got %d", len(data["snapshots"]))
+	}
+	seen := make(map[string]bool, 150)
+	for _, row := range data["snapshots"] {
+		day, ok := row["snapshot_day"].(string)
+		if !ok {
+			t.Fatalf("snapshot_day: expected string date, got %T (%v)", row["snapshot_day"], row["snapshot_day"])
+		}
+		if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(day) {
+			t.Errorf("snapshot_day not a date: %q", day)
+		}
+		key := fmt.Sprintf("%v|%v", row["source_id"], day)
+		if seen[key] {
+			t.Errorf("duplicate composite PK: %s", key)
+		}
+		seen[key] = true
+	}
+}
+
+func TestGenerate_uniqueSequenceColumns_noCollisionsAtScale(t *testing.T) {
+	// UNIQUE numeric/temporal columns use the "sequence" faker, which must yield
+	// distinct values at any row count — a random number()/date() would collide
+	// (Duplicate entry) well before this many rows.
+	const n = 5000
+	s := &schema.Schema{
+		Tables: map[string]schema.Table{
+			"orders": {
+				Columns: map[string]schema.Column{
+					"id":                {Type: "integer", PK: true},
+					"external_order_id": {Type: "bigint", Faker: uniqueSequenceFaker},
+					"event_date":        {Type: "date", Faker: uniqueSequenceFaker},
+					"fired_at":          {Type: "timestamp", Faker: uniqueSequenceFaker},
+				},
+			},
+		},
+	}
+	data, err := Generate(s, []string{"orders"}, n, 0, nil, "mysql")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(data["orders"]) != n {
+		t.Fatalf("expected %d rows, got %d", n, len(data["orders"]))
+	}
+	for _, col := range []string{"external_order_id", "event_date", "fired_at"} {
+		seen := make(map[interface{}]bool, n)
+		for _, row := range data["orders"] {
+			v := row[col]
+			if v == nil {
+				t.Fatalf("%s: nil value (sequence not filled)", col)
+			}
+			if seen[v] {
+				t.Errorf("%s: duplicate unique value %v", col, v)
+				break
+			}
+			seen[v] = true
+		}
+		if len(seen) != n {
+			t.Errorf("%s: expected %d distinct values, got %d", col, n, len(seen))
+		}
 	}
 }
 
