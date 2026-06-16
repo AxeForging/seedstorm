@@ -20,6 +20,7 @@ type Table struct {
 // Column holds metadata and faker mapping for a single column.
 type Column struct {
 	Type      string `yaml:"type"`
+	DDLType   string `yaml:"ddl_type,omitempty"`
 	Faker     string `yaml:"faker,omitempty"`
 	FK        string `yaml:"fk,omitempty"`
 	PK        bool   `yaml:"pk,omitempty"`

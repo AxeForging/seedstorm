@@ -1,5 +1,12 @@
 -- Teardown (always safe to re-run)
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS shift_schedule;
+DROP TABLE IF EXISTS event_log;
+DROP TABLE IF EXISTS time_marks;
+DROP TABLE IF EXISTS time_logs;
+DROP TABLE IF EXISTS metric_snapshots;
+DROP TABLE IF EXISTS metric_sources;
+DROP TABLE IF EXISTS external_refs;
 DROP TABLE IF EXISTS return_requests;
 DROP TABLE IF EXISTS audit_logs;
 DROP TABLE IF EXISTS hard_self_employees;
@@ -34,7 +41,9 @@ DROP TABLE IF EXISTS brands;
 CREATE TABLE brands (
     id      INT AUTO_INCREMENT PRIMARY KEY,
     name    VARCHAR(100) NOT NULL,
-    country VARCHAR(100),
+    country VARCHAR(2),
+    enabled BIT(1) NOT NULL DEFAULT b'1',
+    total   DATE,
     website VARCHAR(255)
 );
 
@@ -356,6 +365,62 @@ CREATE TABLE return_requests (
     requested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (order_item_id) REFERENCES order_items(id),
     FOREIGN KEY (processed_by)  REFERENCES employees(id)
+);
+
+-- Regression coverage: type/PK edge cases that previously produced invalid
+-- INSERT values (see faker.generatePK and faker.MapColumnToFaker).
+--   external_order_id: UNIQUE numeric must NOT be seeded with a uuid string.
+--   big_amount:        DECIMAL(_,0) must be seeded with an integer, not a float.
+--   usage_ratio:          DECIMAL(3,2) can only hold up to 9.99, so the generator
+--                      must be bounded to its precision, not price(1,1000).
+CREATE TABLE external_refs (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    big_amount        DECIMAL(20,0) NOT NULL,
+    external_order_id BIGINT        NOT NULL UNIQUE,
+    usage_ratio          DECIMAL(3,2)  NOT NULL
+);
+
+-- metric_snapshots: composite PK combining an FK and a DATE column. The DATE
+-- PK column must be seeded with a real date, not a sequential integer.
+CREATE TABLE metric_sources (
+    id   INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE metric_snapshots (
+    source_id    INT  NOT NULL,
+    snapshot_day DATE NOT NULL,
+    total        INT  NOT NULL DEFAULT 0,
+    PRIMARY KEY (source_id, snapshot_day),
+    FOREIGN KEY (source_id) REFERENCES metric_sources(id)
+);
+
+-- Single-column temporal primary keys: each must be seeded with a real
+-- date/time/datetime value, not a sequential integer. PK uniqueness is
+-- guaranteed by the generator's retry loop, so these are collision-safe.
+CREATE TABLE time_logs (
+    log_date DATE PRIMARY KEY,
+    note     TEXT
+);
+
+CREATE TABLE time_marks (
+    mark_time TIME PRIMARY KEY,
+    label     VARCHAR(40)
+);
+
+CREATE TABLE event_log (
+    occurred_at DATETIME PRIMARY KEY,
+    kind        VARCHAR(40)
+);
+
+-- Composite PK mixing an FK with a TIME column — generalises metric_snapshots
+-- beyond DATE.
+CREATE TABLE shift_schedule (
+    source_id INT  NOT NULL,
+    shift_time  TIME NOT NULL,
+    note        VARCHAR(40),
+    PRIMARY KEY (source_id, shift_time),
+    FOREIGN KEY (source_id) REFERENCES metric_sources(id)
 );
 
 SET FOREIGN_KEY_CHECKS = 1;

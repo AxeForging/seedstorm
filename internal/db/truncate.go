@@ -16,6 +16,23 @@ import (
 //
 // dbType must be "pgx" (PostgreSQL) or "mysql".
 func Truncate(ctx context.Context, conn *sql.DB, dbType string, seedOrder []string) error {
+	return TruncateWithProgress(ctx, conn, dbType, seedOrder, nil)
+}
+
+// TruncateWithProgress is like Truncate but reports progress via the optional
+// callback as tables are cleared. For MySQL each table is truncated in its own
+// statement, so progress fires once per table (in reverse seed order) with the
+// table name. For PostgreSQL a single TRUNCATE … CASCADE clears every table
+// atomically, so there are no intermediate per-table steps — progress fires once
+// on completion with an empty table name.
+func TruncateWithProgress(ctx context.Context, conn *sql.DB, dbType string, seedOrder []string, progress func(done, total int, table string)) error {
+	total := len(seedOrder)
+	emit := func(done int, table string) {
+		if progress != nil {
+			progress(done, total, table)
+		}
+	}
+
 	if dbType == "pgx" {
 		names := make([]string, len(seedOrder))
 		for i, t := range seedOrder {
@@ -29,6 +46,7 @@ func Truncate(ctx context.Context, conn *sql.DB, dbType string, seedOrder []stri
 		if _, err := conn.ExecContext(ctx, query); err != nil {
 			return err
 		}
+		emit(total, "")
 		return nil
 	}
 
@@ -36,12 +54,15 @@ func Truncate(ctx context.Context, conn *sql.DB, dbType string, seedOrder []stri
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
+	done := 0
 	for i := len(seedOrder) - 1; i >= 0; i-- {
 		query := fmt.Sprintf("TRUNCATE TABLE %s", QuoteIdent(seedOrder[i], dbType)) //nolint:gosec
 		if _, err := conn.ExecContext(ctx, query); err != nil {
 			_, _ = conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1") //nolint:errcheck
 			return fmt.Errorf("truncate %s: %w", seedOrder[i], err)
 		}
+		done++
+		emit(done, seedOrder[i])
 	}
 	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
 		return fmt.Errorf("re-enable FK checks: %w", err)

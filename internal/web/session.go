@@ -228,6 +228,7 @@ func (s *Session) Schema(force bool) (*schema.Schema, error) {
 		for _, c := range t.Columns {
 			sc := schema.Column{
 				Type:      c.Type,
+				DDLType:   c.DDLType,
 				PK:        c.IsPK,
 				Nullable:  c.IsNullable,
 				Generated: c.Generated != "",

@@ -68,6 +68,7 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 				for _, c := range t.Columns {
 					sc := schema.Column{
 						Type:      c.Type,
+						DDLType:   c.DDLType,
 						PK:        c.IsPK,
 						Nullable:  c.IsNullable,
 						Generated: c.Generated != "",
