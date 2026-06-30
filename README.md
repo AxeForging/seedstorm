@@ -64,6 +64,18 @@ seedstorm gaps \
   --fill --rows 100
 ```
 
+## Web UI
+
+Prefer a visual workflow? `serve` launches an interactive graph studio — introspect
+the live schema, click to select tables, set per-table row volumes, seed in
+dependency order with live job logs, then browse the populated data:
+
+```bash
+seedstorm serve            # http://127.0.0.1:8080
+```
+
+<img src="docs/gifs/web-ui.gif" alt="seedstorm web UI — introspect the schema graph, seed, and browse live data" width="820" />
+
 ## Features
 
 - **Schema self-discovery** — introspects tables, columns, PKs, FKs, enum values, UNIQUE and CHECK constraints, generated columns, comments, defaults, and indexes; no manual editing required
