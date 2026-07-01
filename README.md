@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/seedstorm-logo-wordmark.png" alt="seedstorm" width="780" />
+</p>
+
 # seedstorm
 
 Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI enrichment. Works with MySQL 8+ and PostgreSQL 13+.
