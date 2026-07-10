@@ -83,8 +83,8 @@ func (m cloneModel) View() string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("Clone schema"))
 	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("  Source: %s\n", m.sourceType))
-	sb.WriteString(fmt.Sprintf("  Target: %s\n", m.targetType))
+	fmt.Fprintf(&sb, "  Source: %s\n", m.sourceType)
+	fmt.Fprintf(&sb, "  Target: %s\n", m.targetType)
 	if m.opts.DropExisting {
 		sb.WriteString(errorStyle.Render("  Target tables will be dropped first.\n"))
 	} else {

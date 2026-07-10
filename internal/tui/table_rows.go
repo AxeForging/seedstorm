@@ -166,7 +166,7 @@ func (m tableRowsModel) View() string {
 			cursor = cursorStyle.Render("▸ ")
 			name = lipgloss.NewStyle().Bold(true).Render(name)
 		}
-		sb.WriteString(fmt.Sprintf("%s%-*s  %s rows\n", cursor, nameWidth, name, m.inputs[i].View()))
+		fmt.Fprintf(&sb, "%s%-*s  %s rows\n", cursor, nameWidth, name, m.inputs[i].View())
 	}
 
 	if len(m.tables) > visible {

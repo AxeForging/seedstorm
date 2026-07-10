@@ -203,7 +203,7 @@ func (m genConfigModel) View() string {
 		if i == m.focused {
 			label = lipgloss.NewStyle().Bold(true).Render(label)
 		}
-		sb.WriteString(fmt.Sprintf("%s%s: %s\n", cursor, label, f.view))
+		fmt.Fprintf(&sb, "%s%s: %s\n", cursor, label, f.view)
 	}
 
 	sb.WriteString("\n")

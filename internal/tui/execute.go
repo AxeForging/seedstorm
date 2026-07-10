@@ -148,7 +148,7 @@ func (m executeModel) View() string {
 		sb.WriteString(titleStyle.Render("Dry Run — Preview"))
 		sb.WriteString("\n\n")
 		if !m.done {
-			sb.WriteString(fmt.Sprintf("  %s Generating data...\n", m.spinner.View()))
+			fmt.Fprintf(&sb, "  %s Generating data...\n", m.spinner.View())
 			return sb.String()
 		}
 		if m.err != nil {
@@ -240,7 +240,7 @@ func (m executeModel) View() string {
 		}
 		sb.WriteString("\n")
 		for _, t := range m.seededTables {
-			sb.WriteString(fmt.Sprintf("    %-30s %d rows\n", t, m.seededRows[t]))
+			fmt.Fprintf(&sb, "    %-30s %d rows\n", t, m.seededRows[t])
 		}
 		sb.WriteString("\n")
 		sb.WriteString(helpStyle.Render("  q quit"))
@@ -249,8 +249,8 @@ func (m executeModel) View() string {
 		if m.totalTables > 0 {
 			pct = m.completedTables * 100 / m.totalTables
 		}
-		sb.WriteString(fmt.Sprintf("  %s Seeding %s (%d/%d tables, %d%%)\n",
-			m.spinner.View(), m.currentTable, m.completedTables, m.totalTables, pct))
+		fmt.Fprintf(&sb, "  %s Seeding %s (%d/%d tables, %d%%)\n",
+			m.spinner.View(), m.currentTable, m.completedTables, m.totalTables, pct)
 	}
 
 	return sb.String()

@@ -145,13 +145,13 @@ func (m configModel) View() string {
 			if i == m.focused {
 				label = lipgloss.NewStyle().Bold(true).Render(label)
 			}
-			sb.WriteString(fmt.Sprintf("%s%s %s\n", cursor, toggle, label))
+			fmt.Fprintf(&sb, "%s%s %s\n", cursor, toggle, label)
 		} else {
 			label := f.label
 			if i == m.focused {
 				label = lipgloss.NewStyle().Bold(true).Render(label)
 			}
-			sb.WriteString(fmt.Sprintf("%s%s: %s\n", cursor, label, f.input.View()))
+			fmt.Fprintf(&sb, "%s%s: %s\n", cursor, label, f.input.View())
 		}
 	}
 
