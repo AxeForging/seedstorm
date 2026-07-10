@@ -49,19 +49,19 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Install custom quality gates
-        run: |
-          go install ./cmd/seedstorm
-          QUALITY_BIN="$RUNNER_TEMP/quality-bin"
-          mkdir -p "$QUALITY_BIN"
-          curl -fsSL https://raw.githubusercontent.com/AxeForging/structlint/main/install.sh | \
-            STRUCTLINT_VERSION=v0.6.0 STRUCTLINT_INSTALL_DIR="$QUALITY_BIN" sh
-          curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | \
-            DUPEHOUND_VERSION=v0.1.0 DUPEHOUND_INSTALL_DIR="$QUALITY_BIN" sh
-          echo "$QUALITY_BIN" >> "$GITHUB_PATH"
-      - uses: AxeForging/gauntlet@v0.1.0
+      - name: Build candidate
+        run: go install ./cmd/seedstorm
+      - uses: AxeForging/structlint/setup@v0.6.1
         with:
-          since: origin/${{ github.base_ref }}
+          version: v0.6.1
+      - uses: AxeForging/dupehound/setup@v0.1.1
+        with:
+          version: v0.1.1
+      - uses: AxeForging/gauntlet/setup@v0.1.1
+        with:
+          version: v0.1.1
+      - name: Run quality gates
+        run: gauntlet check --format github --since origin/${{ github.base_ref }}
 
   lint:
     runs-on: ubuntu-latest
