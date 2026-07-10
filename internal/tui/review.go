@@ -62,15 +62,15 @@ func (m reviewModel) View() string {
 	sb.WriteString("\n\n")
 
 	// Config summary
-	sb.WriteString(fmt.Sprintf("  Tables:     %d\n", len(m.tables)))
-	sb.WriteString(fmt.Sprintf("  Rows/table: %d\n", m.rows))
+	fmt.Fprintf(&sb, "  Tables:     %d\n", len(m.tables))
+	fmt.Fprintf(&sb, "  Rows/table: %d\n", m.rows)
 	if len(m.tableRows) > 0 {
-		sb.WriteString(fmt.Sprintf("  Overrides:  %d table(s)\n", len(m.tableRows)))
+		fmt.Fprintf(&sb, "  Overrides:  %d table(s)\n", len(m.tableRows))
 	}
 	if m.enumRows > 0 {
-		sb.WriteString(fmt.Sprintf("  Enum rows:  %d\n", m.enumRows))
+		fmt.Fprintf(&sb, "  Enum rows:  %d\n", m.enumRows)
 	}
-	sb.WriteString(fmt.Sprintf("  Batch size: %d\n", m.batch))
+	fmt.Fprintf(&sb, "  Batch size: %d\n", m.batch)
 	if m.truncate {
 		sb.WriteString(errorStyle.Render("  Truncate:   YES — all existing data will be deleted") + "\n")
 	}
@@ -86,8 +86,8 @@ func (m reviewModel) View() string {
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("  %-*s  %-*s  %-8s  %s\n", numWidth, "#", tableWidth, "Table", "Rows", "Dependencies"))
-	sb.WriteString(fmt.Sprintf("  %s\n", strings.Repeat("─", numWidth+2+tableWidth+2+8+2+30)))
+	fmt.Fprintf(&sb, "  %-*s  %-*s  %-8s  %s\n", numWidth, "#", tableWidth, "Table", "Rows", "Dependencies")
+	fmt.Fprintf(&sb, "  %s\n", strings.Repeat("─", numWidth+2+tableWidth+2+8+2+30))
 
 	for i, table := range m.tables {
 		deps := "—"
@@ -98,7 +98,7 @@ func (m reviewModel) View() string {
 		if override := m.tableRows[table]; override > 0 {
 			rows = override
 		}
-		sb.WriteString(fmt.Sprintf("  %-*d  %-*s  %-8d  %s\n", numWidth, i+1, tableWidth, table, rows, deps))
+		fmt.Fprintf(&sb, "  %-*d  %-*s  %-8d  %s\n", numWidth, i+1, tableWidth, table, rows, deps)
 	}
 
 	sb.WriteString("\n")

@@ -308,48 +308,48 @@ func mysqlTypeMapper(t string) string {
 }
 
 func postgresTypeMapper(t string) string {
-	switch {
-	case t == "boolean" || t == "bool":
+	switch t {
+	case "boolean", "bool":
 		return "bool"
-	case t == "smallint" || t == "int2":
+	case "smallint", "int2":
 		return "number(1,1000)"
-	case t == "integer" || t == "int" || t == "int4":
+	case "integer", "int", "int4":
 		return "number(1,10000)"
-	case t == "bigint" || t == "int8":
+	case "bigint", "int8":
 		return "number(1,100000)"
-	case t == "serial" || t == "bigserial" || t == "smallserial":
+	case "serial", "bigserial", "smallserial":
 		return ""
-	case t == "real" || t == "float4" || t == "float8" || t == "double precision":
+	case "real", "float4", "float8", "double precision":
 		return "float64"
-	case t == "numeric" || t == "decimal":
+	case "numeric", "decimal":
 		return "price(1,1000)"
-	case t == "money":
+	case "money":
 		return "price(1,10000)"
-	case t == "char" || t == "character" || t == "bpchar":
+	case "char", "character", "bpchar":
 		return "word"
-	case t == "varchar" || t == "character varying":
+	case "varchar", "character varying":
 		return "word"
-	case t == "text":
+	case "text":
 		return "sentence"
-	case t == "uuid":
+	case "uuid":
 		return "uuid"
-	case t == "date":
+	case "date":
 		return "date"
-	case t == "time" || t == "time without time zone" || t == "time with time zone":
+	case "time", "time without time zone", "time with time zone":
 		return "time"
-	case t == "timestamp" || t == "timestamp without time zone" || t == "timestamp with time zone" || t == "timestamptz":
+	case "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz":
 		return "datetime"
-	case t == "interval":
+	case "interval":
 		return "word"
-	case t == "json" || t == "jsonb":
+	case "json", "jsonb":
 		return "json"
-	case t == "inet" || t == "cidr":
+	case "inet", "cidr":
 		return "ipv4"
-	case t == "macaddr":
+	case "macaddr":
 		return "macaddress"
-	case t == "bytea":
+	case "bytea":
 		return "word"
-	case t == "xml":
+	case "xml":
 		return "word"
 	default:
 		return "word"

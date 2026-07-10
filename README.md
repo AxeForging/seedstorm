@@ -10,10 +10,10 @@ Dynamic database seeder with schema self-discovery, FK-aware ordering, and AI en
 
 ## Install
 
-**Go install**
+**Checksum-verified release**
 
 ```bash
-go install github.com/AxeForging/seedstorm/cmd/seedstorm@latest
+curl -fsSL https://raw.githubusercontent.com/AxeForging/seedstorm/main/install.sh | sh
 ```
 
 **Linux / macOS — download binary**
@@ -37,6 +37,14 @@ sudo mv seedstorm /usr/local/bin/
 ```
 
 All releases and checksums at [github.com/AxeForging/seedstorm/releases](https://github.com/AxeForging/seedstorm/releases).
+
+PR and local quality gates are orchestrated by Gauntlet. Structlint enforces the
+whole repository structure; Dupehound annotations are scoped to changed lines:
+
+```sh
+gauntlet check
+gauntlet check --staged --format agent
+```
 
 ## Quick Start
 

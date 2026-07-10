@@ -1,8 +1,8 @@
 module github.com/AxeForging/seedstorm
 
-go 1.24.2
+go 1.25.0
 
-toolchain go1.24.6
+toolchain go1.25.10
 
 require (
 	github.com/brianvoe/gofakeit/v6 v6.28.0
