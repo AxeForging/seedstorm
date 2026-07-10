@@ -33,8 +33,10 @@ file_naming_pattern:
     - "*.yml"
     - "*.md"
     - "*.txt"
+    - "*.sh"
     - "*.sql"
     - "*.gif"
+    - "*.png"
     - "*.js"
     - "*.css"
     - "*.tmpl"
@@ -63,7 +65,11 @@ file_naming_pattern:
 
 ignore:
   - ".git"
+  - ".agents"
+  - ".claude"
+  - ".codex"
   - "vendor"
   - "node_modules"
   - "bin"
   - "dist"
+  - "seedstorm"
