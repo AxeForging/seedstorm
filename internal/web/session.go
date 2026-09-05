@@ -20,18 +20,23 @@ import (
 
 const sessionCookieName = "seedstorm_session"
 
+// connectTimeout bounds both opening a session and testing a candidate
+// connection, so a "test" that passes means a connect will too.
+const connectTimeout = 5 * time.Second
+
 var sqlOpen = sql.Open
 
 // ConnectionInfo is the non-secret view of an active connection, safe to
 // surface in templates and logs.
 type ConnectionInfo struct {
-	Label  string `json:"label,omitempty"`
-	DBType string `json:"dbType"`
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
-	DBName string `json:"dbName"`
-	User   string `json:"user"`
-	SSL    string `json:"ssl,omitempty"`
+	Label  string  `json:"label,omitempty"`
+	DBType string  `json:"dbType"`
+	Host   string  `json:"host"`
+	Port   int     `json:"port"`
+	DBName string  `json:"dbName"`
+	User   string  `json:"user"`
+	SSL    string  `json:"ssl,omitempty"`
+	Params []Param `json:"params,omitempty"`
 }
 
 // Session holds a live database connection plus the cached schema introspected
@@ -78,11 +83,11 @@ func (r *SessionRegistry) open(driver, dsn string, info ConnectionInfo) (*Sessio
 	if existing := r.findByDSN(driver, dsn); existing != nil {
 		return existing, nil
 	}
-	conn, err := sql.Open(driver, dsn)
+	conn, err := sqlOpen(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open connection: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 	if err := conn.PingContext(ctx); err != nil {
 		_ = conn.Close()

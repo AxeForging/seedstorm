@@ -10,7 +10,7 @@ import (
 )
 
 func TestServer_routes_smoke(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -33,10 +33,10 @@ func TestServer_routes_smoke(t *testing.T) {
 		{"/static/app.js", http.StatusOK, "route-step"},
 		{"/static/app.js", http.StatusOK, "routeColorFor"},
 		{"/static/app.js", http.StatusOK, "/api/clone-schema"},
-		{"/static/app.js", http.StatusOK, "setupConnectionMenuPresets"},
-		{"/static/app.js", http.StatusOK, "presetConnectionInfo"},
+		{"/static/app.js", http.StatusOK, "setupConnectionMenuSaved"},
+		{"/static/app.js", http.StatusOK, "migrateLegacyPresets"},
 		{"/static/app.js", http.StatusOK, "connectionKey"},
-		{"/static/app.js", http.StatusOK, "dataset.kind = \"preset\""},
+		{"/static/app.js", http.StatusOK, "dataset.kind = \"saved\""},
 		{"/static/style.css", http.StatusOK, ".result-shell"},
 		{"/static/style.css", http.StatusOK, ".ws-route-toggle"},
 		{"/static/style.css", http.StatusOK, ".conn-preset-list"},
@@ -63,7 +63,7 @@ func TestServer_routes_smoke(t *testing.T) {
 }
 
 func TestWorkspaceRendersConnectionLabels(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestWorkspaceRendersConnectionLabels(t *testing.T) {
 }
 
 func TestConnectionsJSONDedupesDuplicateLiveConnections(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestConnectionsJSONDedupesDuplicateLiveConnections(t *testing.T) {
 }
 
 func TestServer_apiRequiresSession(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestServer_apiRequiresSession(t *testing.T) {
 }
 
 func TestServer_protectedPagesRedirectToConnect(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

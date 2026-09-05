@@ -23,11 +23,15 @@ type Server struct {
 	pages    map[string]*template.Template
 	sessions *SessionRegistry
 	jobs     *Manager
+	store    *ConnectionStore
 }
 
 // Options configures the Server.
 type Options struct {
 	Addr string
+	// ConnectionsPath overrides where saved connections are stored. Empty means
+	// the user's config directory.
+	ConnectionsPath string
 }
 
 // New constructs a Server with all routes registered.
@@ -36,12 +40,20 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load templates: %w", err)
 	}
+	path := opts.ConnectionsPath
+	if path == "" {
+		path, err = DefaultConnectionsPath()
+		if err != nil {
+			return nil, err
+		}
+	}
 	s := &Server{
 		addr:     opts.Addr,
 		mux:      http.NewServeMux(),
 		pages:    pages,
 		sessions: NewSessionRegistry(),
 		jobs:     NewManager(),
+		store:    NewConnectionStore(path),
 	}
 	s.routes()
 	return s, nil
@@ -73,9 +85,14 @@ func (s *Server) routes() {
 	// Pages.
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/connect", s.handleConnect)
+	s.mux.HandleFunc("/connect/test", s.handleConnectTest)
+	s.mux.HandleFunc("/connect/saved", s.handleConnectSaved)
 	s.mux.HandleFunc("/disconnect", s.handleDisconnect)
 	s.mux.HandleFunc("/switch", s.handleSwitch)
 	s.mux.HandleFunc("/api/connections", s.handleConnectionsJSON)
+	s.mux.HandleFunc("/api/saved-connections", s.handleSavedConnections)
+	s.mux.HandleFunc("/api/saved-connections/import", s.handleSavedConnectionsImport)
+	s.mux.HandleFunc("/api/params", s.handleParamsCatalog)
 	s.mux.HandleFunc("/generate", s.handleGeneratePage)
 	s.mux.HandleFunc("/enrich", s.handleEnrichPage)
 	s.mux.HandleFunc("/export", s.handleExportPage)

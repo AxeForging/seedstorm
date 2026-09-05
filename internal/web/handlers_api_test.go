@@ -129,7 +129,7 @@ func TestBuildGraphPayload_hardSelfReferenceIsSeedable(t *testing.T) {
 }
 
 func TestHandleTablePreviewJSON_requiresSession(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestHandleTablePreviewJSON_requiresSession(t *testing.T) {
 }
 
 func TestHandleTablePreviewJSON_validatesTableBeforeQuery(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestHandleTablePreviewJSON_validatesTableBeforeQuery(t *testing.T) {
 }
 
 func TestHandleTablePreviewJSON_requiresTableName(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

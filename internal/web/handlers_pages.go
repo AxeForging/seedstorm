@@ -2,8 +2,8 @@ package web
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -13,7 +13,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, _ := s.sessions.fromRequest(r)
 	if sess == nil {
-		s.render(w, r, "connect", pageData{Title: "Connect", Active: "connect"})
+		s.renderConnect(w, r, s.connectPageFor(connectForm{}, ""), "")
 		return
 	}
 	s.render(w, r, "workspace", pageData{Title: "Workspace", Active: "workspace"})
@@ -21,73 +21,87 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		s.render(w, r, "connect", pageData{Title: "Connect", Active: "connect"})
+		mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+		form := connectForm{}
+		if id := strings.TrimSpace(r.URL.Query().Get("edit")); id != "" && s.store != nil {
+			if saved, ok, _ := s.store.Get(id); ok {
+				form = savedToForm(saved, "")
+				form.Save = true
+				form.SavePassword = saved.Password != ""
+				form.NeedsPassword = saved.Password == ""
+				form.Origin = "edit"
+				mode = "form"
+			}
+		}
+		// Duplicating drops the id so saving creates a second entry, and never
+		// copies the secret into the page.
+		if id := strings.TrimSpace(r.URL.Query().Get("duplicate")); id != "" && s.store != nil {
+			if saved, ok, _ := s.store.Get(id); ok {
+				form = savedToForm(saved, "")
+				form.ID = ""
+				form.Label = saved.Label + " copy"
+				form.Save = true
+				form.SavePassword = saved.Password != ""
+				form.NeedsPassword = true
+				form.Origin = "duplicate"
+				mode = "form"
+			}
+		}
+		s.renderConnect(w, r, s.connectPageFor(form, mode), "")
 		return
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if err := parseAnyForm(r); err != nil {
 		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
-	info := ConnectionInfo{
-		Label:  strings.TrimSpace(r.FormValue("label")),
-		DBType: strings.TrimSpace(r.FormValue("dbType")),
-		Host:   strings.TrimSpace(r.FormValue("host")),
-		Port:   port,
-		DBName: strings.TrimSpace(r.FormValue("dbName")),
-		User:   strings.TrimSpace(r.FormValue("user")),
-		SSL:    strings.TrimSpace(r.FormValue("ssl")),
+	form := parseConnectForm(r)
+	fail := func(msg string) {
+		page := s.connectPageFor(form, "form")
+		page.Hint = paramHintFromError(form.DBType, msg)
+		s.renderConnect(w, r, page, msg)
 	}
-	password := r.FormValue("password")
-	rawDSN := strings.TrimSpace(r.FormValue("dsn"))
-	if rawDSN != "" {
-		driver, dsn, displayInfo, err := buildRawDSN(info.DBType, rawDSN)
-		if err != nil {
-			s.render(w, r, "connect", pageData{
-				Title:  "Connect",
-				Active: "connect",
-				Error:  err.Error(),
-				Data:   info,
-			})
-			return
-		}
-		displayInfo.Label = info.Label
-		sess, err := s.sessions.OpenDSN(driver, dsn, displayInfo)
-		if err != nil {
-			s.render(w, r, "connect", pageData{
-				Title:  "Connect",
-				Active: "connect",
-				Error:  err.Error(),
-				Data:   info,
-			})
-			return
-		}
-		setSessionCookie(w, sess.ID)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	if form.DSN == "" && (form.DBType == "" || form.DBName == "" || form.User == "") {
+		fail("dbType, dbName, and user are required")
 		return
 	}
-	if info.DBType == "" || info.DBName == "" || info.User == "" {
-		s.render(w, r, "connect", pageData{
-			Title:  "Connect",
-			Active: "connect",
-			Error:  "dbType, dbName, and user are required",
-			Data:   info,
-		})
+	// Saving is deliberately separate from connecting: editing a stored
+	// connection should not force a session to be opened against it.
+	if strings.TrimSpace(r.FormValue("action")) == "save" {
+		if s.store == nil {
+			fail("connection store unavailable")
+			return
+		}
+		if err := validateParamNames(form.Params); err != nil {
+			fail(err.Error())
+			return
+		}
+		if _, err := s.store.Save(form.saved(), !form.SavePassword); err != nil {
+			fail(err.Error())
+			return
+		}
+		http.Redirect(w, r, "/connect?mode=chooser", http.StatusSeeOther)
 		return
 	}
-	sess, err := s.sessions.Open(info, password)
+	driver, dsn, info, err := form.dsnFor()
 	if err != nil {
-		s.render(w, r, "connect", pageData{
-			Title:  "Connect",
-			Active: "connect",
-			Error:  err.Error(),
-			Data:   info,
-		})
+		fail(err.Error())
 		return
+	}
+	sess, err := s.sessions.OpenDSN(driver, dsn, info)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	if form.Save && s.store != nil {
+		saved := form.saved()
+		saved.UsedAt = time.Now().UTC()
+		if stored, err := s.store.Save(saved, !form.SavePassword); err == nil {
+			form.ID = stored.ID
+		}
 	}
 	setSessionCookie(w, sess.ID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestRunCloneSchema_rejectsSameTarget(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestRunCloneSchema_rejectsSameTarget(t *testing.T) {
 }
 
 func TestRunCloneSchema_rejectsMissingTarget(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestRunCloneSchema_rejectsMissingTarget(t *testing.T) {
 }
 
 func TestRunCloneSchema_rejectsCrossDatabaseType(t *testing.T) {
-	s, err := New(Options{Addr: "127.0.0.1:0"})
+	s, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

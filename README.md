@@ -86,6 +86,14 @@ dependency order with live job logs, then browse the populated data:
 seedstorm serve            # http://127.0.0.1:8080
 ```
 
+Connections are saved on the machine (`~/.config/seedstorm/connections.yaml`, mode
+`0600`), so `serve` opens on a list of your databases instead of an empty form.
+Each one can be tested before you commit to it, and any driver parameter can be
+added as a `name` / `value` pair — `allowCleartextPasswords=1` for MySQL cleartext
+auth, `tls=skip-verify`, `sslmode=verify-full`, `foreign_key_checks=0` — from both
+the structured fields and a raw connection string. Passwords are stored only if you
+tick the box. See [docs/commands.md](docs/commands.md#serve) for the full flow.
+
 <img src="docs/gifs/web-ui.gif" alt="seedstorm web UI — introspect the schema graph, seed, and browse live data" width="820" />
 
 ## Features
@@ -99,7 +107,8 @@ seedstorm serve            # http://127.0.0.1:8080
 - **Gap analysis** — `gaps` shows which tables are empty with row counts and FK context; `--fill` seeds only the empty ones
 - **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, preserving compatible table metadata before seeding it with safe fake data
 - **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
-- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, multi-DB session switcher, and connection presets in `localStorage`
+- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
+- **Saved connections** — connections persist on the machine and survive a restart, with test-before-connect, opt-in password storage, and driver-aware connection parameters (with JDBC-to-Go translation) for both Postgres and MySQL
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, or SQL without a live connection
 

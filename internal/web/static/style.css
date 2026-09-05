@@ -14,6 +14,10 @@
 }
 
 * { box-sizing: border-box; }
+/* Reserve the scrollbar gutter on the scrolling connect page so that growing
+   past the viewport does not shrink the layout width mid-render. The workspace
+   manages its own scrolling and must keep every pixel of canvas. */
+html:has(.connect-shell) { scrollbar-gutter: stable; }
 html, body { margin: 0; height: 100%; }
 body {
   background:
@@ -1773,3 +1777,173 @@ textarea { font-family: var(--mono); font-size: 12px; }
   .ws-mode { grid-template-columns: 1fr; }
   .ws-mode-pill { white-space: nowrap; }
 }
+
+/* ── Connect: saved connection chooser ─────────────────────────────────── */
+.saved-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.saved-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.saved-row:hover { border-color: rgba(121,216,179,0.45); transform: translateY(-1px); }
+.saved-row.is-live { border-color: rgba(121,216,179,0.55); }
+.saved-main { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.saved-text { display: flex; flex-direction: column; min-width: 0; }
+.saved-text strong { font-family: var(--mono); font-size: 13px; }
+.saved-text .muted { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+.saved-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-left: 8px; }
+.saved-actions { display: flex; align-items: center; gap: 6px; }
+.saved-actions form { display: flex; align-items: center; gap: 6px; }
+.saved-connect input[type="password"] { width: 150px; padding: 6px 8px; font-size: 12px; }
+.saved-actions .btn-primary, .saved-actions .btn-ghost { padding: 7px 12px; font-size: 12px; }
+.btn-ghost.danger:hover { border-color: var(--err); color: #ffd0d0; }
+.pill {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--muted); font-size: 10px; font-family: var(--mono);
+  text-transform: lowercase; white-space: nowrap;
+}
+.pill.ok { background: rgba(121,216,179,0.14); border-color: rgba(121,216,179,0.4); color: var(--ok); }
+.pill.param { background: rgba(216,181,111,0.12); border-color: rgba(216,181,111,0.32); color: var(--accent-2); }
+
+/* ── Connect: driver parameters ────────────────────────────────────────── */
+.param-block { gap: 8px; }
+.param-intro { margin: 0; }
+.param-rows { display: flex; flex-direction: column; gap: 6px; }
+.param-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) auto;
+  gap: 6px; align-items: center;
+}
+.param-row input { font-family: var(--mono); font-size: 12px; }
+.param-row.warn input[name="paramName"] { border-color: rgba(216,181,111,0.55); }
+.param-row.err input[name="paramName"] { border-color: var(--err); }
+.param-row .param-remove { padding: 6px 10px; line-height: 1; }
+.param-note {
+  grid-column: 1 / -1;
+  margin: 0; font-size: 11px; color: var(--muted);
+}
+.param-row.err .param-note { color: #ffd0d0; }
+.param-fix {
+  padding: 2px 8px; font-size: 11px; margin-left: 4px;
+  vertical-align: baseline;
+}
+.param-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.param-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.param-chip {
+  background: var(--panel-2); border: 1px dashed var(--line);
+  color: var(--muted); border-radius: 999px;
+  padding: 3px 10px; font-size: 11px; font-family: var(--mono);
+  cursor: pointer;
+}
+.param-chip:hover { border-color: var(--accent); color: var(--text); border-style: solid; }
+.param-issues { display: flex; flex-direction: column; gap: 4px; }
+.param-issue { margin: 0; font-size: 11px; color: var(--muted); }
+.param-issue.err { color: #ffd0d0; }
+.param-issue.warn { color: var(--accent-2); }
+
+/* ── Connect: test result, advanced blocks, save opt-in ────────────────── */
+.test-result[hidden] { display: none; }
+.test-result {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; background: var(--panel-2);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.test-result.ok { border-color: rgba(121,216,179,0.5); background: rgba(121,216,179,0.08); }
+.test-result.err { border-color: rgba(255,138,122,0.5); background: rgba(255,138,122,0.08); }
+.test-line { margin: 0; font-size: 12px; font-family: var(--mono); }
+.test-hint { margin: 0; font-size: 12px; color: var(--muted); }
+.adv-block summary {
+  cursor: pointer; color: var(--muted); font-size: 12px;
+  padding: 4px 0; list-style: revert;
+}
+.adv-block summary:hover { color: var(--text); }
+.adv-block > input { width: 100%; margin-top: 6px; font-family: var(--mono); font-size: 12px; }
+.adv-block p { margin: 6px 0 0; }
+.field.superseded { opacity: 0.45; }
+.save-block { gap: 6px; }
+.check-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+/* The store path is one unbreakable token; without this it sets the whole
+   form's minimum width and pushes the page into horizontal scroll. */
+.check-row span, .check-row em { overflow-wrap: anywhere; min-width: 0; }
+/* .connect-form inputs are 46px tall; a checkbox must not be. */
+.check-row input[type="checkbox"] {
+  min-height: 0;
+  width: 15px;
+  height: 15px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+  flex: none;
+}
+.check-row.sub { padding-left: 22px; }
+.check-row.disabled { opacity: 0.5; cursor: default; }
+
+.store-path { margin: 6px 0 0; overflow-wrap: anywhere; }
+.store-path code { font-size: 11px; }
+
+/* ── Connect: responsive ──────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .saved-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .saved-main { flex-wrap: wrap; }
+  .saved-badges { margin-left: 0; width: 100%; }
+  .saved-actions { flex-wrap: wrap; }
+  /* An input carries an intrinsic min-width from its size attribute; without
+     min-width:0 the inline password field cannot shrink on a narrow phone. */
+  .saved-actions form { flex: 1 1 100%; min-width: 0; flex-wrap: wrap; }
+  .saved-connect input[type="password"] { flex: 1 1 120px; width: auto; min-width: 0; }
+  .saved-actions .btn-primary { flex: 1; justify-content: center; }
+  /* Name and its remove button share the first line; the value gets its own. */
+  .param-row { grid-template-columns: 1fr auto; }
+  .param-row [name="paramName"] { grid-area: 1 / 1 / 2 / 2; }
+  .param-row .param-remove { grid-area: 1 / 2 / 2 / 3; }
+  .param-row [name="paramValue"] { grid-area: 2 / 1 / 3 / -1; }
+  .param-row .param-note { grid-area: 3 / 1 / 4 / -1; }
+}
+@media (max-width: 560px) {
+  .saved-actions .btn-ghost { flex: 1; justify-content: center; text-align: center; }
+  .param-chips { width: 100%; }
+  /* .connect-actions is already a stretched column here, so the buttons only
+     need their labels centred — a flex basis would create new columns. */
+  .connect-actions .btn-ghost { justify-content: center; text-align: center; }
+}
+
+/* ── Connect: connection dialog ────────────────────────────────────────── */
+.conn-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 40px 90px rgba(0,0,0,0.5);
+  overflow: auto;
+}
+.conn-dialog::backdrop { background: rgba(6,10,13,0.72); backdrop-filter: blur(2px); }
+.conn-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+}
+.conn-dialog-head h2 { margin: 0; font-size: 18px; }
+#connection-dialog-close { padding: 4px 12px; font-size: 18px; line-height: 1; }
+@media (max-width: 560px) {
+  /* Full-bleed via inset rather than 100vw, which counts the scrollbar. */
+  .conn-dialog {
+    inset: 0;
+    width: auto; height: auto;
+    max-width: none; max-height: none;
+    border-radius: 0; border: 0;
+  }
+}
+
+/* Grid and flex items default to min-width:auto, so one long unbreakable token
+   (a file path, a DSN) can hold the whole connect layout open and force
+   horizontal scrolling on narrow screens. Let every level shrink instead. */
+.main:has(.connect-shell) { grid-template-columns: minmax(0, 1fr); }
+.connect-shell, .connect-shell > *, .connect-panel > * { min-width: 0; }
+.saved-row, .saved-main, .saved-text, .saved-actions { min-width: 0; }
+.saved-text strong { overflow-wrap: anywhere; }

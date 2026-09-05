@@ -3,124 +3,71 @@
 (function () {
   "use strict";
 
-  const PRESET_KEY = "seedstorm.connections.v1";
+  const LEGACY_PRESET_KEY = "seedstorm.connections.v1";
+  const PRESET_MIGRATED_KEY = "seedstorm.presetsMigrated.v1";
   const GENERATED_DRAFT_KEY = "seedstorm.generatedData.v1";
   const GRAPH_ROUTE_KEY = "seedstorm.graphRoute.v1";
 
-  // ── localStorage presets for the connection form ───────────────────────
-  function loadPresets() {
-    try { return JSON.parse(localStorage.getItem(PRESET_KEY) || "{}"); }
-    catch (_) { return {}; }
-  }
-  function savePresets(p) { localStorage.setItem(PRESET_KEY, JSON.stringify(p)); }
+  const apiHeaders = { "Content-Type": "application/json", "X-Seedstorm-Request": "1" };
 
-  function setupConnectForm() {
-    const form = document.getElementById("connect-form");
-    if (!form) return;
-    const picker = document.getElementById("preset-picker");
-    const deleteBtn = document.getElementById("preset-delete");
-    const includePw = document.getElementById("preset-include-pw");
-    const labelInput = document.getElementById("connection-label");
-    const pwInput = document.getElementById("conn-password");
-    const eyeBtn = document.getElementById("toggle-password");
-    const dbType = form.querySelector('[name="dbType"]');
-    const port = form.querySelector('[name="port"]');
-    const rawDSN = form.querySelector('[name="dsn"]');
-    const defaultPorts = { postgres: "5432", mysql: "3306" };
-    const syncRawDSNMode = () => {
-      if (!rawDSN) return;
-      const usingRaw = rawDSN.value.trim() !== "";
-      ["host", "port", "dbName", "user"].forEach((name) => {
-        const el = form.querySelector(`[name="${name}"]`);
-        if (el) el.required = !usingRaw;
-      });
-    };
-
-    // Eye toggle: closed by default, click reveals
-    if (eyeBtn && pwInput) {
-      eyeBtn.addEventListener("click", () => {
-        const revealed = eyeBtn.dataset.revealed === "true";
-        eyeBtn.dataset.revealed = revealed ? "false" : "true";
-        pwInput.type = revealed ? "password" : "text";
-        eyeBtn.setAttribute("aria-label", revealed ? "Reveal password" : "Hide password");
-      });
+  // ── saved connections (server-side, ~/.config/seedstorm/connections.yaml) ──
+  async function fetchSavedConnections() {
+    try {
+      const res = await fetch("/api/saved-connections");
+      if (!res.ok) return [];
+      const conns = await res.json();
+      return Array.isArray(conns) ? conns : [];
+    } catch (_) {
+      return [];
     }
-
-    const presets = loadPresets();
-    Object.keys(presets).sort().forEach((name) => {
-      const opt = document.createElement("option");
-      opt.value = name; opt.textContent = name;
-      if (presets[name].password) opt.textContent += " · 🔒";
-      picker.appendChild(opt);
-    });
-    picker.addEventListener("change", () => {
-      const p = loadPresets()[picker.value];
-      deleteBtn.disabled = !picker.value;
-      if (!p) return;
-      for (const [k, v] of Object.entries(p)) {
-        const el = form.querySelector(`[name="${k}"]`);
-        if (el) el.value = v;
-      }
-      const nameInput = document.getElementById("preset-name");
-      if (nameInput) nameInput.value = picker.value;
-      if (labelInput) labelInput.value = picker.value;
-      syncRawDSNMode();
-      // Reset eye to closed after auto-fill, regardless of whether password
-      // was loaded — never show secrets without an explicit click.
-      if (eyeBtn) {
-        eyeBtn.dataset.revealed = "false";
-        if (pwInput) pwInput.type = "password";
-      }
-    });
-    if (dbType && port) {
-      dbType.addEventListener("change", () => {
-        const next = defaultPorts[dbType.value];
-        const known = Object.values(defaultPorts).includes(port.value);
-        if (next && (port.value === "" || known)) port.value = next;
-      });
-    }
-    if (rawDSN) {
-      rawDSN.addEventListener("input", syncRawDSNMode);
-    }
-    deleteBtn.addEventListener("click", () => {
-      const all = loadPresets();
-      delete all[picker.value];
-      savePresets(all);
-      picker.querySelector(`option[value="${picker.value}"]`)?.remove();
-      picker.value = "";
-      deleteBtn.disabled = true;
-    });
-    form.addEventListener("submit", () => {
-      const nameInput = document.getElementById("preset-name");
-      const name = nameInput ? nameInput.value.trim() : "";
-      if (labelInput) labelInput.value = name || picker.value || "";
-      if (!name) return;
-      const data = new FormData(form);
-      const preset = {};
-      ["dbType", "dsn", "host", "port", "dbName", "user", "ssl"].forEach((k) => {
-        preset[k] = data.get(k) || "";
-      });
-      if (includePw && includePw.checked) {
-        preset.password = data.get("password") || "";
-      }
-      const all = loadPresets();
-      all[name] = preset;
-      savePresets(all);
-    });
   }
 
-  function presetConnectionInfo(name, p) {
-    p = p || {};
-    return {
-      label: name || "",
-      dbType: p.dbType || "postgres",
-      dsn: p.dsn || "",
-      host: p.host || "",
-      port: Number(p.port || 0) || 0,
-      dbName: p.dbName || "",
-      user: p.user || "",
-      ssl: p.ssl || "",
-    };
+  async function deleteSavedConnection(id) {
+    const res = await fetch("/api/saved-connections?id=" + encodeURIComponent(id), {
+      method: "DELETE",
+      headers: apiHeaders,
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || res.statusText);
+    }
+  }
+
+  // Connections used to live in this browser's localStorage. Move them into the
+  // server store once so they survive a browser change, and keep the originals
+  // so an older build still finds them.
+  async function migrateLegacyPresets() {
+    let raw;
+    try {
+      if (localStorage.getItem(PRESET_MIGRATED_KEY)) return;
+      raw = localStorage.getItem(LEGACY_PRESET_KEY);
+    } catch (_) { return; }
+    if (!raw) return;
+    let presets;
+    try { presets = JSON.parse(raw) || {}; } catch (_) { return; }
+    const connections = Object.keys(presets).map((name) => {
+      const p = presets[name] || {};
+      return {
+        label: name,
+        dbType: p.dbType || "postgres",
+        host: p.dsn ? "" : (p.host || ""),
+        port: p.dsn ? 0 : Number(p.port || 0) || 0,
+        dbName: p.dsn ? "" : (p.dbName || ""),
+        user: p.dsn ? "" : (p.user || ""),
+        ssl: p.ssl || "",
+        dsn: p.dsn || "",
+        password: p.password || "",
+      };
+    });
+    if (!connections.length) return;
+    try {
+      await fetch("/api/saved-connections/import", {
+        method: "POST",
+        headers: apiHeaders,
+        body: JSON.stringify({ connections }),
+      });
+      localStorage.setItem(PRESET_MIGRATED_KEY, String(Date.now()));
+    } catch (_) { /* try again next load */ }
   }
 
   function connectionKey(info) {
@@ -156,57 +103,429 @@
     }
   }
 
-  async function setupConnectionMenuPresets() {
+  // ── connect form: driver parameters, testing, saving ───────────────────
+  let paramCatalog = { driver: "postgres", known: [], suggestions: [], translations: {}, unknownNote: "" };
+
+  function paramRow(name, value) {
+    const row = document.createElement("div");
+    row.className = "param-row";
+    row.innerHTML =
+      '<input name="paramName" list="param-names" placeholder="name" autocomplete="off">' +
+      '<input name="paramValue" placeholder="value" autocomplete="off">' +
+      '<button type="button" class="btn-ghost param-remove" aria-label="Remove parameter">\u00d7</button>';
+    row.querySelector('[name="paramName"]').value = name || "";
+    row.querySelector('[name="paramValue"]').value = value || "";
+    return row;
+  }
+
+  function addParamRow(name, value, focus) {
+    const rows = document.getElementById("param-rows");
+    if (!rows) return null;
+    const existing = [...rows.querySelectorAll('[name="paramName"]')]
+      .find((el) => el.value.trim().toLowerCase() === String(name || "").toLowerCase());
+    if (name && existing) {
+      const row = existing.closest(".param-row");
+      row.querySelector('[name="paramValue"]').value = value || "";
+      annotateParamRow(row);
+      if (focus) row.querySelector('[name="paramValue"]').focus();
+      return row;
+    }
+    const row = paramRow(name, value);
+    rows.appendChild(row);
+    annotateParamRow(row);
+    if (focus) row.querySelector(name ? '[name="paramValue"]' : '[name="paramName"]').focus();
+    return row;
+  }
+
+  function removeParamRow(name) {
+    const rows = document.getElementById("param-rows");
+    if (!rows) return;
+    [...rows.querySelectorAll('[name="paramName"]')]
+      .filter((el) => el.value.trim().toLowerCase() === String(name || "").toLowerCase())
+      .forEach((el) => el.closest(".param-row").remove());
+  }
+
+  // annotateParamRow mirrors the server's validation so the form can flag a
+  // parameter as you type. The server re-checks on test and connect.
+  function annotateParamRow(row) {
+    if (!row) return;
+    const nameEl = row.querySelector('[name="paramName"]');
+    const name = (nameEl?.value || "").trim();
+    row.querySelector(".param-note")?.remove();
+    row.classList.remove("warn", "err");
+    if (!name) return;
+    const translation = paramCatalog.translations?.[name.toLowerCase()];
+    const note = document.createElement("p");
+    note.className = "param-note";
+    if (translation) {
+      row.classList.add("err");
+      note.textContent = translation.message;
+      if (translation.suggest?.name) {
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.className = "btn-ghost param-fix";
+        fix.textContent = "Use " + translation.suggest.name;
+        fix.addEventListener("click", () => {
+          const value = row.querySelector('[name="paramValue"]').value;
+          nameEl.value = translation.suggest.name;
+          if (translation.suggest.value) {
+            row.querySelector('[name="paramValue"]').value = translation.suggest.value;
+          } else if (!value) {
+            row.querySelector('[name="paramValue"]').value = "";
+          }
+          annotateParamRow(row);
+        });
+        note.appendChild(document.createTextNode(" "));
+        note.appendChild(fix);
+      } else {
+        const drop = document.createElement("button");
+        drop.type = "button";
+        drop.className = "btn-ghost param-fix";
+        drop.textContent = "Remove";
+        drop.addEventListener("click", () => row.remove());
+        note.appendChild(document.createTextNode(" "));
+        note.appendChild(drop);
+      }
+    } else {
+      // A curated suggestion is blessed even when the driver does not parse it
+      // itself (application_name and foreign_key_checks are meant to reach the
+      // server), so it gets its own help rather than the generic warning.
+      const suggestion = (paramCatalog.suggestions || []).find((s) => s.name === name);
+      if (suggestion) {
+        if (!suggestion.help) return;
+        note.textContent = suggestion.help;
+      } else if (!(paramCatalog.known || []).includes(name)) {
+        row.classList.add("warn");
+        note.textContent = paramCatalog.unknownNote || "";
+        if (!note.textContent) return;
+      } else {
+        return;
+      }
+    }
+    row.appendChild(note);
+  }
+
+  function renderParamChips() {
+    const chips = document.getElementById("param-chips");
+    const list = document.getElementById("param-names");
+    if (list) {
+      list.innerHTML = "";
+      (paramCatalog.known || []).forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        list.appendChild(opt);
+      });
+    }
+    const intro = document.getElementById("param-intro");
+    if (intro) intro.textContent = paramCatalog.unknownNote || "";
+    if (!chips) return;
+    chips.innerHTML = "";
+    (paramCatalog.suggestions || []).slice(0, 6).forEach((s) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "param-chip";
+      chip.textContent = "+ " + s.name;
+      chip.title = s.help || "";
+      chip.addEventListener("click", () => addParamRow(s.name, s.value, true));
+      chips.appendChild(chip);
+    });
+  }
+
+  async function loadParamCatalog(dbType) {
+    try {
+      const res = await fetch("/api/params?dbType=" + encodeURIComponent(dbType || ""));
+      if (res.ok) paramCatalog = await res.json();
+    } catch (_) { /* keep the previous catalog */ }
+    renderParamChips();
+    document.querySelectorAll("#param-rows .param-row").forEach(annotateParamRow);
+  }
+
+  function renderTestResult(result) {
+    const box = document.getElementById("test-result");
+    if (!box) return;
+    box.hidden = false;
+    box.className = "test-result span-2 " + (result.ok ? "ok" : "err");
+    box.innerHTML = "";
+    const line = document.createElement("p");
+    line.className = "test-line";
+    if (result.ok) {
+      line.textContent = `Connected to ${result.target || "the database"} via ${result.driver} in ${result.elapsedMs}ms.`;
+    } else {
+      line.textContent = result.error || "Connection failed.";
+    }
+    box.appendChild(line);
+    if (result.hint) {
+      const hint = document.createElement("p");
+      hint.className = "test-hint";
+      hint.textContent = result.hint.note || "";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-ghost param-fix";
+      if (result.hint.add) {
+        btn.textContent = `Add ${result.hint.add.name}=${result.hint.add.value}`;
+        btn.addEventListener("click", () => {
+          addParamRow(result.hint.add.name, result.hint.add.value, false);
+          btn.disabled = true;
+        });
+      } else if (result.hint.remove) {
+        btn.textContent = `Remove ${result.hint.remove}`;
+        btn.addEventListener("click", () => {
+          removeParamRow(result.hint.remove);
+          btn.disabled = true;
+        });
+      }
+      if (btn.textContent) {
+        hint.appendChild(document.createTextNode(" "));
+        hint.appendChild(btn);
+      }
+      box.appendChild(hint);
+    }
+    (result.issues || []).forEach((issue) => {
+      const p = document.createElement("p");
+      p.className = "param-issue " + issue.level;
+      p.textContent = issue.message;
+      box.appendChild(p);
+    });
+  }
+
+  function setupConnectForm() {
+    const form = document.getElementById("connect-form");
+    if (!form) return;
+    const pwInput = document.getElementById("conn-password");
+    const eyeBtn = document.getElementById("toggle-password");
+    const dbType = document.getElementById("conn-dbtype");
+    const port = form.querySelector('[name="port"]');
+    const rawDSN = document.getElementById("conn-dsn");
+    const saveBox = document.getElementById("conn-save");
+    const savePwBox = document.getElementById("conn-save-password");
+    const defaultPorts = { postgres: "5432", mysql: "3306" };
+
+    const syncRawDSNMode = () => {
+      if (!rawDSN) return;
+      const usingRaw = rawDSN.value.trim() !== "";
+      ["host", "port", "dbName", "user"].forEach((name) => {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (el) {
+          el.required = !usingRaw;
+          el.closest(".field")?.classList.toggle("superseded", usingRaw);
+        }
+      });
+    };
+
+    const syncSaveMode = () => {
+      if (!saveBox || !savePwBox) return;
+      savePwBox.disabled = !saveBox.checked;
+      document.getElementById("save-password-row")?.classList.toggle("disabled", !saveBox.checked);
+    };
+
+    if (eyeBtn && pwInput) {
+      eyeBtn.addEventListener("click", () => {
+        const revealed = eyeBtn.dataset.revealed === "true";
+        eyeBtn.dataset.revealed = revealed ? "false" : "true";
+        pwInput.type = revealed ? "password" : "text";
+        eyeBtn.setAttribute("aria-label", revealed ? "Reveal password" : "Hide password");
+      });
+    }
+
+    // MySQL has no sslmode: TLS is a driver parameter there, so say so rather
+    // than leaving a control that silently does nothing.
+    const syncDriverMode = () => {
+      if (!dbType) return;
+      const isMySQL = dbType.value === "mysql";
+      const ssl = document.getElementById("conn-ssl");
+      const sslLabel = document.getElementById("ssl-label");
+      if (ssl) {
+        ssl.disabled = isMySQL;
+        ssl.closest(".field")?.classList.toggle("superseded", isMySQL);
+      }
+      if (sslLabel) {
+        sslLabel.textContent = isMySQL ? "SSL mode — MySQL uses the tls parameter" : "SSL mode";
+      }
+    };
+
+    if (dbType) {
+      dbType.addEventListener("change", () => {
+        const next = defaultPorts[dbType.value];
+        const known = Object.values(defaultPorts).includes(port?.value);
+        if (port && next && (port.value === "" || known)) port.value = next;
+        syncDriverMode();
+        loadParamCatalog(dbType.value);
+      });
+      syncDriverMode();
+    }
+    if (rawDSN) rawDSN.addEventListener("input", syncRawDSNMode);
+    if (saveBox) saveBox.addEventListener("change", syncSaveMode);
+
+    document.getElementById("param-add")?.addEventListener("click", () => addParamRow("", "", true));
+    document.getElementById("param-rows")?.addEventListener("click", (ev) => {
+      if (ev.target.classList.contains("param-remove")) ev.target.closest(".param-row").remove();
+    });
+    document.getElementById("param-rows")?.addEventListener("input", (ev) => {
+      if (ev.target.name === "paramName") annotateParamRow(ev.target.closest(".param-row"));
+    });
+
+    const testBtn = document.getElementById("test-connection");
+    testBtn?.addEventListener("click", async () => {
+      const original = testBtn.textContent;
+      testBtn.disabled = true;
+      testBtn.textContent = "Testing…";
+      try {
+        // URLSearchParams keeps this a urlencoded post; a bare FormData would
+        // send multipart, which the plain form handlers do not read.
+        const body = new URLSearchParams(new FormData(form));
+        const res = await fetch("/connect/test", { method: "POST", body });
+        renderTestResult(await res.json());
+      } catch (err) {
+        renderTestResult({ ok: false, error: err.message || String(err) });
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = original;
+      }
+    });
+
+    form.addEventListener("seedstorm:refresh", () => {
+      syncRawDSNMode();
+      syncSaveMode();
+      syncDriverMode();
+      loadParamCatalog(dbType?.value || "postgres");
+    });
+
+    syncRawDSNMode();
+    syncSaveMode();
+    loadParamCatalog(dbType?.value || "postgres");
+  }
+
+  // ── connection dialog ─────────────────────────────────────────────────
+  // Editing a stored connection stays on the chooser: the same form opens in a
+  // dialog, so you can rename or repoint a connection without connecting to it.
+  function setupConnectionDialog() {
+    const dialog = document.getElementById("connection-dialog");
+    if (!dialog || typeof dialog.showModal !== "function") return;
+    const form = dialog.querySelector("#connect-form");
+    const title = document.getElementById("connection-dialog-title");
+    const connectBtn = dialog.querySelector("#submit-connect");
+    const saveBtn = dialog.querySelector("#submit-save");
+
+    const setField = (name, value) => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (el) el.value = value ?? "";
+    };
+
+    const fill = (conn, mode) => {
+      const c = conn || {};
+      setField("id", mode === "duplicate" ? "" : (c.id || ""));
+      setField("label", mode === "duplicate" ? `${c.label} copy` : (c.label || ""));
+      setField("dbType", c.dbType || "postgres");
+      setField("host", c.host || "localhost");
+      setField("port", c.port || (c.dbType === "mysql" ? 3306 : 5432));
+      setField("dbName", c.dbName || "");
+      setField("user", c.user || "");
+      setField("dsn", c.dsn || "");
+      setField("ssl", c.ssl || "disable");
+      setField("password", "");
+
+      const rows = form.querySelector("#param-rows");
+      if (rows) rows.innerHTML = "";
+      (c.params || []).forEach((p) => addParamRow(p.name, p.value, false));
+
+      const save = form.querySelector("#conn-save");
+      const savePw = form.querySelector("#conn-save-password");
+      if (save) save.checked = true;
+      if (savePw) savePw.checked = mode === "add" ? false : !!c.hasPassword;
+
+      const dsnBlock = form.querySelector("#adv-dsn");
+      if (dsnBlock) dsnBlock.open = !!c.dsn;
+      const result = form.querySelector("#test-result");
+      if (result) result.hidden = true;
+
+      // Editing an existing connection makes saving the primary action;
+      // adding one usually ends in connecting.
+      const editing = mode === "edit";
+      connectBtn?.classList.toggle("btn-primary", !editing);
+      connectBtn?.classList.toggle("btn-ghost", editing);
+      saveBtn?.classList.toggle("btn-primary", editing);
+      saveBtn?.classList.toggle("btn-ghost", !editing);
+      if (title) {
+        title.textContent = mode === "edit" ? "Edit connection"
+          : mode === "duplicate" ? "Duplicate connection" : "Add connection";
+      }
+      form.dispatchEvent(new Event("seedstorm:refresh"));
+    };
+
+    const open = async (mode, id) => {
+      let conn = null;
+      if (id) conn = (await fetchSavedConnections()).find((c) => c.id === id) || null;
+      fill(conn, mode);
+      dialog.showModal();
+      form.querySelector(mode === "add" ? '[name="host"]' : '[name="label"]')?.focus();
+    };
+
+    document.getElementById("add-connection")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      open("add", "");
+    });
+    document.querySelectorAll("[data-edit-connection]").forEach((el) => {
+      el.addEventListener("click", (ev) => { ev.preventDefault(); open("edit", el.dataset.editConnection); });
+    });
+    document.querySelectorAll("[data-duplicate-connection]").forEach((el) => {
+      el.addEventListener("click", (ev) => { ev.preventDefault(); open("duplicate", el.dataset.duplicateConnection); });
+    });
+    document.getElementById("connection-dialog-close")?.addEventListener("click", () => dialog.close());
+    document.getElementById("back-to-saved")?.addEventListener("click", (ev) => {
+      if (dialog.open) { ev.preventDefault(); dialog.close(); }
+    });
+    dialog.addEventListener("click", (ev) => {
+      if (ev.target === dialog) dialog.close();
+    });
+  }
+
+  function setupSavedChooser() {
+    document.querySelectorAll("[data-delete-connection]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.deleteConnection;
+        if (!window.confirm(`Delete the saved connection "${btn.dataset.label || id}"? The database is not touched.`)) return;
+        btn.disabled = true;
+        try {
+          await deleteSavedConnection(id);
+          window.location.reload();
+        } catch (err) {
+          btn.disabled = false;
+          window.alert("Delete failed: " + (err.message || err));
+        }
+      });
+    });
+  }
+
+  // Saved connections in the header menu, minus the ones already live.
+  async function setupConnectionMenuSaved() {
     const list = document.getElementById("conn-preset-list");
     if (!list) return;
-    const presets = loadPresets();
-    const live = await fetchConnections();
+    const [saved, live] = await Promise.all([fetchSavedConnections(), fetchConnections()]);
     const liveKeys = new Set(live.map((c) => connectionKey(c.info)));
-    const liveLabels = new Set(live.map((c) => c.info?.label).filter(Boolean));
-    const names = Object.keys(presets).sort().filter((name) => {
-      const info = presetConnectionInfo(name, presets[name]);
-      return !liveLabels.has(name) && !liveKeys.has(connectionKey(info));
-    });
-    if (!names.length) return;
+    const rest = saved.filter((c) => !liveKeys.has(connectionKey(c)));
+    if (!rest.length) return;
     const heading = document.createElement("div");
     heading.className = "conn-menu-heading";
-    heading.textContent = "Saved presets";
+    heading.textContent = "Saved connections";
     list.appendChild(heading);
-    names.forEach((name) => {
-      const p = presets[name] || {};
-      const form = document.createElement("form");
-      form.method = "post";
-      form.action = "/connect";
-      form.className = "conn-menu-row";
-      const fields = {
-        label: name,
-        dbType: p.dbType || "postgres",
-        dsn: p.dsn || "",
-        host: p.host || "",
-        port: p.port || "",
-        dbName: p.dbName || "",
-        user: p.user || "",
-        password: p.password || "",
-        ssl: p.ssl || "",
-      };
-      Object.entries(fields).forEach(([k, v]) => {
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = k;
-        input.value = v;
-        form.appendChild(input);
-      });
-      const btn = document.createElement("button");
-      btn.type = "submit";
-      btn.className = "conn-menu-btn";
-      btn.disabled = !p.password && !p.dsn;
-      btn.innerHTML =
-        `<span class="conn-dot ${escapeHTML(p.dbType || "postgres")}"></span>` +
-        `<div class="conn-menu-text"><strong>${escapeHTML(name)}</strong>` +
-        `<span class="muted small">${escapeHTML(p.dbName || p.dsn || "open preset")}</span></div>` +
-        (btn.disabled ? '<span class="muted small">needs secret</span>' : "");
-      form.appendChild(btn);
-      list.appendChild(form);
+    rest.forEach((c) => {
+      const needsSecret = !c.hasPassword && !c.dsn;
+      const row = document.createElement(needsSecret ? "div" : "form");
+      row.className = "conn-menu-row";
+      const text =
+        `<span class="conn-dot ${escapeHTML(c.dbType || "postgres")}"></span>` +
+        `<div class="conn-menu-text"><strong>${escapeHTML(c.label)}</strong>` +
+        `<span class="muted small">${escapeHTML(c.dbName || c.dsn || "saved connection")}</span></div>`;
+      if (needsSecret) {
+        row.innerHTML = `<a class="conn-menu-btn" href="/connect?mode=chooser">${text}<span class="muted small">enter password</span></a>`;
+      } else {
+        row.method = "post";
+        row.action = "/connect/saved";
+        row.innerHTML =
+          `<input type="hidden" name="id" value="${escapeHTML(c.id)}">` +
+          `<button type="submit" class="conn-menu-btn">${text}</button>`;
+      }
+      list.appendChild(row);
     });
   }
 
@@ -905,22 +1224,19 @@
       opt.textContent = connectionLabel(c.info);
       target.appendChild(opt);
     });
-    const presets = loadPresets();
-    Object.keys(presets).sort().forEach((name) => {
-      const p = presets[name] || {};
-      const info = presetConnectionInfo(name, p);
-      const key = connectionKey(info);
-      if (active && info.dbType !== activeInfo.dbType) return;
+    const saved = await fetchSavedConnections();
+    saved.forEach((c) => {
+      const key = connectionKey(c);
+      if (active && c.dbType !== activeInfo.dbType) return;
       if (seen.has(key)) return;
       seen.add(key);
       const opt = document.createElement("option");
-      opt.value = name;
-      opt.dataset.kind = "preset";
-      opt.dataset.preset = name;
-      opt.textContent = connectionLabel(info);
-      if (!p.password && !p.dsn) {
+      opt.value = c.id;
+      opt.dataset.kind = "saved";
+      opt.textContent = connectionLabel(c);
+      if (!c.hasPassword && !c.dsn) {
         opt.disabled = true;
-        opt.textContent += " (needs secret)";
+        opt.textContent += " (needs password — connect it first)";
       }
       target.appendChild(opt);
     });
@@ -1854,12 +2170,8 @@
     };
     if (selected?.dataset.kind === "connection") {
       cfg.targetId = selected.value;
-    } else if (selected?.dataset.kind === "preset") {
-      const name = selected.dataset.preset || selected.value;
-      const p = loadPresets()[name] || {};
-      cfg.target = presetConnectionInfo(name, p);
-      cfg.targetDsn = p.dsn || "";
-      cfg.password = p.password || "";
+    } else if (selected?.dataset.kind === "saved") {
+      cfg.targetSavedId = selected.value;
     }
     activateTab("logs");
     resetPhases();
@@ -1944,7 +2256,9 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     setupConnectForm();
-    setupConnectionMenuPresets();
+    setupConnectionDialog();
+    setupSavedChooser();
+    migrateLegacyPresets().then(setupConnectionMenuSaved);
     setupRunForm();
     setupWorkspace();
     document.addEventListener("keydown", (ev) => {

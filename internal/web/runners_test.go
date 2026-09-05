@@ -66,7 +66,7 @@ func TestCleanTableRowsReturnsNilForEmptyInput(t *testing.T) {
 }
 
 func TestRunSeedDryRunAppliesTableRowOverrides(t *testing.T) {
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRunSeedDryRunAppliesTableRowOverrides(t *testing.T) {
 }
 
 func TestRunGenerateAppliesTableRowOverridesWithoutBreakingDefaults(t *testing.T) {
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestRunGenerateAppliesTableRowOverridesWithoutBreakingDefaults(t *testing.T
 }
 
 func TestRunSeedDryRunHandlesHardSelfReference(t *testing.T) {
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestRunSeedUsesFreshConnectionForMutatingServeJob(t *testing.T) {
 	}
 	defer func() { sqlOpen = oldOpen }()
 
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestRunSeedTruncateWithZeroRowsDoesNotReSeed(t *testing.T) {
 	}
 	defer func() { sqlOpen = oldOpen }()
 
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestRunSeedTruncateWithZeroRowsDoesNotReSeed(t *testing.T) {
 }
 
 func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRunGenerateHandlesHardSelfReference(t *testing.T) {
 }
 
 func TestRunGenerateReturnsCapacityWarnings(t *testing.T) {
-	srv, err := New(Options{Addr: "127.0.0.1:0"})
+	srv, err := New(testOptions(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
