@@ -52,12 +52,13 @@ type SeedRequest struct {
 }
 
 type CloneSchemaRequest struct {
-	TargetID     string         `json:"targetId"`
-	Target       ConnectionInfo `json:"target,omitempty"`
-	TargetDSN    string         `json:"targetDsn,omitempty"`
-	Password     string         `json:"password,omitempty"`
-	DropExisting bool           `json:"dropExisting"`
-	DryRun       bool           `json:"dryRun"`
+	TargetID      string         `json:"targetId"`
+	TargetSavedID string         `json:"targetSavedId,omitempty"`
+	Target        ConnectionInfo `json:"target,omitempty"`
+	TargetDSN     string         `json:"targetDsn,omitempty"`
+	Password      string         `json:"password,omitempty"`
+	DropExisting  bool           `json:"dropExisting"`
+	DryRun        bool           `json:"dryRun"`
 }
 
 func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSchemaRequest, jc JobControl) (map[string]any, error) {
@@ -143,6 +144,22 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 }
 
 func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*Session, error) {
+	if req.TargetSavedID != "" && s.store != nil {
+		saved, ok, err := s.store.Get(req.TargetSavedID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("target connection not found")
+		}
+		form := savedToForm(saved, saved.Password)
+		driver, dsn, info, err := form.dsnFor()
+		if err != nil {
+			return nil, err
+		}
+		info.Label = saved.Label
+		return s.sessions.OpenDSN(driver, dsn, info)
+	}
 	if req.TargetID != "" {
 		if req.TargetID == source.ID {
 			return nil, fmt.Errorf("target connection must be different from source")
@@ -154,7 +171,7 @@ func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*S
 		return target, nil
 	}
 	if strings.TrimSpace(req.TargetDSN) != "" {
-		driver, dsn, info, err := buildRawDSN(req.Target.DBType, req.TargetDSN)
+		driver, dsn, info, err := buildRawDSN(req.Target.DBType, req.TargetDSN, req.Target.Params)
 		if err != nil {
 			return nil, err
 		}
