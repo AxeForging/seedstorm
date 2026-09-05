@@ -804,3 +804,157 @@ func TestConnect_savingWithoutAnIDAddsASecondConnection(t *testing.T) {
 		t.Fatalf("duplicate did not add a second connection: %+v", conns)
 	}
 }
+
+// Editing a stored connection must not force a session against it: "Save" is a
+// separate action from "Connect".
+func TestConnect_saveActionPersistsWithoutConnecting(t *testing.T) {
+	s, srv := newConnectTestServer(t)
+	calls, _ := stubSQL(t, nil)
+	saved, _ := s.store.Save(SavedConnection{
+		Label: "before", DBType: "postgres", Host: "h", Port: 5432,
+		DBName: "app", User: "u", Password: "pw",
+	}, false)
+
+	form := url.Values{
+		"action": {"save"}, "id": {saved.ID},
+		"dbType": {"postgres"}, "host": {"h2"}, "port": {"5433"},
+		"dbName": {"app"}, "user": {"u"}, "ssl": {"disable"},
+		"label": {"after"}, "savePassword": {"1"},
+	}
+	res := postForm(t, srv, "/connect", form)
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d: %s", res.StatusCode, bodyOf(t, res))
+	}
+	if got := res.Header.Get("Location"); got != "/connect?mode=chooser" {
+		t.Fatalf("saving should return to the chooser, got %q", got)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("saving must not dial the database: %+v", *calls)
+	}
+	if len(s.sessions.All()) != 0 {
+		t.Fatal("saving must not open a session")
+	}
+	for _, c := range res.Cookies() {
+		if c.Name == sessionCookieName {
+			t.Fatal("saving must not set the session cookie")
+		}
+	}
+
+	stored, _, _ := s.store.Get(saved.ID)
+	if stored.Label != "after" || stored.Host != "h2" || stored.Port != 5433 {
+		t.Fatalf("save did not apply: %+v", stored)
+	}
+	if stored.Password != "pw" {
+		t.Fatal("a save that omits the password should keep the stored one")
+	}
+}
+
+// A connection can be edited even while it is unreachable — the whole point of
+// separating save from connect.
+func TestConnect_saveActionWorksWhenTheDatabaseIsDown(t *testing.T) {
+	s, srv := newConnectTestServer(t)
+	stubSQL(t, errors.New("dial tcp 127.0.0.1:5432: connect: connection refused"))
+
+	form := url.Values{
+		"action": {"save"}, "dbType": {"postgres"}, "host": {"unreachable"},
+		"port": {"5432"}, "dbName": {"app"}, "user": {"u"}, "label": {"offline box"},
+	}
+	if res := postForm(t, srv, "/connect", form); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d: %s", res.StatusCode, bodyOf(t, res))
+	}
+	conns, _ := s.store.List()
+	if len(conns) != 1 || conns[0].Label != "offline box" {
+		t.Fatalf("connections = %+v", conns)
+	}
+}
+
+func TestConnect_saveActionRejectsBadParamNames(t *testing.T) {
+	s, srv := newConnectTestServer(t)
+	form := url.Values{
+		"action": {"save"}, "dbType": {"postgres"}, "host": {"h"}, "port": {"5432"},
+		"dbName": {"app"}, "user": {"u"}, "label": {"bad"},
+		"paramName": {"tls=1&x"}, "paramValue": {"y"},
+	}
+	res := postForm(t, srv, "/connect", form)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the form re-rendered with the error", res.StatusCode)
+	}
+	if !strings.Contains(bodyOf(t, res), "invalid parameter name") {
+		t.Fatal("the error should name the problem")
+	}
+	if conns, _ := s.store.List(); len(conns) != 0 {
+		t.Fatalf("nothing should have been saved: %+v", conns)
+	}
+}
+
+func TestConnectPage_chooserCarriesTheDialogForm(t *testing.T) {
+	s, srv := newConnectTestServer(t)
+	saved, _ := s.store.Save(SavedConnection{
+		Label: "orders", DBType: "postgres", Host: "h", Port: 5432, DBName: "orders", User: "u",
+	}, false)
+
+	res, err := http.Get(srv.URL + "/connect")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	body := bodyOf(t, res)
+	for _, want := range []string{
+		`<dialog id="connection-dialog"`,
+		`id="connect-form"`,
+		`id="submit-save"`,
+		`data-edit-connection="` + saved.ID + `"`,
+		`data-duplicate-connection="` + saved.ID + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("chooser missing %q", want)
+		}
+	}
+	// Without JavaScript the same actions still work as plain links.
+	if !strings.Contains(body, `href="/connect?edit=`+saved.ID+`"`) {
+		t.Fatal("edit must degrade to a plain link when the dialog is unavailable")
+	}
+}
+
+// Saved connections are usable as a clone-schema target without being live
+// first: the store supplies the password and parameters.
+func TestResolveCloneTarget_fromSavedConnection(t *testing.T) {
+	s, _ := newConnectTestServer(t)
+	calls, _ := stubSQL(t, nil)
+	saved, err := s.store.Save(SavedConnection{
+		Label: "clone target", DBType: "postgres", Host: "h", Port: 5432,
+		DBName: "target", User: "u", SSL: "disable", Password: "stored-pw",
+		Params: []Param{{Name: "application_name", Value: "seedstorm-clone"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	source, err := s.sessions.OpenDSN("pgx", "postgres://u:p@h:5432/source", ConnectionInfo{DBType: "postgres", DBName: "source"})
+	if err != nil {
+		t.Fatalf("source session: %v", err)
+	}
+
+	target, err := s.resolveCloneTarget(CloneSchemaRequest{TargetSavedID: saved.ID}, source)
+	if err != nil {
+		t.Fatalf("resolveCloneTarget: %v", err)
+	}
+	if target.ID == source.ID {
+		t.Fatal("target must be a separate session")
+	}
+	if target.Info.Label != "clone target" || target.Info.DBName != "target" {
+		t.Fatalf("target info = %+v", target.Info)
+	}
+	if !strings.Contains(target.DSN, "stored-pw") {
+		t.Fatalf("stored password was not used: %q", target.DSN)
+	}
+	if !strings.Contains(target.DSN, "application_name=seedstorm-clone") {
+		t.Fatalf("saved parameters were not applied: %q", target.DSN)
+	}
+	if len(*calls) == 0 {
+		t.Fatal("expected the target connection to be opened")
+	}
+
+	if _, err := s.resolveCloneTarget(CloneSchemaRequest{TargetSavedID: "c_missing"}, source); err == nil {
+		t.Fatal("an unknown saved id should be an error")
+	}
+}

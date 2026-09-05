@@ -68,6 +68,24 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		fail("dbType, dbName, and user are required")
 		return
 	}
+	// Saving is deliberately separate from connecting: editing a stored
+	// connection should not force a session to be opened against it.
+	if strings.TrimSpace(r.FormValue("action")) == "save" {
+		if s.store == nil {
+			fail("connection store unavailable")
+			return
+		}
+		if err := validateParamNames(form.Params); err != nil {
+			fail(err.Error())
+			return
+		}
+		if _, err := s.store.Save(form.saved(), !form.SavePassword); err != nil {
+			fail(err.Error())
+			return
+		}
+		http.Redirect(w, r, "/connect?mode=chooser", http.StatusSeeOther)
+		return
+	}
 	driver, dsn, info, err := form.dsnFor()
 	if err != nil {
 		fail(err.Error())

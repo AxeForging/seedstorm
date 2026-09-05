@@ -14,6 +14,10 @@
 }
 
 * { box-sizing: border-box; }
+/* Reserve the scrollbar gutter on the scrolling connect page so that growing
+   past the viewport does not shrink the layout width mid-render. The workspace
+   manages its own scrolling and must keep every pixel of canvas. */
+html:has(.connect-shell) { scrollbar-gutter: stable; }
 html, body { margin: 0; height: 100%; }
 body {
   background:
@@ -1887,8 +1891,10 @@ textarea { font-family: var(--mono); font-size: 12px; }
   .saved-main { flex-wrap: wrap; }
   .saved-badges { margin-left: 0; width: 100%; }
   .saved-actions { flex-wrap: wrap; }
-  .saved-actions form { flex: 1 1 100%; }
-  .saved-connect input[type="password"] { flex: 1; width: auto; }
+  /* An input carries an intrinsic min-width from its size attribute; without
+     min-width:0 the inline password field cannot shrink on a narrow phone. */
+  .saved-actions form { flex: 1 1 100%; min-width: 0; flex-wrap: wrap; }
+  .saved-connect input[type="password"] { flex: 1 1 120px; width: auto; min-width: 0; }
   .saved-actions .btn-primary { flex: 1; justify-content: center; }
   /* Name and its remove button share the first line; the value gets its own. */
   .param-row { grid-template-columns: 1fr auto; }
@@ -1904,3 +1910,40 @@ textarea { font-family: var(--mono); font-size: 12px; }
      need their labels centred — a flex basis would create new columns. */
   .connect-actions .btn-ghost { justify-content: center; text-align: center; }
 }
+
+/* ── Connect: connection dialog ────────────────────────────────────────── */
+.conn-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 40px 90px rgba(0,0,0,0.5);
+  overflow: auto;
+}
+.conn-dialog::backdrop { background: rgba(6,10,13,0.72); backdrop-filter: blur(2px); }
+.conn-dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+}
+.conn-dialog-head h2 { margin: 0; font-size: 18px; }
+#connection-dialog-close { padding: 4px 12px; font-size: 18px; line-height: 1; }
+@media (max-width: 560px) {
+  /* Full-bleed via inset rather than 100vw, which counts the scrollbar. */
+  .conn-dialog {
+    inset: 0;
+    width: auto; height: auto;
+    max-width: none; max-height: none;
+    border-radius: 0; border: 0;
+  }
+}
+
+/* Grid and flex items default to min-width:auto, so one long unbreakable token
+   (a file path, a DSN) can hold the whole connect layout open and force
+   horizontal scrolling on narrow screens. Let every level shrink instead. */
+.main:has(.connect-shell) { grid-template-columns: minmax(0, 1fr); }
+.connect-shell, .connect-shell > *, .connect-panel > * { min-width: 0; }
+.saved-row, .saved-main, .saved-text, .saved-actions { min-width: 0; }
+.saved-text strong { overflow-wrap: anywhere; }

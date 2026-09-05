@@ -186,14 +186,21 @@
         note.appendChild(document.createTextNode(" "));
         note.appendChild(drop);
       }
-    } else if (!(paramCatalog.known || []).includes(name)) {
-      row.classList.add("warn");
-      note.textContent = paramCatalog.unknownNote || "";
-      if (!note.textContent) return;
     } else {
-      const known = (paramCatalog.suggestions || []).find((s) => s.name === name);
-      if (!known?.help) return;
-      note.textContent = known.help;
+      // A curated suggestion is blessed even when the driver does not parse it
+      // itself (application_name and foreign_key_checks are meant to reach the
+      // server), so it gets its own help rather than the generic warning.
+      const suggestion = (paramCatalog.suggestions || []).find((s) => s.name === name);
+      if (suggestion) {
+        if (!suggestion.help) return;
+        note.textContent = suggestion.help;
+      } else if (!(paramCatalog.known || []).includes(name)) {
+        row.classList.add("warn");
+        note.textContent = paramCatalog.unknownNote || "";
+        if (!note.textContent) return;
+      } else {
+        return;
+      }
     }
     row.appendChild(note);
   }
@@ -376,9 +383,100 @@
       }
     });
 
+    form.addEventListener("seedstorm:refresh", () => {
+      syncRawDSNMode();
+      syncSaveMode();
+      syncDriverMode();
+      loadParamCatalog(dbType?.value || "postgres");
+    });
+
     syncRawDSNMode();
     syncSaveMode();
     loadParamCatalog(dbType?.value || "postgres");
+  }
+
+  // ── connection dialog ─────────────────────────────────────────────────
+  // Editing a stored connection stays on the chooser: the same form opens in a
+  // dialog, so you can rename or repoint a connection without connecting to it.
+  function setupConnectionDialog() {
+    const dialog = document.getElementById("connection-dialog");
+    if (!dialog || typeof dialog.showModal !== "function") return;
+    const form = dialog.querySelector("#connect-form");
+    const title = document.getElementById("connection-dialog-title");
+    const connectBtn = dialog.querySelector("#submit-connect");
+    const saveBtn = dialog.querySelector("#submit-save");
+
+    const setField = (name, value) => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (el) el.value = value ?? "";
+    };
+
+    const fill = (conn, mode) => {
+      const c = conn || {};
+      setField("id", mode === "duplicate" ? "" : (c.id || ""));
+      setField("label", mode === "duplicate" ? `${c.label} copy` : (c.label || ""));
+      setField("dbType", c.dbType || "postgres");
+      setField("host", c.host || "localhost");
+      setField("port", c.port || (c.dbType === "mysql" ? 3306 : 5432));
+      setField("dbName", c.dbName || "");
+      setField("user", c.user || "");
+      setField("dsn", c.dsn || "");
+      setField("ssl", c.ssl || "disable");
+      setField("password", "");
+
+      const rows = form.querySelector("#param-rows");
+      if (rows) rows.innerHTML = "";
+      (c.params || []).forEach((p) => addParamRow(p.name, p.value, false));
+
+      const save = form.querySelector("#conn-save");
+      const savePw = form.querySelector("#conn-save-password");
+      if (save) save.checked = true;
+      if (savePw) savePw.checked = mode === "add" ? false : !!c.hasPassword;
+
+      const dsnBlock = form.querySelector("#adv-dsn");
+      if (dsnBlock) dsnBlock.open = !!c.dsn;
+      const result = form.querySelector("#test-result");
+      if (result) result.hidden = true;
+
+      // Editing an existing connection makes saving the primary action;
+      // adding one usually ends in connecting.
+      const editing = mode === "edit";
+      connectBtn?.classList.toggle("btn-primary", !editing);
+      connectBtn?.classList.toggle("btn-ghost", editing);
+      saveBtn?.classList.toggle("btn-primary", editing);
+      saveBtn?.classList.toggle("btn-ghost", !editing);
+      if (title) {
+        title.textContent = mode === "edit" ? "Edit connection"
+          : mode === "duplicate" ? "Duplicate connection" : "Add connection";
+      }
+      form.dispatchEvent(new Event("seedstorm:refresh"));
+    };
+
+    const open = async (mode, id) => {
+      let conn = null;
+      if (id) conn = (await fetchSavedConnections()).find((c) => c.id === id) || null;
+      fill(conn, mode);
+      dialog.showModal();
+      form.querySelector(mode === "add" ? '[name="host"]' : '[name="label"]')?.focus();
+    };
+
+    document.getElementById("add-connection")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      open("add", "");
+    });
+    document.querySelectorAll("[data-edit-connection]").forEach((el) => {
+      el.addEventListener("click", (ev) => { ev.preventDefault(); open("edit", el.dataset.editConnection); });
+    });
+    document.querySelectorAll("[data-duplicate-connection]").forEach((el) => {
+      el.addEventListener("click", (ev) => { ev.preventDefault(); open("duplicate", el.dataset.duplicateConnection); });
+    });
+    document.getElementById("connection-dialog-close")?.addEventListener("click", () => dialog.close());
+    document.getElementById("back-to-saved")?.addEventListener("click", (ev) => {
+      if (dialog.open) { ev.preventDefault(); dialog.close(); }
+    });
+    dialog.addEventListener("click", (ev) => {
+      if (ev.target === dialog) dialog.close();
+    });
   }
 
   function setupSavedChooser() {
@@ -2158,6 +2256,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     setupConnectForm();
+    setupConnectionDialog();
     setupSavedChooser();
     migrateLegacyPresets().then(setupConnectionMenuSaved);
     setupRunForm();
