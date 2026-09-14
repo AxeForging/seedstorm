@@ -84,12 +84,31 @@ Tests verify:
 - 6 value constraints hold (ratings 1–5, prices > 0, quantities ≥ 1, salaries > 0)
 - Enum values, UNIQUE columns, and CHECK constraints are auto-detected correctly
 
+Scenario evals drive the built `seedstorm` binary (and the web server) against
+scratch databases they create and drop, so they test exactly what a user runs:
+
+| Eval | Proves |
+|------|--------|
+| `TestSeed_TwiceWithoutTruncateAppendsRows` | Re-seeding a populated DB appends (sparse ids, UNIQUE sequences, composite keys) |
+| `TestMirror_BinaryEndToEnd` | `seed --profile`, `compare`, `mirror` dry-run / top-up / 2x top-up / reset, confirmation, same-DB refusal, source untouched |
+| `TestSeederFill_*` | Rejected rows are regenerated, impossible tables fail fast, key exhaustion is reported, `--stop-on-error` |
+| `TestKeycloak_SeedCloneAndMirror` | The same workflow on Keycloak's real 87-table schema (`integration/fixtures/`), Postgres, MySQL, and MySQL → Postgres |
+| `TestSeed_LargeRunsStreamWithFlatMemory` | `seed` and `gaps --fill` of 300k rows stay under 150MB peak memory with unique values, no orphans and children spread over parents |
+| `TestSeed_WideTableStaysUnderThePlaceholderLimit` | An 80-column table seeds at the default batch size without exceeding 65,535 placeholders |
+| `TestGenerateExport_LargeFilesStreamWithFlatMemory` | `generate` and `export` of 300k rows stay under 150MB peak (they used 1.6GB and 2.1GB) |
+| `TestExport_SQLLoadsIntoEachEngineWithExactValues` | Exported and generated SQL runs on each engine and round-trips quotes, backslashes, newlines, unicode and NULL |
+| `TestSequences_*` | The application's own inserts succeed after `seed`, `gaps --fill`, `mirror` top-up and reset (Postgres sequences advanced) |
+| `TestCompareEstimates_*` | `--counts estimate` never reports unknown or stale-zero counts |
+| `TestWebCompareMirrorAndProfiles_realDatabases` | Web API: profiles, explain samples, compare and mirror jobs, saved-connection targets |
+
+Scratch databases on MySQL are created as `root` (`SEEDSTORM_MYSQL_ROOT_PASSWORD`, default `root`).
+
 ```bash
 make dev-up
 make test-integration
 
 # Or directly
-cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
+cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
 ```
 
 Expected output:
@@ -120,7 +139,7 @@ All tests run automatically on every PR via GitHub Actions (`.github/workflows/p
 | `lint` | `golangci-lint` |
 | `integration` | Full 29-table suite plus schema-clone smoke tests on the configured Postgres/MySQL pair |
 
-The integration job in CI uses `--timeout 300s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
+The integration job in CI uses `--timeout 900s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
 
 ### Supported database versions
 
@@ -148,6 +167,10 @@ POSTGRES_VERSION=17-alpine MYSQL_VERSION=8.4 make dev-up
 | `GEMINI_API_KEY` | Gemini API key for `ai-enrich` |
 | `SEEDSTORM_AI_MODEL` | Gemini model override (default: `gemini-2.5-flash`) |
 | `SEEDSTORM_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` |
+| `SEEDSTORM_PROFILE` | Default `--profile` for `seed`, `gaps`, `generate`, `mirror` |
+| `SEEDSTORM_PROFILES` | Path of the saved-profile store (default `~/.config/seedstorm/profiles.yaml`) |
+| `SEEDSTORM_SOURCE_DSN` / `SEEDSTORM_TARGET_DSN` | Defaults for `compare`, `mirror`, `clone-schema` |
+| `SEEDSTORM_PG_HOST` / `SEEDSTORM_PG_PORT` / `SEEDSTORM_MYSQL_HOST` / `SEEDSTORM_MYSQL_PORT` | Integration tests: where the databases listen |
 
 ---
 

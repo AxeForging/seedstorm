@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
 func TestMapColumnToFaker_CheckValues(t *testing.T) {
@@ -368,5 +369,57 @@ func TestMapColumnToFaker_CheckRangeTakesPriorityOverSemantic(t *testing.T) {
 	want := "number(0,100)"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Real schemas name columns semantically but store them in other types
+// (Keycloak's migration_model.update_time is a bigint epoch). A name hint must
+// never produce a value the column type rejects.
+func TestMapColumnToFaker_SemanticNameNeverOverridesAnIncompatibleType(t *testing.T) {
+	cases := []struct {
+		dbType string
+		name   string
+		typ    string
+		kind   string
+	}{
+		{"pgx", "update_time", "bigint", KindNumber},
+		{"mysql", "created_at", "bigint", KindNumber},
+		{"pgx", "expiration_date", "integer", KindNumber},
+		{"pgx", "phone", "bigint", KindNumber},
+		{"mysql", "email", "int", KindNumber},
+		{"pgx", "country", "boolean", KindBool},
+		{"pgx", "price", "character varying", KindText},
+		{"pgx", "created_at", "timestamp without time zone", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.dbType+"/"+c.name+"_"+c.typ, func(t *testing.T) {
+			expr := MapColumnToFaker(c.dbType, db.Column{Name: c.name, Type: c.typ})
+			v, err := generate(expr)
+			if err != nil {
+				t.Fatalf("generate(%q): %v", expr, err)
+			}
+			if _, err := CoerceValue(schema.Column{Type: c.typ}, v); err != nil {
+				t.Fatalf("faker %q produced %#v for a %s column: %v", expr, v, c.typ, err)
+			}
+			switch c.kind {
+			case KindNumber:
+				if _, ok := asInt(v); !ok {
+					if _, isFloat := v.(float64); !isFloat {
+						t.Fatalf("faker %q produced %#v, want a number for %s", expr, v, c.typ)
+					}
+				}
+			case KindBool:
+				if _, ok := v.(bool); !ok {
+					t.Fatalf("faker %q produced %#v, want a bool for %s", expr, v, c.typ)
+				}
+			}
+		})
+	}
+	// Semantic hints still apply when the type agrees.
+	if got := MapColumnToFaker("pgx", db.Column{Name: "created_at", Type: "timestamp"}); got != "datetime" {
+		t.Errorf("created_at timestamp = %q, want datetime", got)
+	}
+	if got := MapColumnToFaker("pgx", db.Column{Name: "email", Type: "character varying"}); got != "email" {
+		t.Errorf("email varchar = %q, want email", got)
 	}
 }

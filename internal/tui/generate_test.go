@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/AxeForging/seedstorm/internal/graph"
@@ -35,7 +38,7 @@ func buildGenModel() GenModel {
 }
 
 func TestStartGenerateHandlesHardSelfReference(t *testing.T) {
-	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 3, 2, nil, "yaml", "", "pgx")()
+	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 3, 2, nil, "yaml", "", "pgx", nil)()
 	done, ok := msg.(generateDoneMsg)
 	if !ok {
 		t.Fatalf("msg type = %T, want generateDoneMsg", msg)
@@ -183,5 +186,47 @@ func TestGenConfig_emptyOutPathMeansStdout(t *testing.T) {
 	c := newGenConfig(10, "yaml", "")
 	if c.OutPath() != "" {
 		t.Errorf("empty out should mean stdout, got %q", c.OutPath())
+	}
+}
+
+func TestStartGenerateWritesTheWholeFileAndAMatchingPreview(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.json")
+	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 250, 2, nil, "json", path, "pgx", nil)()
+	done := msg.(generateDoneMsg)
+	if done.err != nil {
+		t.Fatalf("startGenerate: %v", done.err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string][]map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("file is not a complete JSON document: %v", err)
+	}
+	if len(doc["employees"]) != 250 || done.total != 250 || len(done.tables) != 1 || done.tables[0].rows != 250 {
+		t.Fatalf("file has %d rows, preview says total %d / %+v", len(doc["employees"]), done.total, done.tables)
+	}
+	if done.tables[0].sample == nil || len(done.tables[0].columns) != 2 {
+		t.Fatalf("preview sample missing: %+v", done.tables[0])
+	}
+}
+
+func TestStartGenerateLeavesNoPartialFileOnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.yaml")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// An unknown format fails before anything is written.
+	done := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 5, 2, nil, "xml", path, "pgx", nil)().(generateDoneMsg)
+	if done.err == nil {
+		t.Fatal("unknown format must fail")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "previous" {
+		t.Fatalf("existing file replaced by %q", b)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Fatalf("temporary files left behind: %v", entries)
 	}
 }

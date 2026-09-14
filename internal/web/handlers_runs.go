@@ -3,9 +3,16 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
+
+// maxRunBody bounds a job request: room for an export document as large as
+// the output limit, plus its JSON framing.
+func maxRunBody() int { return webOutputLimit + 1<<20 }
 
 // startRun is a helper that decodes a JSON body into req, requires an active
 // session, kicks off a job that delegates to runner, and returns the job ID.
@@ -20,17 +27,24 @@ func startRun[T any](
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
+	var req T
+	if r.ContentLength != 0 {
+		// Bound what one request may hold in memory (export sends its data inline).
+		body := http.MaxBytesReader(w, r.Body, int64(maxRunBody()))
+		if err := json.NewDecoder(body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request larger than %dMB", maxRunBody()>>20))
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
 	sess, err := s.sessions.fromRequest(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
-	}
-	var req T
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-			return
-		}
 	}
 	job := s.jobs.Start(context.Background(), jobName, func(ctx context.Context, jc JobControl) (map[string]any, error) {
 		return runner(ctx, sess, req, jc)

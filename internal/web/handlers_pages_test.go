@@ -189,3 +189,48 @@ func TestServer_protectedPagesRedirectToConnect(t *testing.T) {
 		}
 	}
 }
+
+// Embedded files carry no modification time, so without an ETag every page
+// load downloads every script again (~800KB with the graph libraries).
+func TestStatic_RevalidatesWithETagInsteadOfRedownloading(t *testing.T) {
+	s, err := New(testOptions(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	first, err := http.Get(srv.URL + "/static/lib/cytoscape.min.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Body.Close()
+	etag := first.Header.Get("ETag")
+	if first.StatusCode != http.StatusOK || etag == "" {
+		t.Fatalf("status %d, ETag %q: want 200 with an ETag", first.StatusCode, etag)
+	}
+	if cc := first.Header.Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+		t.Fatalf("Cache-Control = %q: assets must revalidate so an upgrade is never served stale", cc)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/static/lib/cytoscape.min.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	again, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(again.Body)
+	_ = again.Body.Close()
+	if again.StatusCode != http.StatusNotModified || len(body) != 0 {
+		t.Fatalf("revalidation: status %d with %d bytes, want 304 and no body", again.StatusCode, len(body))
+	}
+
+	other, err := http.Get(srv.URL + "/static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = other.Body.Close()
+	if other.Header.Get("ETag") == etag {
+		t.Fatal("different files must not share an ETag")
+	}
+}

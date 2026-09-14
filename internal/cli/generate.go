@@ -2,18 +2,16 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 
+	"github.com/AxeForging/seedstorm/internal/dataio"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/brianvoe/gofakeit/v6"
-	"github.com/goccy/go-yaml"
 	"github.com/urfave/cli/v3"
 )
 
@@ -48,7 +46,7 @@ func generateCmd() *cli.Command {
 			&cli.StringFlag{
 				Name:    "format",
 				Aliases: []string{"f"},
-				Usage:   "Output format: yaml, json, sql",
+				Usage:   "Output format: yaml, json, sql, csv",
 				Value:   "yaml",
 			},
 			&cli.StringFlag{
@@ -72,6 +70,7 @@ func generateCmd() *cli.Command {
 				Aliases: []string{"i"},
 				Usage:   "Launch interactive TUI to select tables and configure generation",
 			},
+			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -98,8 +97,14 @@ func generateCmd() *cli.Command {
 				return err
 			}
 
+			profile, err := loadProfile(cmd, s)
+			if err != nil {
+				return err
+			}
+			tableRows = profile.tableRows(tableRows)
+
 			if cmd.Bool("interactive") {
-				return tui.RunGenerate(ctx, s, dbType, format, outPath, rows, selfRefDepth)
+				return tui.RunGenerate(ctx, s, dbType, format, outPath, rows, selfRefDepth, profile.tui())
 			}
 
 			log.Info().Msg("Building dependency graph")
@@ -109,46 +114,37 @@ func generateCmd() *cli.Command {
 				return err
 			}
 
+			// Rows stream from the generator into the output, so any volume
+			// writes in flat memory.
 			log.Info().Int("rows", rows).Msg("Generating data")
-			data, err := faker.GenerateFilteredWithOptions(s, sortedTables, sortedTables, rows, 0, tableRows, nil, dbType, faker.GenerateOptions{
-				SelfRefDepth: selfRefDepth,
-			})
+			out, commit, err := openOutput(outPath)
 			if err != nil {
+				return err
+			}
+			defer func() { _ = commit(false) }()
+			w, err := dataio.NewWriter(out, format, dbType, 1)
+			if err != nil {
+				return err
+			}
+			if _, err := seeder.Seed(ctx, nil, dbType, s, sortedTables, sortedTables, seeder.SeedOptions{
+				Rows: rows, TableRows: tableRows, DryRun: true,
+				Generate: faker.GenerateOptions{
+					SelfRefDepth: selfRefDepth,
+					Overrides:    profile.overrides,
+					OnWarning:    logWarning,
+				},
+				OnTableStart: w.Table,
+				OnRows:       func(_ string, rows []map[string]interface{}) error { return w.Rows(rows) },
+			}); err != nil {
 				return fmt.Errorf("generation failed: %w", err)
 			}
-
-			var output string
-			switch strings.ToLower(format) {
-			case "json":
-				b, err := json.MarshalIndent(data, "", "  ")
-				if err != nil {
-					return fmt.Errorf("JSON marshal failed: %w", err)
-				}
-				output = string(b)
-			case "sql":
-				var sb strings.Builder
-				for _, tableName := range sortedTables {
-					for _, row := range data[tableName] {
-						query, _ := buildInsert(tableName, row, dbType)
-						sb.WriteString(query)
-						sb.WriteString(";\n")
-					}
-				}
-				output = sb.String()
-			default: // yaml
-				b, err := yaml.Marshal(data)
-				if err != nil {
-					return fmt.Errorf("YAML marshal failed: %w", err)
-				}
-				output = string(b)
+			if err := w.Close(); err != nil {
+				return err
 			}
-
-			if outPath == "" {
-				fmt.Print(output)
-			} else {
-				if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
-					return fmt.Errorf("failed to write output: %w", err)
-				}
+			if err := commit(true); err != nil {
+				return err
+			}
+			if outPath != "" {
 				log.Info().
 					Str("path", outPath).
 					Str("format", format).

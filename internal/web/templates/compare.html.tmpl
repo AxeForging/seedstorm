@@ -1,0 +1,184 @@
+{{define "scripts"}}<link rel="stylesheet" href="/static/compare.css"><script src="/static/compare.js" defer></script>{{end}}
+{{define "content"}}
+<section class="cmp-shell" id="compare-app">
+  <header class="cmp-head">
+    <div>
+      <span class="eyebrow">compare &amp; mirror</span>
+      <h1>Put two databases side by side.</h1>
+      <p class="muted">Read row counts and sizes on both, then seed the target so it follows the source. The source is only ever read.</p>
+    </div>
+  </header>
+
+  <form class="cmp-pickers" id="cmp-form" autocomplete="off">
+    <label class="field cmp-side">
+      <span class="field-label"><i class="cmp-key cmp-key-src" aria-hidden="true"></i>Source <span class="muted">· read-only</span></span>
+      <select id="cmp-source" required></select>
+    </label>
+    <button class="btn-ghost cmp-swap" id="cmp-swap" type="button" title="Swap source and target" aria-label="Swap source and target">⇄</button>
+    <label class="field cmp-side">
+      <span class="field-label"><i class="cmp-key cmp-key-tgt" aria-hidden="true"></i>Target <span class="muted">· mirror writes here</span></span>
+      <select id="cmp-target" required></select>
+    </label>
+    <fieldset class="cmp-counts">
+      <legend class="field-label">Row counts</legend>
+      <div class="segmented" role="radiogroup">
+        <label><input type="radio" name="counts" value="exact" checked><span>Exact</span></label>
+        <label title="Planner statistics: instant on huge tables, approximate"><input type="radio" name="counts" value="estimate"><span>Estimate</span></label>
+      </div>
+    </fieldset>
+    <button class="btn-primary cmp-go" id="cmp-run" type="submit">Compare</button>
+    <p class="cmp-hint muted small" id="cmp-hint" hidden></p>
+  </form>
+
+  <div class="cmp-empty" id="cmp-empty">
+    <div class="cmp-empty-art" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+    <div>
+      <strong>Pick a source and a target, then compare.</strong>
+      <p class="muted small">Saved connections open on demand. Engines can differ: tables match by name, ignoring case.</p>
+    </div>
+  </div>
+
+  <section class="cmp-results" id="cmp-results" hidden>
+    <div class="cmp-stats" id="cmp-stats"></div>
+
+    <div class="cmp-grid">
+      <section class="cmp-table-panel">
+        <div class="cmp-toolbar">
+          <div class="chips" role="tablist" aria-label="Filter tables" id="cmp-filters">
+            <button type="button" class="chip active" data-filter="all">All <b data-count="all">0</b></button>
+            <button type="button" class="chip" data-filter="differs">Differs <b data-count="differs">0</b></button>
+            <button type="button" class="chip" data-filter="missing">Missing a side <b data-count="missing">0</b></button>
+            <button type="button" class="chip" data-filter="drift">Column drift <b data-count="drift">0</b></button>
+          </div>
+          <label class="cmp-search">
+            <span class="sr-only">Find table</span>
+            <input id="cmp-search" type="search" placeholder="Find table">
+          </label>
+        </div>
+        <div class="cmp-gauge-head" aria-hidden="true">
+          <span class="cmp-gh-check"><input type="checkbox" id="cmp-check-all" title="Include every table in the mirror"></span>
+          <span>table</span>
+          <span class="cmp-gh-src">source</span>
+          <span class="cmp-gh-tgt">target</span>
+          <span class="cmp-gh-delta">Δ rows</span>
+        </div>
+        <ol class="cmp-gauges" id="cmp-gauges"></ol>
+        <p class="muted small empty-hint" id="cmp-gauges-empty" hidden>No tables match this filter.</p>
+      </section>
+
+      <aside class="cmp-mirror" id="cmp-mirror">
+        <header>
+          <h2>Mirror onto target</h2>
+          <p class="cmp-writes small" id="cmp-writes">Writes only to the target.</p>
+        </header>
+
+        <fieldset class="field">
+          <legend class="field-label">Mode</legend>
+          <div class="segmented segmented-wide" role="radiogroup">
+            <label><input type="radio" name="mode" value="topup" checked><span>Top up<small>keep target rows</small></span></label>
+            <label><input type="radio" name="mode" value="reset"><span>Reset<small>truncate, then fill</small></span></label>
+          </div>
+        </fieldset>
+
+        <div class="field">
+          <span class="field-label">Volume <span class="muted" id="cmp-scale-label">1× source</span></span>
+          <div class="chips chips-tight" id="cmp-scale-presets">
+            <button type="button" class="chip" data-scale="0.1">10%</button>
+            <button type="button" class="chip" data-scale="0.5">50%</button>
+            <button type="button" class="chip active" data-scale="1">1×</button>
+            <button type="button" class="chip" data-scale="2">2×</button>
+            <button type="button" class="chip" data-scale="5">5×</button>
+            <label class="cmp-scale-custom"><span class="sr-only">Custom scale</span><input id="cmp-scale" type="number" min="0.01" step="0.01" value="1" inputmode="decimal"></label>
+          </div>
+        </div>
+
+        <div class="cmp-two">
+          <label class="field">
+            <span class="field-label">Max rows / table</span>
+            <input id="cmp-max-rows" type="number" min="0" placeholder="no cap" inputmode="numeric">
+          </label>
+          <label class="field">
+            <span class="field-label" title="Rows for a required parent table that is empty on the target">Empty parent rows</span>
+            <input id="cmp-parent-rows" type="number" min="1" value="10" inputmode="numeric">
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Seed profile <a href="/profiles" class="small">build one</a></span>
+          <select id="cmp-profile"><option value="">none (automatic values)</option></select>
+        </label>
+
+        <p class="cmp-scope small" id="cmp-scope">All tables present on both sides.</p>
+
+        <details class="cmp-advanced">
+          <summary class="small">Advanced</summary>
+          <div class="cmp-two">
+            <label class="field">
+              <span class="field-label">Batch size</span>
+              <input id="cmp-batch" type="number" min="1" value="1000" inputmode="numeric">
+            </label>
+            <label class="field">
+              <span class="field-label">Self-ref depth</span>
+              <input id="cmp-selfref" type="number" min="0" value="2" inputmode="numeric">
+            </label>
+          </div>
+          <label class="field-check small"><input id="cmp-stop" type="checkbox"> Stop at the first rejected row (default: retry row by row and report)</label>
+        </details>
+
+        <button class="btn-primary cmp-plan-btn" id="cmp-plan" type="button" disabled>Preview plan</button>
+        <p class="muted small cmp-plan-note">Nothing is written until you confirm the plan.</p>
+
+        <div class="cmp-outcome" id="cmp-outcome" hidden></div>
+      </aside>
+    </div>
+
+    <details class="cmp-logs" id="cmp-logs">
+      <summary>Job log <span class="status-pill" id="job-status">idle</span> <span class="muted small" id="job-elapsed"></span></summary>
+      <div class="row spread">
+        <span class="muted small" id="job-name"></span>
+        <div class="row">
+          <button class="btn-ghost" id="job-expand-all" type="button" title="Expand or collapse every phase">⤢</button>
+          <button class="btn-ghost" id="job-cancel" type="button" disabled>Cancel</button>
+        </div>
+      </div>
+      <div class="job-progress-wrap" id="job-progress-wrap" hidden>
+        <progress class="job-progress" id="job-progress" max="100" value="0"></progress>
+        <span class="muted small" id="job-progress-label"></span>
+      </div>
+      <div class="job-phases" id="job-phases"></div>
+      <div id="job-result"></div>
+    </details>
+  </section>
+
+  <div class="cmp-modal" id="cmp-modal" hidden>
+    <div class="cmp-modal-backdrop" data-close></div>
+    <section class="cmp-modal-panel" role="dialog" aria-modal="true" aria-labelledby="cmp-modal-title">
+      <header class="cmp-modal-head">
+        <div>
+          <span class="eyebrow" id="cmp-modal-eyebrow">mirror plan</span>
+          <h2 id="cmp-modal-title">Review the plan</h2>
+          <p class="muted small" id="cmp-modal-meta"></p>
+        </div>
+        <button class="btn-ghost" type="button" data-close aria-label="Close plan">Close</button>
+      </header>
+      <div class="cmp-modal-tabs" role="tablist">
+        <button type="button" class="cmp-tab active" data-tab="plan">Plan</button>
+        <button type="button" class="cmp-tab" data-tab="samples">Sample rows</button>
+        <button type="button" class="cmp-tab" data-tab="skipped">Skipped <b id="cmp-skip-count">0</b></button>
+      </div>
+      <div class="cmp-modal-body">
+        <div class="cmp-pane" data-pane="plan" id="cmp-pane-plan"></div>
+        <div class="cmp-pane" data-pane="samples" id="cmp-pane-samples" hidden></div>
+        <div class="cmp-pane" data-pane="skipped" id="cmp-pane-skipped" hidden></div>
+      </div>
+      <footer class="cmp-modal-foot">
+        <label class="field-check small cmp-confirm" id="cmp-confirm-wrap" hidden>
+          <input type="checkbox" id="cmp-confirm">
+          <span id="cmp-confirm-text">I understand these tables on the target are truncated.</span>
+        </label>
+        <button class="btn-primary" id="cmp-execute" type="button">Run mirror</button>
+      </footer>
+    </section>
+  </div>
+</section>
+{{end}}

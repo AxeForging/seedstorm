@@ -357,7 +357,8 @@ func mysqlIndexMap(db *sql.DB, dbName string) (map[string][]Index, error) {
 			TABLE_NAME,
 			INDEX_NAME,
 			NON_UNIQUE,
-			GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',')
+			GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ','),
+			GROUP_CONCAT(COALESCE(SUB_PART, 0) ORDER BY SEQ_IN_INDEX SEPARATOR ',')
 		FROM information_schema.STATISTICS
 		WHERE TABLE_SCHEMA = ?
 		  AND INDEX_NAME <> 'PRIMARY'
@@ -369,18 +370,37 @@ func mysqlIndexMap(db *sql.DB, dbName string) (map[string][]Index, error) {
 
 	m := make(map[string][]Index)
 	for rows.Next() {
-		var table, name, columns string
+		var table, name, columns, subParts string
 		var nonUnique int
-		if err := rows.Scan(&table, &name, &nonUnique, &columns); err != nil {
+		if err := rows.Scan(&table, &name, &nonUnique, &columns, &subParts); err != nil {
 			return nil, err
 		}
 		cols := strings.Split(columns, ",")
 		if len(cols) == 1 && nonUnique == 0 {
 			continue
 		}
-		m[table] = append(m[table], Index{Name: name, Columns: cols, Unique: nonUnique == 0})
+		m[table] = append(m[table], Index{Name: name, Columns: cols, Unique: nonUnique == 0, Prefixes: parseIndexPrefixes(subParts)})
 	}
 	return m, nil
+}
+
+// parseIndexPrefixes turns "0,255" into []int{0, 255}, or nil when no column
+// of the index is prefixed.
+func parseIndexPrefixes(raw string) []int {
+	parts := strings.Split(raw, ",")
+	out := make([]int, len(parts))
+	prefixed := false
+	for i, p := range parts {
+		n, _ := strconv.Atoi(strings.TrimSpace(p))
+		out[i] = n
+		if n > 0 {
+			prefixed = true
+		}
+	}
+	if !prefixed {
+		return nil
+	}
+	return out
 }
 
 func mysqlTableCommentMap(db *sql.DB, dbName string) (map[string]string, error) {

@@ -96,6 +96,61 @@ tick the box. See [docs/commands.md](docs/commands.md#serve) for the full flow.
 
 <img src="docs/gifs/web-ui.gif" alt="seedstorm web UI — introspect the schema graph, seed, and browse live data" width="820" />
 
+## Compare & mirror
+
+Put two databases side by side, then make the second one look like the first in
+volume, with fake data. Useful for stress tests: "give staging production's row
+counts", or "5x production, capped at 2M rows per table".
+
+```bash
+# Row counts, sizes and column drift per table (read-only on both sides)
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --only-diff
+
+# Plan and sample rows, nothing written
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --scale 5 --max-rows 2000000 --dry-run
+
+# Run it: top up the target (repeatable), or --mode reset to truncate and refill
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --scale 5 --max-rows 2000000
+```
+
+Engines can differ (MySQL volumes onto Postgres works). Only the target is written;
+the command refuses when source and target are the same database. Rows the database
+rejects are regenerated, and a table that cannot be filled is reported without
+stopping the rest. In the web UI, **Compare** shows every table as a source/target
+gauge and runs the same plan behind a review dialog.
+
+<img src="docs/assets/compare-mirror.webp" alt="Compare page: per-table source and target gauges with the mirror panel" width="820" />
+
+## Seed profiles
+
+Shape generated values without touching the schema: tag every email so seeded
+rows are easy to find and delete, pin a status, empty a column. Everything a profile
+does not mention keeps seedstorm's automatic generator.
+
+```yaml
+# loadtest.yaml
+name: loadtest
+rules:
+  - column: "*email*"
+    template: "lt+{{seq}}.{{run}}@example.test"   # {{auto}}, {{seq}}, {{run}}, any generator
+  - column: "*_name"
+    template: "LT {{auto}}"
+tables:
+  users:
+    columns:
+      role: { value: guest }
+      phone: { setNull: true }
+```
+
+```bash
+seedstorm seed --dsn "$DSN" --schema schema.yaml --profile loadtest.yaml
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --profile loadtest   # saved in the web UI
+```
+
+Rules never touch keys or generated columns and skip columns whose type cannot take
+their value. The web UI's **Profiles** page builds them with a generator palette,
+live example values and sample rows. See [docs/profiles.md](docs/profiles.md).
+
 ## Features
 
 - **Schema self-discovery** — introspects tables, columns, PKs, FKs, enum values, UNIQUE and CHECK constraints, generated columns, comments, defaults, and indexes; no manual editing required
@@ -105,12 +160,16 @@ tick the box. See [docs/commands.md](docs/commands.md#serve) for the full flow.
 - **Enum coverage** — every enum value appears at least `--rows` times, independently per column
 - **AI enrichment** — Gemini rewrites faker hints for domain-meaningful data; supply `--prompt` for richer context
 - **Gap analysis** — `gaps` shows which tables are empty with row counts and FK context; `--fill` seeds only the empty ones
+- **Compare two databases** — `compare` reports per-table rows, size, delta and column drift between any two connections, across engines
+- **Mirror volumes** — `mirror` seeds a target to a source's row counts at any scale (top-up or reset), with a reviewable plan, sample rows, FK-aware parents, and resilient inserts that report what could not be filled
+- **Seed profiles** — value rules (templates with `{{auto}}`/`{{seq}}`/`{{run}}`, fixed values, lists, NULL) applied by column pattern or per column; saved from the web UI and reused with `--profile` in the CLI and TUI
+- **Re-seed safely** — seeding a populated table appends: ids, UNIQUE sequences and composite keys continue past existing rows
 - **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, preserving compatible table metadata before seeding it with safe fake data
 - **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
 - **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
 - **Saved connections** — connections persist on the machine and survive a restart, with test-before-connect, opt-in password storage, and driver-aware connection parameters (with JDBC-to-Go translation) for both Postgres and MySQL
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
-- **Export** — generate fake data as YAML, JSON, or SQL without a live connection
+- **Export** — generate fake data as YAML, JSON, SQL or CSV without a live connection, streamed in flat memory; SQL files load as-is
 
 ## Docs
 
@@ -118,5 +177,6 @@ tick the box. See [docs/commands.md](docs/commands.md#serve) for the full flow.
 |----------|----------|
 | [Command Reference](docs/commands.md) | All flags, examples, and sample output for every command |
 | [Schema YAML Format](docs/schema.md) | Schema file format, column fields, faker hints reference |
+| [Seed Profiles](docs/profiles.md) | Value rules: actions, template tokens, resolution, validation |
 | [Development & Testing](docs/development.md) | Local setup, unit + integration tests, CI, env vars, Makefile |
 | [Examples](EXAMPLES.md) | End-to-end walkthroughs with GIF demos |

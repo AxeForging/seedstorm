@@ -59,8 +59,10 @@ func MapColumnToFaker(dbType string, col db.Column) string {
 		return m
 	}
 
-	// 8. Semantic mapping based on column name
-	if m := semanticMapper(col.Name); m != "" {
+	// 8. Semantic mapping based on column name, only when the hinted value fits
+	//    the column type (an "update_time" stored as a bigint epoch must not get
+	//    a clock-time string).
+	if m := semanticMapper(col.Name); m != "" && semanticFits(m, col.Type) {
 		return m
 	}
 
@@ -190,6 +192,28 @@ func strictTypeMapper(dbType, colType string) string {
 		}
 	}
 	return ""
+}
+
+// semanticFits reports whether a name-derived faker produces values the column
+// type accepts. Text columns take anything; other types need a faker of their kind.
+func semanticFits(fakerExpr, colType string) bool {
+	t := strings.ToLower(strings.TrimSpace(colType))
+	switch ValueKind(t) {
+	case KindText:
+		return true
+	case KindNumber:
+		return strings.HasPrefix(fakerExpr, "number(") || strings.HasPrefix(fakerExpr, "price(") ||
+			fakerExpr == "latitude" || fakerExpr == "longitude"
+	case KindBool:
+		return fakerExpr == "bool"
+	}
+	switch {
+	case isTemporalType(t):
+		return temporalPKFaker(fakerExpr) != ""
+	case t == "uuid":
+		return fakerExpr == "uuid"
+	}
+	return false
 }
 
 func semanticMapper(name string) string {

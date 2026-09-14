@@ -19,6 +19,7 @@ type reviewModel struct {
 	dryRun    bool
 	back      bool
 	quitting  bool
+	profile   string // active profile summary, empty when none
 }
 
 func newReview(tables []string, parents map[string][]string, rows, enumRows, batch int, truncate bool, tableRows ...map[string]int) reviewModel {
@@ -71,6 +72,9 @@ func (m reviewModel) View() string {
 		fmt.Fprintf(&sb, "  Enum rows:  %d\n", m.enumRows)
 	}
 	fmt.Fprintf(&sb, "  Batch size: %d\n", m.batch)
+	if m.profile != "" {
+		fmt.Fprintf(&sb, "  Profile:    %s\n", m.profile)
+	}
 	if m.truncate {
 		sb.WriteString(errorStyle.Render("  Truncate:   YES — all existing data will be deleted") + "\n")
 	}

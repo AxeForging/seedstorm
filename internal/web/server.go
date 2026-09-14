@@ -2,12 +2,16 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/AxeForging/seedstorm/internal/profiles"
 )
 
 //go:embed templates/*.html.tmpl
@@ -24,6 +28,7 @@ type Server struct {
 	sessions *SessionRegistry
 	jobs     *Manager
 	store    *ConnectionStore
+	profiles *profiles.Store
 }
 
 // Options configures the Server.
@@ -32,6 +37,9 @@ type Options struct {
 	// ConnectionsPath overrides where saved connections are stored. Empty means
 	// the user's config directory.
 	ConnectionsPath string
+	// ProfilesPath overrides where seed profiles are stored. Empty means the
+	// user's config directory, shared with the CLI's --profile flag.
+	ProfilesPath string
 }
 
 // New constructs a Server with all routes registered.
@@ -47,6 +55,12 @@ func New(opts Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	profilesPath := opts.ProfilesPath
+	if profilesPath == "" {
+		if profilesPath, err = profiles.DefaultPath(); err != nil {
+			return nil, err
+		}
+	}
 	s := &Server{
 		addr:     opts.Addr,
 		mux:      http.NewServeMux(),
@@ -54,6 +68,7 @@ func New(opts Options) (*Server, error) {
 		sessions: NewSessionRegistry(),
 		jobs:     NewManager(),
 		store:    NewConnectionStore(path),
+		profiles: profiles.NewStore(profilesPath),
 	}
 	s.routes()
 	return s, nil
@@ -80,7 +95,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) routes() {
 	// Static assets.
 	sub, _ := fs.Sub(staticFS, "static")
-	s.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+	s.mux.Handle("/static/", http.StripPrefix("/static/", staticHandler(sub)))
 
 	// Pages.
 	s.mux.HandleFunc("/", s.handleIndex)
@@ -96,6 +111,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/generate", s.handleGeneratePage)
 	s.mux.HandleFunc("/enrich", s.handleEnrichPage)
 	s.mux.HandleFunc("/export", s.handleExportPage)
+	s.mux.HandleFunc("/compare", s.handleComparePage)
+	s.mux.HandleFunc("/profiles", s.handleProfilesPage)
 
 	// JSON / API.
 	s.mux.HandleFunc("/api/graph", s.handleGraphJSON)
@@ -109,6 +126,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/enrich", s.handleEnrichRun)
 	s.mux.HandleFunc("/api/export", s.handleExportRun)
 	s.mux.HandleFunc("/api/clone-schema", s.handleCloneSchemaRun)
+	s.mux.HandleFunc("/api/compare", s.handleCompareRun)
+	s.mux.HandleFunc("/api/mirror", s.handleMirrorRun)
+	s.mux.HandleFunc("/api/generators", s.handleGeneratorsJSON)
+	s.mux.HandleFunc("/api/profiles", s.handleProfiles)
+	s.mux.HandleFunc("/api/profiles/explain", s.handleProfileExplain)
+	s.mux.HandleFunc("/api/profiles/yaml", s.handleProfileYAML)
+	s.mux.HandleFunc("/api/profiles/example", s.handleProfileExample)
 }
 
 // loadTemplates parses each page template as its own template set, with the
@@ -167,4 +191,32 @@ func templateFuncs() template.FuncMap {
 			return info.Host
 		},
 	}
+}
+
+// staticHandler serves embedded assets with a content-hash ETag. Embedded files
+// have no modification time, so without it browsers download every script on
+// every page; with it they revalidate and get a 304. no-cache keeps an upgraded
+// binary from ever serving a stale asset.
+func staticHandler(files fs.FS) http.Handler {
+	etags := map[string]string{}
+	_ = fs.WalkDir(files, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, readErr := fs.ReadFile(files, path)
+		if readErr != nil {
+			return readErr
+		}
+		sum := sha256.Sum256(data)
+		etags[path] = `"` + hex.EncodeToString(sum[:8]) + `"`
+		return nil
+	})
+	server := http.FileServer(http.FS(files))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if etag, ok := etags[strings.TrimPrefix(r.URL.Path, "/")]; ok {
+			w.Header().Set("ETag", etag)
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		server.ServeHTTP(w, r)
+	})
 }

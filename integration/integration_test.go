@@ -367,27 +367,12 @@ func dropCloneSmokeSchema(t *testing.T, driver string, conn *sql.DB) {
 
 func assertCloneSchemaCanSeed(t *testing.T, driver string, conn *sql.DB, tables []db.Table) {
 	t.Helper()
-	s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
-	for _, tbl := range tables {
-		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
-		for _, col := range tbl.Columns {
-			sc := schema.Column{
-				Type:      col.Type,
-				DDLType:   col.DDLType,
-				PK:        col.IsPK,
-				Nullable:  col.IsNullable,
-				Generated: col.Generated != "",
-				Faker:     faker.MapColumnToFaker(driver, col),
-			}
-			if col.Name == "email" {
-				sc.Faker = "email"
-			}
-			if col.FK != nil {
-				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
-			}
-			st.Columns[col.Name] = sc
+	s := faker.BuildSchema(driver, tables)
+	for _, tbl := range s.Tables {
+		if col, ok := tbl.Columns["email"]; ok {
+			col.Faker = "email"
+			tbl.Columns["email"] = col
 		}
-		s.Tables[tbl.Name] = st
 	}
 	g := graph.Build(s)
 	order, err := g.TopologicalSort()
@@ -503,25 +488,7 @@ func buildAndSeed(t *testing.T, label, driver, dsn string, conn *sql.DB) map[str
 	}
 
 	// 2. Build schema with faker mappings
-	s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
-	for _, tbl := range tables {
-		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
-		for _, col := range tbl.Columns {
-			sc := schema.Column{
-				Type:      col.Type,
-				DDLType:   col.DDLType,
-				PK:        col.IsPK,
-				Nullable:  col.IsNullable,
-				Generated: col.Generated != "",
-				Faker:     faker.MapColumnToFaker(driver, col),
-			}
-			if col.FK != nil {
-				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
-			}
-			st.Columns[col.Name] = sc
-		}
-		s.Tables[tbl.Name] = st
-	}
+	s := faker.BuildSchema(driver, tables)
 
 	// 3. Topological sort
 	g := graph.Build(s)
@@ -3181,25 +3148,7 @@ func seedL0(t *testing.T, driver, dsn string, conn *sql.DB) {
 	if err != nil {
 		t.Fatalf("introspect: %v", err)
 	}
-	s := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
-	for _, tbl := range tables {
-		st := schema.Table{Columns: make(map[string]schema.Column, len(tbl.Columns))}
-		for _, col := range tbl.Columns {
-			sc := schema.Column{
-				Type:      col.Type,
-				DDLType:   col.DDLType,
-				PK:        col.IsPK,
-				Nullable:  col.IsNullable,
-				Generated: col.Generated != "",
-				Faker:     faker.MapColumnToFaker(driver, col),
-			}
-			if col.FK != nil {
-				sc.FK = fmt.Sprintf("%s.%s", col.FK.TableName, col.FK.ColumnName)
-			}
-			st.Columns[col.Name] = sc
-		}
-		s.Tables[tbl.Name] = st
-	}
+	s := faker.BuildSchema(driver, tables)
 
 	data, err := faker.Generate(s, gapL0Tables, seedRows, 0, conn, driver)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/brianvoe/gofakeit/v6"
 	"github.com/urfave/cli/v3"
@@ -86,7 +87,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			&cli.IntFlag{
 				Name:  "batch-size",
 				Usage: "Number of rows per INSERT statement (batched multi-row VALUES)",
-				Value: 100,
+				Value: seeder.DefaultBatchSize,
 			},
 			&cli.IntFlag{
 				Name:  "seed",
@@ -98,6 +99,7 @@ Use --dry-run to print SQL statements without executing them.`,
 				Aliases: []string{"i"},
 				Usage:   "Launch interactive TUI to select tables and configure seeding",
 			},
+			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -129,8 +131,14 @@ Use --dry-run to print SQL statements without executing them.`,
 				return err
 			}
 
+			profile, err := loadProfile(cmd, s)
+			if err != nil {
+				return err
+			}
+			tableRows = profile.tableRows(tableRows)
+
 			if cmd.Bool("interactive") {
-				return tui.Run(ctx, s, dbType, dsn, rows, batchSize, enumRows, truncate, selfRefDepth)
+				return tui.Run(ctx, s, dbType, dsn, rows, batchSize, enumRows, truncate, selfRefDepth, profile.tui())
 			}
 
 			// Resolve seed order
@@ -187,49 +195,33 @@ Use --dry-run to print SQL statements without executing them.`,
 				log.Info().Msg("Truncate complete")
 			}
 
-			// Generate data
+			// Generate and insert chunk by chunk: memory stays flat for any --rows.
 			start := time.Now()
 			log.Info().Int("rows", rows).Msg("Generating fake data")
-			data, err := faker.GenerateFilteredWithOptions(s, sortedTables, sortedTables, rows, enumRows, tableRows, dbConn, dbType, faker.GenerateOptions{
-				SelfRefDepth: selfRefDepth,
+			if !dryRun {
+				defer syncSequences(ctx, dbConn, dbType, sortedTables)
+			}
+			res, err := seeder.Seed(ctx, dbConn, dbType, s, sortedTables, sortedTables, seeder.SeedOptions{
+				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
+				Generate: faker.GenerateOptions{
+					SelfRefDepth: selfRefDepth,
+					Overrides:    profile.overrides,
+					OnWarning:    logWarning,
+				},
+				OnRows: printDryRunSQL(dryRun, dbType),
+				OnTableStart: func(table string) error {
+					log.Info().Str("table", table).Msg("Seeding table")
+					return nil
+				},
 			})
 			if err != nil {
-				return fmt.Errorf("data generation failed: %w", err)
-			}
-
-			// Insert data
-			totalRows := 0
-			for _, tableName := range sortedTables {
-				tableRows := data[tableName]
-				log.Info().
-					Str("table", tableName).
-					Int("rows", len(tableRows)).
-					Msg("Seeding table")
-
-				if dryRun {
-					for _, row := range tableRows {
-						query, _ := buildInsert(tableName, row, dbType)
-						fmt.Println(query)
-					}
-				} else {
-					for i := 0; i < len(tableRows); i += batchSize {
-						end := i + batchSize
-						if end > len(tableRows) {
-							end = len(tableRows)
-						}
-						query, values := buildBatchInsert(tableName, tableRows[i:end], dbType)
-						if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
-							return fmt.Errorf("insert into %s failed: %w", tableName, err)
-						}
-					}
-				}
-				totalRows += len(tableRows)
+				return err
 			}
 
 			elapsed := time.Since(start).Round(time.Millisecond)
 			log.Info().
 				Int("tables", len(sortedTables)).
-				Int("total_rows", totalRows).
+				Int("total_rows", res.Total).
 				Dur("duration", elapsed).
 				Msg("Seeding complete")
 
@@ -237,7 +229,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			for _, tableName := range sortedTables {
 				log.Info().
 					Str("table", tableName).
-					Int("rows", len(data[tableName])).
+					Int("rows", res.Counts[tableName]).
 					Msg("  ↳ inserted")
 			}
 

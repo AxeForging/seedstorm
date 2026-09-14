@@ -1,0 +1,310 @@
+/* Compare & mirror page. Source is mint, target is gold everywhere: keys,
+   gauge bars, stats. Layout collapses to one column under 1080px and the
+   gauge rows become two-line cards under 640px. */
+
+.main:has(.cmp-shell) { max-width: none; padding: 18px; }
+.cmp-shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.cmp-shell > *, .cmp-grid > * { min-width: 0; }
+
+.cmp-head h1 {
+  margin: 4px 0 6px;
+  font-size: clamp(24px, 3.2vw, 34px);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+.cmp-head p { margin: 0; max-width: 70ch; }
+
+/* ── pickers (the primary action, kept above everything) ── */
+.cmp-pickers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+.cmp-pickers select { width: 100%; min-height: 42px; text-overflow: ellipsis; }
+.cmp-key {
+  display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+  border-radius: 2px; vertical-align: 1px;
+}
+.cmp-key-src { background: var(--src); }
+.cmp-key-tgt { background: var(--tgt); }
+.cmp-swap { min-height: 42px; min-width: 42px; justify-content: center; font-size: 16px; }
+.cmp-swap:hover { transform: rotate(180deg); transition: transform 320ms var(--ease-out); }
+.cmp-counts { border: 0; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cmp-counts legend { padding: 0; margin-bottom: 4px; }
+.cmp-go { min-height: 42px; justify-content: center; min-width: 120px; }
+.cmp-hint { grid-column: 1 / -1; margin: 0; }
+.cmp-hint a { color: var(--accent); }
+
+/* ── empty state ── */
+.cmp-empty {
+  display: flex; align-items: center; gap: 18px;
+  padding: 22px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+}
+.cmp-empty strong { display: block; margin-bottom: 2px; }
+.cmp-empty p { margin: 0; }
+.cmp-empty-art { display: grid; gap: 5px; width: 120px; flex: none; }
+.cmp-empty-art span {
+  display: block; height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--src) var(--a), transparent var(--a) calc(100% - var(--b)), var(--tgt) calc(100% - var(--b)));
+  opacity: 0.55;
+}
+.cmp-empty-art span:nth-child(1) { --a: 40%; --b: 20%; }
+.cmp-empty-art span:nth-child(2) { --a: 25%; --b: 38%; }
+.cmp-empty-art span:nth-child(3) { --a: 46%; --b: 44%; }
+.cmp-empty-art span:nth-child(4) { --a: 12%; --b: 30%; }
+
+/* ── stats ── */
+.cmp-results { display: grid; gap: 14px; }
+.cmp-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.cmp-stat {
+  display: grid; gap: 3px; align-content: start;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  animation: cmp-rise 320ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 45ms);
+}
+.cmp-stat.warn { border-color: rgba(216,181,111,0.4); }
+.cmp-stat-label { color: var(--muted); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.cmp-stat-value { font-size: 19px; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-stat.warn .cmp-stat-value { color: var(--warn); }
+.cmp-stat-note { color: var(--muted); font-size: 12px; }
+.cmp-meter { display: block; height: 4px; border-radius: 2px; background: rgba(216,181,111,0.18); overflow: hidden; }
+.cmp-meter i { display: block; height: 100%; background: var(--tgt); transition: width 500ms var(--ease-out); }
+
+/* ── table gauges ── */
+.cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
+.cmp-table-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+.cmp-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.cmp-search input { width: 200px; max-width: 100%; min-height: 32px; padding: 5px 10px; }
+
+.cmp-gauge-head, .cmp-gauge {
+  display: grid;
+  grid-template-columns: 28px minmax(140px, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) 84px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+}
+.cmp-gauge-head {
+  min-height: 32px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--line);
+  background: rgba(11,15,18,0.35);
+}
+.cmp-gh-src { text-align: right; color: var(--src); }
+.cmp-gh-tgt { color: var(--tgt); }
+.cmp-gh-delta { text-align: right; }
+.cmp-gauges { list-style: none; margin: 0; padding: 0; max-height: 62vh; overflow: auto; }
+.cmp-gauge {
+  min-height: 44px;
+  border-bottom: 1px solid rgba(231,236,232,0.05);
+  animation: cmp-rise 260ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 12ms);
+}
+.cmp-gauge:hover { background: rgba(255,255,255,0.02); }
+.cmp-gauge input, .cmp-gauge-head input { accent-color: var(--accent); width: 16px; height: 16px; }
+.cmp-g-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.cmp-g-name code { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.cmp-g-status { color: var(--muted); font-size: 11px; }
+.status-same .cmp-g-status { color: var(--ok); }
+.status-source_only .cmp-g-status, .status-target_only .cmp-g-status { color: var(--warn); }
+.status-source_only, .status-target_only { background: rgba(216,181,111,0.03); }
+.cmp-g-src, .cmp-g-tgt { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cmp-g-src { justify-content: flex-end; }
+.cmp-g-num { font-family: var(--mono); font-size: 12px; min-width: 5ch; }
+.cmp-g-src .cmp-g-num { text-align: right; }
+.cmp-bar { position: relative; flex: 1; height: 10px; min-width: 24px; border-radius: 3px; background: rgba(231,236,232,0.04); overflow: hidden; }
+.cmp-bar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; transition: width 520ms var(--ease-out); }
+.cmp-bar.src i { right: 0; background: linear-gradient(270deg, var(--src), rgba(121,216,179,0.55)); }
+.cmp-bar.tgt i { left: 0; background: linear-gradient(90deg, var(--tgt), rgba(216,181,111,0.55)); }
+.cmp-g-delta { text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.cmp-g-delta.neg { color: var(--err); }
+.cmp-g-delta.pos { color: var(--tgt); }
+
+/* ── mirror panel ── */
+.cmp-mirror {
+  position: sticky; top: 74px;
+  display: grid; gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  transition: border-color 200ms var(--ease-out);
+}
+.cmp-mirror.mode-reset { border-color: rgba(255,138,122,0.45); }
+.cmp-mirror h2 { margin: 0 0 2px; font-size: 17px; }
+.cmp-mirror header p { margin: 0; color: var(--muted); }
+.cmp-writes strong { color: var(--tgt); font-weight: 600; overflow-wrap: anywhere; }
+.cmp-mirror fieldset { border: 0; margin: 0; padding: 0; }
+.cmp-mirror legend { padding: 0; margin-bottom: 6px; }
+.cmp-mirror input, .cmp-mirror select { min-height: 38px; width: 100%; }
+.cmp-mirror .field-label a { color: var(--accent); margin-left: 4px; }
+.cmp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cmp-scale-custom input { width: 72px; min-height: 28px; padding: 3px 8px; font-size: 12px; }
+.cmp-scope { margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(11,15,18,0.4); color: var(--muted); }
+.cmp-advanced summary { cursor: pointer; color: var(--muted); }
+.cmp-advanced[open] { display: grid; gap: 10px; }
+.cmp-plan-btn { justify-content: center; min-height: 44px; }
+.cmp-plan-note { margin: -8px 0 0; text-align: center; }
+
+.cmp-outcome {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  animation: cmp-rise 240ms var(--ease-out) both;
+}
+.cmp-outcome p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.cmp-outcome ul { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.cmp-outcome li { display: grid; gap: 2px; font-size: 12px; }
+.cmp-outcome li small { color: var(--muted); overflow-wrap: anywhere; }
+.cmp-outcome.ok { border-color: rgba(121,216,179,0.5); background: rgba(121,216,179,0.07); }
+.cmp-outcome.warn { border-color: rgba(216,181,111,0.5); background: rgba(216,181,111,0.07); }
+.cmp-outcome.error { border-color: rgba(255,138,122,0.5); background: rgba(255,138,122,0.07); }
+.cmp-outcome.running { border-color: rgba(121,216,179,0.3); }
+
+.cmp-logs {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  padding: 10px 14px;
+}
+.cmp-logs summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.cmp-logs[open] summary { margin-bottom: 8px; }
+
+/* ── plan modal ── */
+.cmp-modal { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; }
+.cmp-modal[hidden] { display: none; }
+.cmp-modal-backdrop { position: absolute; inset: 0; background: rgba(4,7,9,0.72); backdrop-filter: blur(6px); }
+.cmp-modal-panel {
+  position: relative; z-index: 1;
+  width: min(980px, 100%);
+  max-height: min(88vh, 900px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: rgba(17,23,28,0.98);
+  border: 1px solid rgba(231,236,232,0.1);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 32px 90px rgba(0,0,0,0.5);
+  overflow: hidden;
+  animation: cmp-rise 220ms var(--ease-out) both;
+}
+.cmp-modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 20px 12px; }
+.cmp-modal-head h2 { margin: 2px 0 4px; font-size: 22px; letter-spacing: -0.03em; }
+.cmp-modal-head p { margin: 0; overflow-wrap: anywhere; }
+.cmp-modal-tabs { display: flex; gap: 2px; padding: 0 20px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.cmp-tab {
+  padding: 8px 12px; border: 0; border-bottom: 2px solid transparent;
+  background: none; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.cmp-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.cmp-tab b { font-family: var(--mono); font-weight: 500; opacity: 0.7; }
+.cmp-modal-body { min-height: 0; overflow: auto; padding: 14px 20px; }
+.cmp-modal-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap;
+  padding: 12px 20px; border-top: 1px solid var(--line); background: rgba(11,15,18,0.42);
+}
+.cmp-confirm { margin-right: auto; color: var(--text); }
+.cmp-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.cmp-plan-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cmp-plan-table th, .cmp-plan-table td { padding: 7px 10px; border-bottom: 1px solid rgba(231,236,232,0.06); text-align: left; white-space: nowrap; }
+.cmp-plan-table th { color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 500; text-transform: uppercase; }
+.cmp-plan-table .num { text-align: right; font-family: var(--mono); }
+.cmp-plan-table .strong { color: var(--tgt); font-weight: 600; }
+.reason { font-size: 11px; color: var(--muted); }
+.reason-required-parent-is-empty, .reason-truncated-with-its-parent, .reason-capped-by-max-rows { color: var(--warn); }
+.cmp-callout {
+  display: grid; gap: 4px;
+  margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid rgba(216,181,111,0.4); border-radius: var(--radius-md);
+  background: rgba(216,181,111,0.06); font-size: 12px;
+}
+.cmp-callout span { color: var(--muted); overflow-wrap: anywhere; }
+.cmp-callout.danger { border-color: rgba(255,138,122,0.5); background: rgba(255,138,122,0.07); }
+.cmp-callout.danger strong { color: var(--err); }
+.cmp-skips { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.cmp-skips li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(231,236,232,0.06); font-size: 12px; flex-wrap: wrap; }
+.cmp-skips span { color: var(--muted); }
+.cmp-sample { margin-bottom: 14px; }
+.cmp-sample h3 { margin: 0 0 6px; font-size: 13px; }
+.cmp-sample .preview-table { font-size: 12px; }
+
+.is-busy .cmp-gauges { opacity: 0.6; transition: opacity 200ms; }
+
+@keyframes cmp-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (max-width: 1080px) {
+  .cmp-pickers { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .cmp-counts { grid-column: 1 / 3; }
+  .cmp-go { grid-column: 3; }
+  .cmp-grid { grid-template-columns: minmax(0, 1fr); }
+  .cmp-mirror { position: static; }
+  .cmp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cmp-pickers input, .cmp-pickers select, .cmp-mirror input, .cmp-mirror select, .cmp-search input { font-size: 16px; }
+}
+
+@media (max-width: 640px) {
+  .main:has(.cmp-shell) { padding: 12px; }
+  .cmp-pickers { grid-template-columns: minmax(0, 1fr); }
+  .cmp-swap { justify-self: center; transform: rotate(90deg); }
+  .cmp-swap:hover { transform: rotate(270deg); }
+  .cmp-counts, .cmp-go { grid-column: auto; }
+  .cmp-go { width: 100%; }
+  .cmp-stats { grid-template-columns: minmax(0, 1fr); }
+  .cmp-empty { flex-direction: column; align-items: flex-start; }
+  .cmp-search, .cmp-search input { width: 100%; }
+  .cmp-gauge-head { display: none; }
+  .cmp-gauge {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    grid-template-areas: "check name delta" "check src src" "check tgt tgt";
+    row-gap: 4px;
+    padding: 8px 12px;
+  }
+  .cmp-g-check { grid-area: check; align-self: start; padding-top: 2px; }
+  .cmp-g-name { grid-area: name; }
+  .cmp-g-delta { grid-area: delta; }
+  .cmp-g-src { grid-area: src; flex-direction: row-reverse; justify-content: flex-end; }
+  .cmp-g-tgt { grid-area: tgt; }
+  .cmp-g-src .cmp-bar i { right: auto; left: 0; }
+  .cmp-g-num { min-width: 7ch; }
+  .cmp-two { grid-template-columns: minmax(0, 1fr); }
+  .cmp-modal { padding: 0; }
+  .cmp-plan-table th:first-child, .cmp-plan-table td:first-child { display: none; }
+  .cmp-modal-panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+  .cmp-modal-foot .btn-primary { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmp-stat, .cmp-gauge, .cmp-outcome, .cmp-modal-panel { animation: none; }
+  .cmp-bar i, .cmp-meter i, .cmp-swap, .chip, .segmented span { transition: none; }
+  .cmp-empty-art { display: none; }
+}

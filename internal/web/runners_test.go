@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,28 +22,6 @@ type testJobControl struct{}
 func (testJobControl) Write(p []byte) (int, error) { return len(p), nil }
 func (testJobControl) Phase(string)                {}
 func (testJobControl) Progress(int, int, string)   {}
-
-func TestTableRowCounts(t *testing.T) {
-	data := map[string][]map[string]any{
-		"users": {
-			{"id": 1},
-			{"id": 2},
-		},
-		"orders": {
-			{"id": 10},
-		},
-	}
-
-	counts, total := tableRowCounts(data, []string{"users", "orders", "missing"})
-
-	want := map[string]int{"users": 2, "orders": 1, "missing": 0}
-	if !reflect.DeepEqual(counts, want) {
-		t.Fatalf("counts = %+v, want %+v", counts, want)
-	}
-	if total != 3 {
-		t.Fatalf("total = %d, want 3", total)
-	}
-}
 
 func TestCleanTableRowsKeepsPositiveOverrides(t *testing.T) {
 	got := cleanTableRows(map[string]int{
@@ -445,5 +426,98 @@ func manyToManyCapacitySchema() *schema.Schema {
 				},
 			},
 		},
+	}
+}
+
+// A dry run of millions of rows must not build an unbounded string for the
+// browser: the SQL is capped, and the cut is stated with what was left out.
+func TestRunSeedDryRunCapsTheSQLItReturns(t *testing.T) {
+	defer func(old int) { webOutputLimit = old }(webOutputLimit)
+	webOutputLimit = 2_000
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{DBType: "pgx", schema: hardSelfReferenceSchema()}
+	result, err := srv.runSeed(context.Background(), sess, SeedRequest{Rows: 500, BatchSize: 10, DryRun: true}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runSeed: %v", err)
+	}
+	if got := result["totalRows"]; got != 500 {
+		t.Fatalf("totalRows = %v, want every row still generated", got)
+	}
+	output, _ := result["output"].(string)
+	if len(output) > webOutputLimit+200 {
+		t.Fatalf("output is %d bytes, limit %d", len(output), webOutputLimit)
+	}
+	if !strings.Contains(output, "rows not shown") || !strings.Contains(output, "INSERT INTO") {
+		t.Fatalf("capped output must keep the first statements and say rows were left out:\n%s", output)
+	}
+}
+
+// A generated document the browser cannot hold is refused whole: a cut YAML or
+// JSON file would be silently broken.
+func TestRunGenerateRefusesOutputPastTheLimit(t *testing.T) {
+	defer func(old int) { webOutputLimit = old }(webOutputLimit)
+	webOutputLimit = 4_000
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess := &Session{DBType: "pgx", schema: hardSelfReferenceSchema()}
+	result, err := srv.runGenerate(context.Background(), sess, GenerateRequest{Rows: 2000, Format: "json"}, testJobControl{})
+	if err == nil || !strings.Contains(err.Error(), "seedstorm generate --out") {
+		t.Fatalf("err = %v, result %v: want a refusal pointing at the CLI", err, result != nil)
+	}
+
+	small, err := srv.runGenerate(context.Background(), sess, GenerateRequest{Rows: 3, Format: "json"}, testJobControl{})
+	if err != nil {
+		t.Fatalf("a document under the limit must still be returned: %v", err)
+	}
+	var doc map[string][]map[string]any
+	if err := json.Unmarshal([]byte(small["output"].(string)), &doc); err != nil || len(doc["employees"]) != 3 {
+		t.Fatalf("output is not a complete JSON document (%v): %s", err, small["output"])
+	}
+}
+
+// Export reads the document a generate run produced and writes runnable SQL
+// with the values in it.
+func TestRunExportWritesSQLWithValuesFromAGeneratedDocument(t *testing.T) {
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	doc := "users:\n- id: 1\n  name: O'Brien\n- id: 2\n  name: null\nempty: []\n"
+	result, err := srv.runExport(context.Background(), &Session{DBType: "pgx"}, ExportRequest{DataYAML: doc, Format: "sql", BatchSize: 1}, testJobControl{})
+	if err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	want := "INSERT INTO \"users\" (\"id\", \"name\") VALUES (1, 'O''Brien');\nINSERT INTO \"users\" (\"id\", \"name\") VALUES (2, NULL);\n"
+	if result["output"] != want {
+		t.Fatalf("output:\n%s\nwant:\n%s", result["output"], want)
+	}
+	counts := result["tableCounts"].(map[string]int)
+	if result["totalRows"] != 2 || counts["users"] != 2 || counts["empty"] != 0 || result["tables"] != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestStartRunRejectsOversizedRequestBodies(t *testing.T) {
+	defer func(old int) { webOutputLimit = old }(webOutputLimit)
+	webOutputLimit = 1_000
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	body := `{"dataYaml":"` + strings.Repeat("x", maxRunBody()+1) + `","format":"sql"}`
+	res, err := http.Post(ts.URL+"/api/export", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413", res.StatusCode)
 	}
 }

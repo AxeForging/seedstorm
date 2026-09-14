@@ -2,17 +2,20 @@ package web
 
 import (
 	"context"
-	"encoding/csv"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/ai"
+	"github.com/AxeForging/seedstorm/internal/dataio"
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
+	"github.com/AxeForging/seedstorm/internal/rules"
+	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
 )
@@ -49,6 +52,7 @@ type SeedRequest struct {
 	DryRun       bool           `json:"dryRun"`
 	Tables       []string       `json:"tables,omitempty"`
 	TableRows    map[string]int `json:"tableRows,omitempty"`
+	ProfileID    string         `json:"profileId,omitempty"`
 }
 
 type CloneSchemaRequest struct {
@@ -144,31 +148,11 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 }
 
 func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*Session, error) {
-	if req.TargetSavedID != "" && s.store != nil {
-		saved, ok, err := s.store.Get(req.TargetSavedID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("target connection not found")
-		}
-		form := savedToForm(saved, saved.Password)
-		driver, dsn, info, err := form.dsnFor()
-		if err != nil {
-			return nil, err
-		}
-		info.Label = saved.Label
-		return s.sessions.OpenDSN(driver, dsn, info)
-	}
-	if req.TargetID != "" {
-		if req.TargetID == source.ID {
+	if req.TargetSavedID != "" || req.TargetID != "" {
+		if req.TargetID != "" && req.TargetID == source.ID {
 			return nil, fmt.Errorf("target connection must be different from source")
 		}
-		target, ok := s.sessions.Get(req.TargetID)
-		if !ok {
-			return nil, fmt.Errorf("target connection not found")
-		}
-		return target, nil
+		return s.resolveConnection(ConnRef{ID: req.TargetID, SavedID: req.TargetSavedID}, "target")
 	}
 	if strings.TrimSpace(req.TargetDSN) != "" {
 		driver, dsn, info, err := buildRawDSN(req.Target.DBType, req.TargetDSN, req.Target.Params)
@@ -187,18 +171,22 @@ func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*S
 func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc JobControl) (map[string]any, error) {
 	log := jobLogger(jc)
 	tableRows := cleanTableRows(req.TableRows)
-	truncateOnly := req.Truncate && req.Rows == 0 && req.EnumRows == 0 && len(tableRows) == 0
+	truncateOnly := req.Truncate && req.Rows == 0 && req.EnumRows == 0 && len(tableRows) == 0 && req.ProfileID == ""
 	if req.Rows < 0 || (req.Rows == 0 && !truncateOnly) {
 		req.Rows = 100
 	}
 	if req.BatchSize <= 0 {
-		req.BatchSize = 100
+		req.BatchSize = seeder.DefaultBatchSize
 	}
 	start := time.Now()
 	jc.Phase("build")
 	sc, err := sess.Schema(false)
 	if err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
+	}
+	overrides, tableRows, err := s.applyProfile(req.ProfileID, sc, tableRows, log)
+	if err != nil {
+		return nil, err
 	}
 
 	var allSorted []string
@@ -289,58 +277,46 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		}, nil
 	}
 
-	jc.Phase("generate")
+	// Rows are generated and written chunk by chunk, so memory stays flat for
+	// any row count.
+	if req.DryRun {
+		jc.Phase("generate")
+	} else {
+		jc.Phase("insert")
+	}
 	log.Info().Int("rows", req.Rows).Msg("Generating fake data")
 	connArg := conn
 	if req.DryRun {
 		connArg = nil
 	}
 	warnings := make([]faker.GenerationWarning, 0)
-	// GenerateFiltered preloads PKs from allSorted so target tables can FK-ref
-	// already-populated parents; targetTables alone is what gets generated.
-	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, req.EnumRows, tableRows, connArg, sess.DBType, faker.GenerateOptions{
-		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
-		OnWarning: func(w faker.GenerationWarning) {
-			warnings = append(warnings, w)
-			log.Warn().
-				Str("table", w.Table).
-				Int("requested", w.Requested).
-				Int("generated", w.Generated).
-				Str("reason", w.Reason).
-				Msg("Generation volume capped")
+	if !req.DryRun {
+		defer syncSequencesLogged(ctx, conn, sess.DBType, targetTables, log)
+	}
+	dryRunSQL := &cappedSQL{limit: webOutputLimit}
+	// allSorted is preloaded so target tables can FK-reference already-populated
+	// parents; targetTables alone is what gets generated.
+	res, err := seeder.Seed(ctx, connArg, sess.DBType, sc, allSorted, targetTables, seeder.SeedOptions{
+		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: tableRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
+		Generate: faker.GenerateOptions{
+			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+			Overrides:    overrides,
+			OnWarning:    collectWarning(&warnings, log),
 		},
+		OnTableStart: func(table string) error { log.Info().Str("table", table).Msg("Seeding table"); return nil },
+		OnRows: func(table string, rows []map[string]interface{}) error {
+			if req.DryRun {
+				dryRunSQL.write(table, rows, req.BatchSize, sess.DBType)
+			}
+			return nil
+		},
+		OnTable: func(p seeder.Progress) { jc.Progress(p.TableIndex, p.Tables, p.Table) },
 	})
 	if err != nil {
-		return nil, fmt.Errorf("generation: %w", err)
+		return nil, err
 	}
-
-	jc.Phase("insert")
-	totalRows := 0
-	tableCounts := make(map[string]int, len(targetTables))
-	var dryRunSQL strings.Builder
-	for idx, tableName := range targetTables {
-		tableRows := data[tableName]
-		tableCounts[tableName] = len(tableRows)
-		log.Info().Str("table", tableName).Int("rows", len(tableRows)).Msg("Seeding table")
-		for i := 0; i < len(tableRows); i += req.BatchSize {
-			end := i + req.BatchSize
-			if end > len(tableRows) {
-				end = len(tableRows)
-			}
-			if req.DryRun {
-				query, _ := db.BuildBatchInsert(tableName, tableRows[i:end], sess.DBType)
-				dryRunSQL.WriteString(query)
-				dryRunSQL.WriteString(";\n")
-			} else {
-				query, values := db.BuildBatchInsert(tableName, tableRows[i:end], sess.DBType)
-				if _, err := conn.ExecContext(ctx, query, values...); err != nil {
-					return nil, fmt.Errorf("insert into %s: %w", tableName, err)
-				}
-			}
-		}
-		totalRows += len(tableRows)
-		jc.Progress(idx+1, len(targetTables), tableName)
-	}
+	totalRows := res.Total
+	tableCounts := res.Counts
 	elapsed := time.Since(start).Round(time.Millisecond)
 	jc.Phase("done")
 	log.Info().
@@ -382,6 +358,7 @@ type GapsRequest struct {
 	DryRun       bool           `json:"dryRun"`
 	Tables       []string       `json:"tables,omitempty"`
 	TableRows    map[string]int `json:"tableRows,omitempty"`
+	ProfileID    string         `json:"profileId,omitempty"`
 }
 
 func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
@@ -390,7 +367,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		req.Rows = 100
 	}
 	if req.BatchSize <= 0 {
-		req.BatchSize = 100
+		req.BatchSize = seeder.DefaultBatchSize
 	}
 	jc.Phase("build")
 	sc, err := sess.Schema(false)
@@ -460,43 +437,29 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 
 	jc.Phase("generate")
 	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Msg("Generating data for empty tables")
+	overrides, gapRows, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
+	if err != nil {
+		return nil, err
+	}
 	warnings := make([]faker.GenerationWarning, 0)
-	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, gapTables, req.Rows, req.EnumRows, cleanTableRows(req.TableRows), conn, sess.DBType, faker.GenerateOptions{
-		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
-		OnWarning: func(w faker.GenerationWarning) {
-			warnings = append(warnings, w)
-			log.Warn().
-				Str("table", w.Table).
-				Int("requested", w.Requested).
-				Int("generated", w.Generated).
-				Str("reason", w.Reason).
-				Msg("Generation volume capped")
+	jc.Phase("insert")
+	if !req.DryRun {
+		defer syncSequencesLogged(ctx, conn, sess.DBType, gapTables, log)
+	}
+	res, err := seeder.Seed(ctx, conn, sess.DBType, sc, allSorted, gapTables, seeder.SeedOptions{
+		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: gapRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
+		Generate: faker.GenerateOptions{
+			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+			Overrides:    overrides,
+			OnWarning:    collectWarning(&warnings, log),
 		},
+		OnTableStart: func(table string) error { log.Info().Str("table", table).Msg("Filling table"); return nil },
+		OnTable:      func(p seeder.Progress) { jc.Progress(p.TableIndex, p.Tables, p.Table) },
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	jc.Phase("insert")
-	totalRows := 0
-	for idx, tableName := range gapTables {
-		tableRows := data[tableName]
-		log.Info().Str("table", tableName).Int("rows", len(tableRows)).Msg("Filling table")
-		if !req.DryRun {
-			for i := 0; i < len(tableRows); i += req.BatchSize {
-				end := i + req.BatchSize
-				if end > len(tableRows) {
-					end = len(tableRows)
-				}
-				query, values := db.BuildBatchInsert(tableName, tableRows[i:end], sess.DBType)
-				if _, err := conn.ExecContext(ctx, query, values...); err != nil {
-					return nil, fmt.Errorf("insert into %s: %w", tableName, err)
-				}
-			}
-		}
-		totalRows += len(tableRows)
-		jc.Progress(idx+1, len(gapTables), tableName)
-	}
+	totalRows := res.Total
 	result["filled"] = totalRows
 	if len(warnings) > 0 {
 		result["warnings"] = generationWarningsView(warnings)
@@ -514,10 +477,10 @@ type GenerateRequest struct {
 	Format       string         `json:"format"` // yaml | json | sql
 	Tables       []string       `json:"tables,omitempty"`
 	TableRows    map[string]int `json:"tableRows,omitempty"`
+	ProfileID    string         `json:"profileId,omitempty"`
 }
 
 func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateRequest, jc JobControl) (map[string]any, error) {
-	_ = ctx
 	log := jobLogger(jc)
 	if req.Rows <= 0 {
 		req.Rows = 10
@@ -546,42 +509,80 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 
 	jc.Phase("generate")
 	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
+	overrides, genRows, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
+	if err != nil {
+		return nil, err
+	}
 	warnings := make([]faker.GenerationWarning, 0)
-	// GenerateFiltered is fine here too: with conn=nil it skips PK preload.
-	data, err := faker.GenerateFilteredWithOptions(sc, allSorted, targetTables, req.Rows, 0, cleanTableRows(req.TableRows), nil, sess.DBType, faker.GenerateOptions{
-		SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
-		OnWarning: func(w faker.GenerationWarning) {
-			warnings = append(warnings, w)
-			log.Warn().
-				Str("table", w.Table).
-				Int("requested", w.Requested).
-				Int("generated", w.Generated).
-				Str("reason", w.Reason).
-				Msg("Generation volume capped")
+	// The document streams into a bounded buffer: the browser gets a complete
+	// file or a clear refusal, never an unbounded or truncated one.
+	out := &limitedBuffer{limit: webOutputLimit}
+	w, err := dataio.NewWriter(out, req.Format, sess.DBType, 1)
+	if err != nil {
+		return nil, err
+	}
+	res, err := seeder.Seed(ctx, nil, sess.DBType, sc, allSorted, targetTables, seeder.SeedOptions{
+		Rows: req.Rows, TableRows: genRows, DryRun: true,
+		Generate: faker.GenerateOptions{
+			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
+			Overrides:    overrides,
+			OnWarning:    collectWarning(&warnings, log),
 		},
+		OnTableStart: w.Table,
+		OnRows:       func(_ string, rows []map[string]interface{}) error { return w.Rows(rows) },
 	})
+	if err == nil {
+		err = w.Close()
+	}
 	if err != nil {
 		return nil, err
 	}
-	jc.Phase("encode")
-	output, err := encodeData(data, targetTables, req.Format, sess.DBType)
-	if err != nil {
-		return nil, err
-	}
-	tableCounts, totalRows := tableRowCounts(data, targetTables)
 	jc.Phase("done")
 	log.Info().Int("tables", len(targetTables)).Str("format", req.Format).Msg("Generation complete")
 	result := map[string]any{
-		"output":      output,
+		"output":      out.String(),
 		"format":      req.Format,
 		"tables":      targetTables,
-		"tableCounts": tableCounts,
-		"totalRows":   totalRows,
+		"tableCounts": res.Counts,
+		"totalRows":   res.Total,
 	}
 	if len(warnings) > 0 {
 		result["warnings"] = generationWarningsView(warnings)
 	}
 	return result, nil
+}
+
+// syncSequencesLogged advances Postgres sequences past inserted ids and reports
+// it in the job log.
+func syncSequencesLogged(ctx context.Context, conn *sql.DB, dbType string, tables []string, log zerolog.Logger) {
+	adjusted, err := db.SyncSequences(ctx, conn, dbType, tables)
+	for _, a := range adjusted {
+		log.Info().Str("table", a.Table).Str("column", a.Column).Int64("from", a.From).Int64("to", a.To).Msg("Advanced sequence past seeded ids")
+	}
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not advance sequences; application inserts may reuse seeded ids")
+	}
+}
+
+// applyProfile compiles a saved profile for a run and merges its per-table row
+// counts under the explicit ones. No profile id is a no-op.
+func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string]int, log zerolog.Logger) (faker.Overrides, map[string]int, error) {
+	rs, err := s.profileByID(id)
+	if err != nil || rs == nil {
+		return nil, tableRows, err
+	}
+	for _, issue := range rs.Validate(sc) {
+		if issue.Severity == rules.SeverityWarning {
+			log.Warn().Str("path", issue.Path).Msg(issue.Message)
+		}
+	}
+	runID := rules.NewRunID()
+	overrides, err := rs.Compile(sc, runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Info().Str("profile", rs.Name).Str("run", runID).Msg("Seed profile applied")
+	return overrides, cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows)), nil
 }
 
 func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any {
@@ -595,17 +596,6 @@ func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any
 		})
 	}
 	return out
-}
-
-func tableRowCounts(data map[string][]map[string]any, sortedTables []string) (map[string]int, int) {
-	counts := make(map[string]int, len(sortedTables))
-	total := 0
-	for _, tableName := range sortedTables {
-		n := len(data[tableName])
-		counts[tableName] = n
-		total += n
-	}
-	return counts, total
 }
 
 func cleanTableRows(rows map[string]int) map[string]int {
@@ -629,33 +619,6 @@ func requestSelfRefDepth(depth *int) int {
 		return faker.DefaultSelfRefDepth
 	}
 	return *depth
-}
-
-func encodeData(data map[string][]map[string]any, sortedTables []string, format, dbType string) (string, error) {
-	switch strings.ToLower(format) {
-	case "json":
-		b, err := json.MarshalIndent(data, "", "  ")
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	case "sql":
-		var sb strings.Builder
-		for _, tableName := range sortedTables {
-			for _, row := range data[tableName] {
-				query, _ := db.BuildInsert(tableName, row, dbType)
-				sb.WriteString(query)
-				sb.WriteString(";\n")
-			}
-		}
-		return sb.String(), nil
-	default:
-		b, err := yaml.Marshal(data)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	}
 }
 
 func connectionLabelForLog(info ConnectionInfo) string {
@@ -727,73 +690,96 @@ func (s *Server) runExport(_ context.Context, sess *Session, req ExportRequest, 
 	if req.BatchSize <= 0 {
 		req.BatchSize = 100
 	}
-	jc.Phase("parse")
-	var data map[string][]map[string]any
-	if err := yaml.Unmarshal([]byte(req.DataYAML), &data); err != nil {
-		return nil, fmt.Errorf("parse data yaml: %w", err)
-	}
 	jc.Phase("format")
-	dbType := sess.DBType
-	var output string
-	switch strings.ToLower(req.Format) {
-	case "json":
-		b, err := json.MarshalIndent(data, "", "  ")
-		if err != nil {
-			return nil, err
+	out := &limitedBuffer{limit: webOutputLimit}
+	w, err := dataio.NewWriter(out, req.Format, sess.DBType, req.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	tableCounts := map[string]int{}
+	totalRows := 0
+	err = dataio.ReadTables(strings.NewReader(req.DataYAML), 0, func(table string, rows []map[string]interface{}) error {
+		if rows == nil {
+			tableCounts[table] = 0
+			return w.Table(table)
 		}
-		output = string(b)
-	case "csv":
-		var sb strings.Builder
-		cw := csv.NewWriter(&sb)
-		for tableName, rows := range data {
-			if len(rows) == 0 {
-				continue
-			}
-			headers := []string{"_table"}
-			for k := range rows[0] {
-				headers = append(headers, k)
-			}
-			_ = cw.Write(headers)
-			for _, row := range rows {
-				record := []string{tableName}
-				for _, k := range headers[1:] {
-					record = append(record, fmt.Sprintf("%v", row[k]))
-				}
-				_ = cw.Write(record)
-			}
-		}
-		cw.Flush()
-		if err := cw.Error(); err != nil {
-			return nil, err
-		}
-		output = sb.String()
-	default:
-		var sb strings.Builder
-		for tableName, rows := range data {
-			for i := 0; i < len(rows); i += req.BatchSize {
-				end := i + req.BatchSize
-				if end > len(rows) {
-					end = len(rows)
-				}
-				query, _ := db.BuildBatchInsert(tableName, rows[i:end], dbType)
-				sb.WriteString(query)
-				sb.WriteString(";\n")
-			}
-		}
-		output = sb.String()
+		tableCounts[table] += len(rows)
+		totalRows += len(rows)
+		return w.Rows(rows)
+	})
+	if err == nil {
+		err = w.Close()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("export: %w", err)
 	}
 	jc.Phase("done")
-	tableNames := make([]string, 0, len(data))
-	for tableName := range data {
-		tableNames = append(tableNames, tableName)
-	}
-	tableCounts, totalRows := tableRowCounts(data, tableNames)
-	log.Info().Str("format", req.Format).Int("tables", len(data)).Msg("Export complete")
+	log.Info().Str("format", req.Format).Int("tables", len(tableCounts)).Msg("Export complete")
 	return map[string]any{
-		"output":      output,
+		"output":      out.String(),
 		"format":      req.Format,
-		"tables":      len(data),
+		"tables":      len(tableCounts),
 		"tableCounts": tableCounts,
 		"totalRows":   totalRows,
 	}, nil
+}
+
+// collectWarning records generation warnings for the job result and logs them.
+func collectWarning(warnings *[]faker.GenerationWarning, log zerolog.Logger) func(faker.GenerationWarning) {
+	return func(w faker.GenerationWarning) {
+		*warnings = append(*warnings, w)
+		log.Warn().
+			Str("table", w.Table).
+			Int("requested", w.Requested).
+			Int("generated", w.Generated).
+			Str("reason", w.Reason).
+			Msg("Generation volume capped")
+	}
+}
+
+// webOutputLimit caps text a web job returns to the browser. A dry run's SQL
+// is cut there with a note; generate and export refuse instead, since a cut
+// document would be unusable.
+var webOutputLimit = 20 << 20
+
+// errOutputTooLarge explains how to produce a document the browser cannot hold.
+var errOutputTooLarge = fmt.Errorf("output is larger than %dMB; write it to a file with the CLI (seedstorm generate --out, seedstorm export --out)", webOutputLimit>>20)
+
+// limitedBuffer collects output up to limit bytes and fails past it.
+type limitedBuffer struct {
+	strings.Builder
+	limit int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > b.limit {
+		return 0, errOutputTooLarge
+	}
+	return b.Builder.Write(p)
+}
+
+// cappedSQL collects dry-run INSERTs up to limit bytes and counts the rows it
+// had to leave out.
+type cappedSQL struct {
+	sb      strings.Builder
+	limit   int
+	omitted int
+}
+
+func (c *cappedSQL) write(table string, rows []map[string]interface{}, batchSize int, dbType string) {
+	for _, batch := range db.SplitBatches(rows, batchSize) {
+		if c.omitted > 0 || c.sb.Len() >= c.limit {
+			c.omitted += len(batch)
+			continue
+		}
+		c.sb.WriteString(db.RenderInsert(table, batch, dbType))
+		c.sb.WriteString("\n")
+	}
+}
+
+func (c *cappedSQL) String() string {
+	if c.omitted == 0 {
+		return c.sb.String()
+	}
+	return c.sb.String() + fmt.Sprintf("-- %d more rows not shown: dry-run output stops at %dMB\n", c.omitted, c.limit>>20)
 }

@@ -309,3 +309,55 @@ func TestMySQLGeneratedExpressionNormalizesEscapedStringLiterals(t *testing.T) {
 		t.Fatalf("mysqlGeneratedExpression() = %q, want %q", got, want)
 	}
 }
+
+// Keycloak indexes a TEXT column with a prefix (`VALUE`(255)); recreating it
+// without the length fails on MySQL with "used in key specification without a
+// key length".
+func TestBuildSchemaDDL_mysqlKeepsIndexPrefixLengths(t *testing.T) {
+	tables := []Table{{
+		Name:    "client_attributes",
+		Columns: []Column{{Name: "name", DDLType: "varchar(255)", Type: "varchar"}, {Name: "value", DDLType: "text", Type: "text"}},
+		Indexes: []Index{{Name: "idx_name_value", Columns: []string{"name", "value"}, Prefixes: []int{0, 255}}},
+	}}
+	mysqlStmts, err := BuildSchemaDDL(tables, "mysql", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ddl := strings.Join(mysqlStmts, "\n"); !strings.Contains(ddl, "CREATE INDEX `idx_name_value` ON `client_attributes` (`name`, `value`(255))") {
+		t.Fatalf("mysql DDL lost the prefix:\n%s", ddl)
+	}
+	// Postgres has no prefix indexes; the length is dropped rather than emitted.
+	pgStmts, err := BuildSchemaDDL(tables, "pgx", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ddl := strings.Join(pgStmts, "\n"); !strings.Contains(ddl, `ON "client_attributes" ("name", "value")`) {
+		t.Fatalf("postgres DDL:\n%s", ddl)
+	}
+}
+
+func TestParseIndexPrefixes(t *testing.T) {
+	if got := parseIndexPrefixes("0,0"); got != nil {
+		t.Errorf("unprefixed = %v, want nil", got)
+	}
+	if got := parseIndexPrefixes("0,255"); len(got) != 2 || got[1] != 255 {
+		t.Errorf("prefixed = %v", got)
+	}
+}
+
+// MySQL 5.7 (explicit_defaults_for_timestamp=OFF) turns a TIMESTAMP declared
+// without NULL into NOT NULL with a zero default, which strict mode rejects as
+// "Invalid default value". Nullable MySQL columns must say NULL explicitly.
+func TestBuildColumnDDL_mysqlNullableColumnsSayNull(t *testing.T) {
+	col := Column{Name: "completed_at", DDLType: "timestamp", Type: "timestamp", IsNullable: true}
+	if got := buildColumnDDL(col, "mysql"); got != "`completed_at` timestamp NULL" {
+		t.Fatalf("mysql = %q", got)
+	}
+	notNull := Column{Name: "created_at", DDLType: "timestamp", Type: "timestamp", Default: "CURRENT_TIMESTAMP"}
+	if got := buildColumnDDL(notNull, "mysql"); !strings.Contains(got, "NOT NULL DEFAULT CURRENT_TIMESTAMP") {
+		t.Fatalf("not null = %q", got)
+	}
+	if got := buildColumnDDL(col, "pgx"); strings.Contains(got, "NULL") {
+		t.Fatalf("postgres needs no explicit NULL: %q", got)
+	}
+}

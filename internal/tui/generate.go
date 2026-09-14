@@ -2,22 +2,21 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"sort"
+	"io"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/goccy/go-yaml"
 
-	dbpkg "github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/dataio"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/fsutil"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
 type genStep int
@@ -225,7 +224,6 @@ func (m genConfigModel) formatView() string {
 
 // generateDoneMsg is sent when generate completes.
 type generateDoneMsg struct {
-	output  string
 	outPath string
 	tables  []dryRunTable
 	total   int
@@ -240,6 +238,7 @@ type GenModel struct {
 	graph     *graph.Graph
 	sortedAll []string
 	dbType    string
+	profile   Profile
 
 	picker    tablePickerModel
 	genConfig genConfigModel
@@ -253,7 +252,7 @@ type GenModel struct {
 }
 
 // RunGenerate launches the interactive TUI for the generate command.
-func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath string, defaultRows int, defaultSelfRefDepth ...int) error {
+func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath string, defaultRows, defaultSelfRefDepth int, profile Profile) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -272,8 +271,9 @@ func RunGenerate(ctx context.Context, s *schema.Schema, dbType, format, outPath 
 		graph:     g,
 		sortedAll: sortedAll,
 		dbType:    dbType,
+		profile:   profile,
 		picker:    newTablePicker(items, 40),
-		genConfig: newGenConfig(defaultRows, format, outPath, defaultSelfRefDepth...),
+		genConfig: newGenConfig(defaultRows, format, outPath, defaultSelfRefDepth),
 		height:    40,
 		width:     80,
 	}
@@ -396,7 +396,7 @@ func (m GenModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.execute.dryRun = true // generate is always a "dry run" (no DB)
 		m.step = genStepExecute
 
-		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.genConfig.SelfRefDepth(), m.volumes.TableRows(), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType))
+		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.genConfig.SelfRefDepth(), m.profile.mergeRows(m.volumes.TableRows()), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType, m.profile.Overrides))
 	}
 	return m, cmd
 }
@@ -453,74 +453,48 @@ func (m GenModel) View() string {
 	return sb.String()
 }
 
-// startGenerate generates data and optionally writes to file.
-func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, tableRows map[string]int, format, outPath, dbType string) tea.Cmd {
+// startGenerate generates data and optionally writes it to outPath. Rows
+// stream into the file as they are generated; the preview keeps only counts
+// and each table's first row.
+func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, tableRows map[string]int, format, outPath, dbType string, overrides faker.Overrides) tea.Cmd {
 	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithOptions(s, tables, tables, rows, 0, tableRows, nil, dbType, faker.GenerateOptions{
-			SelfRefDepth: selfRefDepth,
+		sink := io.Writer(io.Discard)
+		var file *fsutil.AtomicFile
+		if outPath != "" {
+			f, err := fsutil.CreateAtomic(outPath, 0o644)
+			if err != nil {
+				return generateDoneMsg{err: fmt.Errorf("failed to write %s: %w", outPath, err)}
+			}
+			defer f.Abort()
+			sink, file = f, f
+		}
+		w, err := dataio.NewWriter(sink, format, dbType, 1)
+		if err != nil {
+			return generateDoneMsg{err: err}
+		}
+		samples := map[string]map[string]interface{}{}
+		res, err := seeder.Seed(context.Background(), nil, dbType, s, tables, tables, seeder.SeedOptions{
+			Rows: rows, TableRows: tableRows, DryRun: true,
+			Generate:     faker.GenerateOptions{SelfRefDepth: selfRefDepth, Overrides: overrides},
+			OnTableStart: w.Table,
+			OnRows:       sampleFirstRows(samples, w.Rows),
 		})
 		if err != nil {
 			return generateDoneMsg{err: fmt.Errorf("generation failed: %w", err)}
 		}
-
-		// Build output
-		var output string
-		switch strings.ToLower(format) {
-		case "json":
-			b, err := json.MarshalIndent(data, "", "  ")
-			if err != nil {
-				return generateDoneMsg{err: fmt.Errorf("JSON marshal failed: %w", err)}
-			}
-			output = string(b)
-		case "sql":
-			var sb strings.Builder
-			for _, tableName := range tables {
-				for _, row := range data[tableName] {
-					query, _ := dbpkg.BuildInsert(tableName, row, dbType)
-					sb.WriteString(query)
-					sb.WriteString(";\n")
-				}
-			}
-			output = sb.String()
-		default: // yaml
-			b, err := yaml.Marshal(data)
-			if err != nil {
-				return generateDoneMsg{err: fmt.Errorf("YAML marshal failed: %w", err)}
-			}
-			output = string(b)
+		if err := w.Close(); err != nil {
+			return generateDoneMsg{err: fmt.Errorf("failed to write %s: %w", outPath, err)}
 		}
-
-		// Write to file if path given
-		if outPath != "" {
-			if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
+		if file != nil {
+			if err := file.Commit(); err != nil {
 				return generateDoneMsg{err: fmt.Errorf("failed to write %s: %w", outPath, err)}
 			}
 		}
 
-		// Build preview tables
-		var previewTables []dryRunTable
-		total := 0
-		for _, tableName := range tables {
-			rows := data[tableName]
-			dt := dryRunTable{name: tableName, rows: len(rows)}
-			if len(rows) > 0 {
-				dt.sample = rows[0]
-				cols := make([]string, 0, len(rows[0]))
-				for c := range rows[0] {
-					cols = append(cols, c)
-				}
-				sort.Strings(cols)
-				dt.columns = cols
-			}
-			previewTables = append(previewTables, dt)
-			total += len(rows)
-		}
-
 		return generateDoneMsg{
-			output:  output,
 			outPath: outPath,
-			tables:  previewTables,
-			total:   total,
+			tables:  previewTables(tables, res.Counts, samples),
+			total:   res.Total,
 		}
 	}
 }

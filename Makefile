@@ -62,7 +62,7 @@ test-integration: dev-up
 		fi; \
 		sleep 1; \
 	done
-	cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
+	cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
 
 lint:
 	golangci-lint run --timeout=5m

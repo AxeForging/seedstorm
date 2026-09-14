@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/web"
@@ -32,7 +33,7 @@ fields can be saved as named presets in the browser's localStorage.`,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
 			addr := cmd.String("addr")
-			s, err := web.New(web.Options{Addr: addr})
+			s, err := web.New(web.Options{Addr: addr, ProfilesPath: os.Getenv(profilesPathEnv)})
 			if err != nil {
 				return fmt.Errorf("init web server: %w", err)
 			}

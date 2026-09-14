@@ -59,6 +59,10 @@ type SessionRegistry struct {
 	sessions map[string]*Session
 }
 
+// sessionConnMaxIdle is how long a session's pooled database connection may
+// sit unused before it is closed; the next query opens a new one.
+var sessionConnMaxIdle = 2 * time.Minute
+
 // NewSessionRegistry constructs an empty registry.
 func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{sessions: make(map[string]*Session)}
@@ -94,6 +98,8 @@ func (r *SessionRegistry) open(driver, dsn string, info ConnectionInfo) (*Sessio
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
+	// Sessions live until disconnect; idle ones should not pin connections.
+	conn.SetConnMaxIdleTime(sessionConnMaxIdle)
 	s := &Session{
 		ID:        newSessionID(),
 		Info:      info,
@@ -227,25 +233,7 @@ func (s *Session) Schema(force bool) (*schema.Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &schema.Schema{Tables: make(map[string]schema.Table, len(tables))}
-	for _, t := range tables {
-		st := schema.Table{Columns: make(map[string]schema.Column, len(t.Columns))}
-		for _, c := range t.Columns {
-			sc := schema.Column{
-				Type:      c.Type,
-				DDLType:   c.DDLType,
-				PK:        c.IsPK,
-				Nullable:  c.IsNullable,
-				Generated: c.Generated != "",
-				Faker:     faker.MapColumnToFaker(s.DBType, c),
-			}
-			if c.FK != nil {
-				sc.FK = fmt.Sprintf("%s.%s", c.FK.TableName, c.FK.ColumnName)
-			}
-			st.Columns[c.Name] = sc
-		}
-		out.Tables[t.Name] = st
-	}
+	out := faker.BuildSchema(s.DBType, tables)
 	s.schema = out
 	s.cachedAt = time.Now()
 	return out, nil
