@@ -4,16 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/AxeForging/seedstorm/internal/db"
-	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
 // gapsStep tracks the wizard state for the gaps command.
@@ -37,6 +36,7 @@ type GapsModel struct {
 	dbType    string
 	dsn       string
 	counts    map[string]int64
+	profile   Profile
 
 	picker  tablePickerModel
 	config  configModel
@@ -51,7 +51,7 @@ type GapsModel struct {
 }
 
 // RunGaps launches the interactive TUI for the gaps command.
-func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts map[string]int64, defaultRows, defaultBatchSize, defaultEnumRows int, defaultSelfRefDepth ...int) error {
+func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts map[string]int64, defaultRows, defaultBatchSize, defaultEnumRows, defaultSelfRefDepth int, profile Profile) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -83,8 +83,9 @@ func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts m
 		dbType:    dbType,
 		dsn:       dsn,
 		counts:    counts,
+		profile:   profile,
 		picker:    newGapsPicker(items, counts, 40),
-		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, false, defaultSelfRefDepth...),
+		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, false, defaultSelfRefDepth),
 		height:    40,
 		width:     80,
 	}
@@ -233,7 +234,8 @@ func (m GapsModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
 			parents[t] = m.graph.Parents(t)
 		}
 		m.review = newReview(m.volumes.tables, parents,
-			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), false, m.volumes.TableRows())
+			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), false, m.profile.mergeRows(m.volumes.TableRows()))
+		m.review.profile = m.profile.Summary()
 		m.step = gapsStepReview
 	}
 	return m, cmd
@@ -265,6 +267,7 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			truncate:     false, // gaps never truncates
 			dbType:       m.dbType,
 			dsn:          m.dsn,
+			overrides:    m.profile.Overrides,
 		}
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)
 		m.step = gapsStepExecute
@@ -340,69 +343,24 @@ func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.C
 			return seedDoneMsg{err: fmt.Errorf("failed to ping database: %w", err)}
 		}
 
-		data, err := faker.GenerateFilteredWithOptions(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType, faker.GenerateOptions{
-			SelfRefDepth: s.selfRefDepth,
-		})
+		// Move Postgres sequences past the inserted ids, even if an insert fails.
+		defer func() { _, _ = db.SyncSequences(ctx, conn, s.dbType, s.tables) }()
+		res, err := seeder.Seed(ctx, conn, s.dbType, s.schema, allSorted, s.tables, s.seedOptions(batchSize, false, nil))
 		if err != nil {
-			return seedDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
+			return seedDoneMsg{err: err}
 		}
-
-		totalRows := 0
-		rowsMap := make(map[string]int, len(s.tables))
-		for _, tableName := range s.tables {
-			tableRows := data[tableName]
-			for i := 0; i < len(tableRows); i += batchSize {
-				end := i + batchSize
-				if end > len(tableRows) {
-					end = len(tableRows)
-				}
-				query, values := db.BuildBatchInsert(tableName, tableRows[i:end], s.dbType)
-				if _, err := conn.ExecContext(ctx, query, values...); err != nil {
-					return seedDoneMsg{err: fmt.Errorf("insert into %s failed: %w", tableName, err)}
-				}
-			}
-			rowsMap[tableName] = len(tableRows)
-			totalRows += len(tableRows)
-		}
-
 		return seedDoneMsg{
-			totalRows: totalRows,
+			totalRows: res.Total,
 			elapsed:   time.Since(start),
 			tables:    s.tables,
-			rowsMap:   rowsMap,
+			rowsMap:   res.Counts,
 		}
 	}
 }
 
 // startGapsDryRun generates data for gap tables and returns a preview.
 func startGapsDryRun(s *seedParams, allSorted []string) tea.Cmd {
-	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithOptions(s.schema, allSorted, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType, faker.GenerateOptions{
-			SelfRefDepth: s.selfRefDepth,
-		})
-		if err != nil {
-			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
-		}
-
-		var tables []dryRunTable
-		total := 0
-		for _, tableName := range s.tables {
-			rows := data[tableName]
-			dt := dryRunTable{name: tableName, rows: len(rows)}
-			if len(rows) > 0 {
-				dt.sample = rows[0]
-				cols := make([]string, 0, len(rows[0]))
-				for c := range rows[0] {
-					cols = append(cols, c)
-				}
-				sort.Strings(cols)
-				dt.columns = cols
-			}
-			tables = append(tables, dt)
-			total += len(rows)
-		}
-		return dryRunDoneMsg{tables: tables, total: total}
-	}
+	return func() tea.Msg { return dryRunSummary(s, allSorted) }
 }
 
 // cleanTableName strips the " (N rows)" annotation from gap picker display names.

@@ -20,6 +20,12 @@ const DefaultSelfRefDepth = 2
 type GenerateOptions struct {
 	SelfRefDepth int
 	OnWarning    func(GenerationWarning)
+	// Overrides rewrites individual columns after a table's rows are generated
+	// (value rules). Columns it names are excluded from enum coverage.
+	Overrides Overrides
+	// RowOffset shifts the row index overrides see, per table, so a table
+	// generated in several chunks keeps {{seq}} increasing across chunks.
+	RowOffset map[string]int
 }
 
 type GenerationWarning struct {
@@ -73,64 +79,11 @@ func GenerateFilteredWithCounts(s *schema.Schema, allTables, targetTables []stri
 // GenerateFilteredWithOptions is like GenerateFilteredWithCounts, with
 // generation guardrails for recursive/self-referential relationships.
 func GenerateFilteredWithOptions(s *schema.Schema, allTables, targetTables []string, rows, enumRows int, tableRows map[string]int, conn *sql.DB, dbType string, opts GenerateOptions) (map[string][]map[string]interface{}, error) {
-	opts = normalizeOptions(opts)
-	data := make(map[string][]map[string]interface{})
-	generatedPKs := make(map[string][]interface{})
-
-	if conn != nil {
-		if err := queryExistingPKs(conn, allTables, s.Tables, generatedPKs, dbType); err != nil {
-			return nil, err
-		}
+	g, err := NewStream(s, allTables, targetTables, conn, dbType, opts.Overrides)
+	if err != nil {
+		return nil, err
 	}
-
-	sortedTables := targetTables
-
-	for _, tableName := range sortedTables {
-		table := s.Tables[tableName]
-		data[tableName] = nil
-		tableRowCount := rows
-		_, hasRowOverride := tableRows[tableName]
-		if override := tableRows[tableName]; override > 0 {
-			tableRowCount = override
-		}
-
-		enumCol, enumVals := findEnumColumn(table)
-
-		if enumCol != "" && enumRows > 0 && !hasRowOverride {
-			if err := generateEnumRows(data, generatedPKs, table, tableName, enumCol, enumVals, enumRows); err != nil {
-				return nil, fmt.Errorf("table %s: %w", tableName, err)
-			}
-		} else if generated, ok, err := generateCompositeFKPKRows(data, generatedPKs, table, tableName, tableRowCount); err != nil {
-			return nil, fmt.Errorf("table %s: %w", tableName, err)
-		} else if ok {
-			if generated < tableRowCount && opts.OnWarning != nil {
-				opts.OnWarning(GenerationWarning{
-					Table:     tableName,
-					Requested: tableRowCount,
-					Generated: generated,
-					Reason:    "finite FK primary-key combinations",
-				})
-			}
-		} else {
-			if err := generateStandardRows(data, generatedPKs, table, tableName, tableRowCount); err != nil {
-				return nil, fmt.Errorf("table %s: %w", tableName, err)
-			}
-			// Guarantee every enum value appears at least the requested table
-			// row count, independently per column.
-			enumCols := findAllEnumColumns(table)
-			if len(enumCols) > 0 && !hasRowOverride {
-				if err := topUpEnumCoverage(data, generatedPKs, table, tableName, enumCols, tableRowCount); err != nil {
-					return nil, fmt.Errorf("table %s enum top-up: %w", tableName, err)
-				}
-			}
-		}
-		if err := backfillSelfReferences(data[tableName], table, tableName, opts.SelfRefDepth); err != nil {
-			return nil, fmt.Errorf("table %s self-reference backfill: %w", tableName, err)
-		}
-		assignUniqueSequences(data[tableName], table)
-	}
-
-	return data, nil
+	return g.Generate(targetTables, rows, enumRows, tableRows, opts)
 }
 
 // seqBaseTime anchors generated unique temporal sequences. Kept fixed (not
@@ -143,13 +96,14 @@ var seqBaseTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 // count — random fakers can't promise that, and non-PK UNIQUE columns have no
 // retry loop. Values for non-PK columns are independent (nothing references
 // them), so reassigning them after generation is safe.
-func assignUniqueSequences(rows []map[string]interface{}, table schema.Table) {
+// start offsets a column's sequence past values already stored in the database.
+func assignUniqueSequences(rows []map[string]interface{}, table schema.Table, start map[string]int) {
 	for colName, col := range table.Columns {
 		if col.Faker != uniqueSequenceFaker {
 			continue
 		}
 		for i := range rows {
-			rows[i][colName] = uniqueSequenceValue(col.Type, i)
+			rows[i][colName] = uniqueSequenceValue(col.Type, start[colName]+i)
 		}
 	}
 }
@@ -171,36 +125,44 @@ func uniqueSequenceValue(colType string, i int) interface{} {
 	}
 }
 
-func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string) error {
+// queryExistingPKs reads the PK pools of sortedTables and records in sampled
+// which tables were too large to keep whole.
+func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string, sampled map[string]bool) error {
 	for _, tableName := range sortedTables {
 		table := tables[tableName]
-		for colName, col := range table.Columns {
-			if !col.PK {
-				continue
-			}
-			if err := scanPKs(conn, tableName, colName, generatedPKs, dbType); err != nil {
+		for _, colName := range sortedPKColumns(table) {
+			wasSampled, err := scanPKs(conn, tableName, colName, generatedPKs, dbType)
+			if err != nil {
 				return err
+			}
+			if wasSampled && sampled != nil {
+				sampled[tableName] = true
 			}
 		}
 	}
 	return nil
 }
 
-func scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) error {
+func scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
 	rows, err := conn.Query(fmt.Sprintf("SELECT %s FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType))) //nolint:gosec
 	if err != nil {
-		return fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
+		return false, fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
 	}
 	defer rows.Close()
 
+	pool := newPoolSampler(generatedPKs[tableName], poolLimit)
 	for rows.Next() {
 		var pk interface{}
 		if err := rows.Scan(&pk); err != nil {
-			return err
+			return false, err
 		}
-		generatedPKs[tableName] = append(generatedPKs[tableName], pk)
+		pool.offer(normalizeScanned(pk))
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	generatedPKs[tableName] = pool.values()
+	return pool.seen > pool.limit, nil
 }
 
 func findEnumColumn(table schema.Table) (string, []string) {
@@ -244,63 +206,80 @@ const maxEnumTopUpValues = 12
 // cartesian product is produced.
 // Columns with more than maxEnumTopUpValues values are skipped: large pools
 // are AI example lists, not true enums, and top-up would inflate row counts.
-func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int) error {
-	// Seed seenKeys from already-generated rows so top-up rows don't collide on
-	// composite PKs (e.g., junction tables that also carry an enum column).
+func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int, existingKeys takenKeys) error {
+	// Rows already generated occupy keys too, so top-up rows never collide with
+	// them on composite PKs (e.g., junction tables that also carry an enum).
 	enforceUniquePK := pkColumnCount(table) > 0
-	seenKeys := make(map[string]bool)
+	taken := newSeen(existingKeys)
 	if enforceUniquePK {
-		seenKeys = make(map[string]bool, len(data[tableName]))
 		for _, row := range data[tableName] {
-			seenKeys[compositePKKey(row, table)] = true
+			taken.Add(compositePKKey(row, table))
 		}
 	}
+	counts := countEnumValues(nil, enumCols, data[tableName])
+	return enumTopUp(enumCols, minRows, counts, func(col, val string, n int) error {
+		piece := map[string][]map[string]interface{}{tableName: nil}
+		if err := generateEnumRows(piece, generatedPKs, table, tableName, col, []string{val}, n, taken); err != nil {
+			return fmt.Errorf("enum top-up (table %s, %s=%s): %w", tableName, col, val, err)
+		}
+		for _, row := range piece[tableName] {
+			if enforceUniquePK {
+				taken.Add(compositePKKey(row, table))
+			}
+		}
+		data[tableName] = append(data[tableName], piece[tableName]...)
+		countEnumValues(counts, enumCols, piece[tableName])
+		return nil
+	})
+}
 
-	for colName, vals := range enumCols {
+// enumTopUp asks add for rows until each value of each enum column appears
+// minRows times. add generates n rows with col fixed to val and must record
+// every row it produces in counts, since those rows also carry values of the
+// other enum columns.
+func enumTopUp(enumCols map[string][]string, minRows int, counts map[string]map[string]int, add func(col, val string, n int) error) error {
+	cols := make([]string, 0, len(enumCols))
+	for col := range enumCols {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
+	for _, col := range cols {
+		vals := enumCols[col]
 		if len(vals) > maxEnumTopUpValues {
 			continue
 		}
-		counts := make(map[string]int, len(vals))
-		for _, row := range data[tableName] {
-			if v, ok := row[colName].(string); ok {
-				counts[v]++
-			}
-		}
 		for _, val := range vals {
-			need := minRows - counts[val]
-			for i := 0; i < need; i++ {
-				v := val
-				var row map[string]interface{}
-				generated := false
-				for attempt := 0; attempt < 200; attempt++ {
-					var err error
-					row, err = generateRow(table, tableName, generatedPKs, &v, colName)
-					if err != nil {
-						return err
-					}
-					key := compositePKKey(row, table)
-					if !enforceUniquePK || !seenKeys[key] {
-						if enforceUniquePK {
-							seenKeys[key] = true
-						}
-						generated = true
-						break
-					}
-					rollbackLastRowPKs(generatedPKs, tableName, table)
+			if need := minRows - counts[col][val]; need > 0 {
+				if err := add(col, val, need); err != nil {
+					return err
 				}
-				if !generated {
-					return fmt.Errorf("could not generate unique PK for enum top-up (table %s, %s=%s)", tableName, colName, val)
-				}
-				data[tableName] = append(data[tableName], row)
-				counts[val]++
 			}
 		}
 	}
 	return nil
 }
 
-func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int) error {
-	seenKeys := make(map[string]bool)
+// countEnumValues adds the enum values found in rows to counts (created when
+// nil) and returns it.
+func countEnumValues(counts map[string]map[string]int, enumCols map[string][]string, rows []map[string]interface{}) map[string]map[string]int {
+	if counts == nil {
+		counts = make(map[string]map[string]int, len(enumCols))
+	}
+	for col := range enumCols {
+		if counts[col] == nil {
+			counts[col] = map[string]int{}
+		}
+		for _, row := range rows {
+			if v, ok := row[col].(string); ok {
+				counts[col][v]++
+			}
+		}
+	}
+	return counts
+}
+
+func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int, existingKeys takenKeys) error {
+	seenKeys := newSeen(existingKeys)
 	enforceUniquePK := pkColumnCount(table) > 0
 	for _, enumVal := range enumVals {
 		v := enumVal
@@ -314,9 +293,9 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 					return err
 				}
 				key := compositePKKey(row, table)
-				if !enforceUniquePK || !seenKeys[key] {
+				if !enforceUniquePK || !seenKeys.Has(key) {
 					if enforceUniquePK {
-						seenKeys[key] = true
+						seenKeys.Add(key)
 					}
 					generated = true
 					break
@@ -332,8 +311,8 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 	return nil
 }
 
-func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int) error {
-	seenKeys := make(map[string]bool) // guards composite PK uniqueness
+func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) error {
+	seenKeys := newSeen(existingKeys) // guards PK uniqueness against this run and stored rows
 	enforceUniquePK := pkColumnCount(table) > 0
 	for i := 0; i < rows; i++ {
 		var row map[string]interface{}
@@ -345,9 +324,9 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 				return err
 			}
 			key := compositePKKey(row, table)
-			if !enforceUniquePK || !seenKeys[key] {
+			if !enforceUniquePK || !seenKeys.Has(key) {
 				if enforceUniquePK {
-					seenKeys[key] = true
+					seenKeys.Add(key)
 				}
 				generated = true
 				break
@@ -380,7 +359,15 @@ func pkColumnCount(table schema.Table) int {
 // Random retries can exhaust quickly when the parent pools are small;
 // enumerating combinations avoids false failures and caps impossible requests
 // to the available pool.
-func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int) (int, bool, error) {
+func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) (int, bool, error) {
+	generated, _, handled, err := enumerateCompositeFKPKRows(data, generatedPKs, table, tableName, rows, existingKeys, 0)
+	return generated, handled, err
+}
+
+// enumerateCompositeFKPKRows walks key combinations from position start and
+// returns where it stopped, so a table generated in chunks resumes instead of
+// re-walking every combination already used.
+func enumerateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys, start int) (int, int, bool, error) {
 	pkCols := make([]string, 0)
 	for colName, col := range table.Columns {
 		if col.PK {
@@ -388,7 +375,7 @@ func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generat
 		}
 	}
 	if len(pkCols) == 0 {
-		return 0, false, nil
+		return 0, start, false, nil
 	}
 	sort.Strings(pkCols)
 
@@ -397,32 +384,36 @@ func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generat
 		col := table.Columns[colName]
 		fkTable, _ := splitFK(col.FK)
 		if fkTable == "" {
-			return 0, false, nil
+			return 0, start, false, nil
 		}
 		pool := generatedPKs[fkTable]
 		if len(pool) == 0 {
 			if col.Nullable {
-				return 0, false, nil
+				return 0, start, false, nil
 			}
-			return 0, true, fmt.Errorf("column %s: no PKs available for FK table %s", colName, fkTable)
+			return 0, start, true, fmt.Errorf("column %s: no PKs available for FK table %s", colName, fkTable)
 		}
 		pools = append(pools, pool)
 	}
 
+	// Stored rows occupy some combinations, so walk up to that many extra
+	// combinations past the requested count before giving up.
+	walk := start + rows + keyCount(existingKeys)
 	capacity := 1
 	for _, pool := range pools {
-		if rows > 0 && capacity > rows/len(pool) {
-			capacity = rows
+		if walk > 0 && capacity > walk/len(pool) {
+			capacity = walk
 			break
 		}
 		capacity *= len(pool)
 	}
-	limit := rows
-	if capacity < limit {
-		limit = capacity
+	if capacity > walk {
+		capacity = walk
 	}
 
-	for i := 0; i < limit; i++ {
+	generated := 0
+	i := start
+	for ; i < capacity && generated < rows; i++ {
 		overrides := make(map[string]interface{}, len(pkCols))
 		n := i
 		for colIdx, colName := range pkCols {
@@ -430,13 +421,17 @@ func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generat
 			overrides[colName] = pool[n%len(pool)]
 			n /= len(pool)
 		}
+		if hasKey(existingKeys, compositePKKey(overrides, table)) {
+			continue
+		}
 		row, err := generateRowWithOverrides(table, tableName, generatedPKs, nil, "", overrides)
 		if err != nil {
-			return len(data[tableName]), true, err
+			return generated, i, true, err
 		}
 		data[tableName] = append(data[tableName], row)
+		generated++
 	}
-	return limit, true, nil
+	return generated, i, true, nil
 }
 
 // compositePKKey returns a deterministic string key for the composite PK values
@@ -445,7 +440,7 @@ func compositePKKey(row map[string]interface{}, table schema.Table) string {
 	var parts []string
 	for colName, col := range table.Columns {
 		if col.PK {
-			parts = append(parts, fmt.Sprintf("%s=%v", colName, row[colName]))
+			parts = append(parts, colName+"="+keyValue(col.Type, row[colName]))
 		}
 	}
 	sort.Strings(parts)
@@ -540,7 +535,11 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 		}
 	}
 	if col.PK {
-		return generatePK(col.Type, len(generatedPKs[tableName]))
+		pk, err := generatePK(col.Type, nextSequentialPK(generatedPKs[tableName]))
+		if err != nil {
+			return nil, err
+		}
+		return fitStringPK(pk, col), nil
 	}
 	val, err := generate(col.Faker)
 	if err != nil {
@@ -666,6 +665,18 @@ func generatePK(colType string, existingCount int) (interface{}, error) {
 	}
 }
 
+// fitStringPK shortens a generated string key to the column's declared length.
+// Dashes are dropped first so short keys keep as much randomness as possible;
+// uniqueness is enforced by the caller's key retry loop.
+func fitStringPK(pk interface{}, col schema.Column) interface{} {
+	s, ok := pk.(string)
+	limit := stringLengthLimit(col)
+	if !ok || limit <= 0 || len(s) <= limit {
+		return pk
+	}
+	return strings.ReplaceAll(s, "-", "")[:limit]
+}
+
 // temporalPKFaker maps a temporal column type to the faker that produces a
 // valid value for it, or "" when the type is not temporal. datetime/timestamp
 // is checked before date/time because those substrings overlap.
@@ -735,13 +746,13 @@ var knownFakers = map[string]bool{
 	"productname": true, "company": true, "jobtitle": true,
 	"latitude": true, "longitude": true, "bool": true, "float64": true,
 	"word": true, "sentence": true, "date": true, "time": true,
-	"datetime": true, "json": true, uniqueSequenceFaker: true,
+	"datetime": true, "json": true, "domain": true, uniqueSequenceFaker: true,
 }
 
 // knownParamFakers is the set of valid faker functions that take arguments.
 var knownParamFakers = map[string]bool{
 	"number": true, "price": true, "randomstring": true,
-	"paragraph": true, "float64": true,
+	"paragraph": true, "float64": true, "lexify": true, "numerify": true,
 }
 
 // ValidFaker reports whether a faker string is recognized by the generate engine.
@@ -808,6 +819,11 @@ func generate(fakerStr string) (interface{}, error) {
 			return gofakeit.Paragraph(count, 3, 8, " "), nil
 		case "float64":
 			return gofakeit.Float64(), nil
+		case "lexify":
+			// The pattern is raw text, not a comma-separated list.
+			return gofakeit.Lexify(m[2]), nil
+		case "numerify":
+			return gofakeit.Numerify(m[2]), nil
 		}
 	}
 
@@ -836,6 +852,8 @@ func generate(fakerStr string) (interface{}, error) {
 		return gofakeit.Zip(), nil
 	case "url":
 		return gofakeit.URL(), nil
+	case "domain":
+		return gofakeit.DomainName(), nil
 	case "uuid":
 		return gofakeit.UUID(), nil
 	case "ipv4":

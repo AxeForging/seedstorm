@@ -76,6 +76,13 @@ tables:
 | `randomstring(a,b,c)` | Random pick from list — also used for CHECK IN constraints |
 | `sequence` | Distinct monotonic values for UNIQUE numeric/temporal columns (no collisions at any row count) |
 
+## Table fields
+
+| Field | Description |
+|-------|-------------|
+| `columns` | Column map (see above) |
+| `unique` | Multi-column UNIQUE constraints, e.g. `unique: [[realm_id, username]]`. Written by `introspect`; generation keeps every listed tuple distinct |
+
 ## Constraint auto-detection
 
 `introspect` sets faker hints automatically from DB constraints:
@@ -84,6 +91,7 @@ tables:
 |-----------------|---------|---------------|
 | UNIQUE (string) | `users.email` | `uuid` |
 | UNIQUE (numeric / temporal) | `refs.external_order_id BIGINT UNIQUE` | `sequence` — a monotonic series; a `uuid` string can't fit a numeric column and a random value collides at high row counts |
+| UNIQUE (several columns) | `UNIQUE (realm_id, username)` | kept distinct at generation: a repeated tuple gets one of its free columns regenerated; a row that cannot be made distinct is dropped and reported |
 | CHECK IN | `status IN ('active','inactive')` | `randomstring(active,inactive)` |
 | CHECK range | `rating BETWEEN 1 AND 5` | `number(1,5)` |
 | Fixed-point sized to precision | `amount NUMERIC(20,0)` → `number(1,…)`; `ratio NUMERIC(3,2)` → `price(1,9)` | scale-0 columns can't store a fractional value, and a small-precision column can't hold `price(1,1000)` ("Out of range value") |

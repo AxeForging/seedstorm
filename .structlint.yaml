@@ -37,6 +37,7 @@ file_naming_pattern:
     - "*.sql"
     - "*.gif"
     - "*.png"
+    - "*.webp"
     - "*.js"
     - "*.css"
     - "*.tmpl"

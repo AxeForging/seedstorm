@@ -86,3 +86,53 @@ func BuildBatchInsert(tableName string, rows []map[string]interface{}, dbType st
 	)
 	return query, values
 }
+
+const (
+	// maxPlaceholders is the bind-parameter limit of one statement on both
+	// Postgres and MySQL.
+	maxPlaceholders = 65_535
+	// maxBatchBytes keeps one INSERT well under MySQL 5.7's default 4MB packet.
+	maxBatchBytes = 1 << 20
+)
+
+// SplitBatches groups rows, in order, into INSERT-sized batches of at most
+// maxRows rows, never exceeding the placeholder limit or about 1MB of values.
+// A row larger than the byte budget goes alone.
+func SplitBatches(rows []map[string]interface{}, maxRows int) [][]map[string]interface{} {
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	var out [][]map[string]interface{}
+	start, bytes := 0, 0
+	for i, row := range rows {
+		size := rowBytes(row)
+		n := i - start
+		if n > 0 && (n >= maxRows || (n+1)*len(row) > maxPlaceholders || bytes+size > maxBatchBytes) {
+			out = append(out, rows[start:i])
+			start, bytes = i, 0
+		}
+		bytes += size
+	}
+	if start < len(rows) {
+		out = append(out, rows[start:])
+	}
+	return out
+}
+
+// rowBytes estimates the wire size of a row's values: the data plus a small
+// per-value overhead for the protocol's type and length framing.
+func rowBytes(row map[string]interface{}) int {
+	const framing = 8
+	n := 0
+	for _, v := range row {
+		switch x := v.(type) {
+		case string:
+			n += len(x) + framing
+		case []byte:
+			n += len(x) + framing
+		default:
+			n += 16
+		}
+	}
+	return n
+}

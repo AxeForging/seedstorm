@@ -1173,7 +1173,24 @@
     document.getElementById("ws-run").addEventListener("click", runMode);
 
     loadCloneTargets();
+    loadProfileOptions();
     loadGraph();
+  }
+
+  // Seed profiles apply to seed, fill-empty and generate runs from the workspace.
+  async function loadProfileOptions() {
+    const select = document.getElementById("cfg-profile");
+    if (!select) return;
+    try {
+      const res = await fetch("/api/profiles", { cache: "no-store" });
+      const data = await res.json();
+      for (const p of data.profiles || []) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.rules.name;
+        select.appendChild(opt);
+      }
+    } catch (_) { /* profiles are optional */ }
   }
 
   async function loadGraph() {
@@ -2123,7 +2140,9 @@
       return runCloneSchema();
     }
     const tables = [...ws.selected];
+    const profileId = document.getElementById("cfg-profile")?.value || "";
     const cfg = {
+      profileId,
       rows: Number(document.getElementById("cfg-rows").value || 0),
       enumRows: Number(document.getElementById("cfg-enum").value || 0),
       batchSize: Number(document.getElementById("cfg-batch").value || 0),
@@ -2254,7 +2273,32 @@
     });
   }
 
+  // Narrow screens collapse the top navigation into a drawer.
+  function setupNavDrawer() {
+    const toggle = document.getElementById("nav-toggle");
+    const nav = document.getElementById("main-nav");
+    const backdrop = document.getElementById("nav-backdrop");
+    if (!toggle || !nav || !backdrop) return;
+    const setOpen = (open) => {
+      document.body.classList.toggle("nav-open", open);
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+      backdrop.hidden = !open;
+      if (open) nav.querySelector(".navlink")?.focus();
+    };
+    toggle.addEventListener("click", () => setOpen(!document.body.classList.contains("nav-open")));
+    backdrop.addEventListener("click", () => setOpen(false));
+    nav.addEventListener("click", (ev) => { if (ev.target.closest("a")) setOpen(false); });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.body.classList.contains("nav-open")) {
+        setOpen(false);
+        toggle.focus();
+      }
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    setupNavDrawer();
     setupConnectForm();
     setupConnectionDialog();
     setupSavedChooser();
@@ -2269,6 +2313,11 @@
   // Lightweight debug surface — useful for poking from the console and for
   // automated UI tests. Not used by the app itself.
   window.seedstorm = {
+    // Shared helpers for page scripts (compare.js, profiles.js).
+    ui: {
+      streamJob, resetPhases, appendLog, escapeHTML, formatCount, copyText,
+      fetchConnections, fetchSavedConnections, connectionLabel, connectionKey,
+    },
     state: ws,
     select: (id) => { toggleSelect(id); },
     selectAll, clearSelection, selectEmpty, invertSelection, refreshCounts,

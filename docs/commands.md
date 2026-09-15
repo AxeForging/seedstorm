@@ -11,6 +11,9 @@ Every seedstorm command, with all flags and examples.
 - [`generate`](#generate) — generate data without a DB connection
 - [`export`](#export) — convert data between formats
 - [`clone-schema`](#clone-schema) — copy schema structure into another DB
+- [`compare`](#compare) — row counts, sizes and column drift between two DBs
+- [`mirror`](#mirror) — seed a target so its volumes follow a source
+- [`profile`](#profile) — manage seed profiles (value rules)
 - [`serve`](#serve) — local web UI for every feature
 - [`version`](#version) / [`completion`](#completion)
 
@@ -150,9 +153,14 @@ The interactive TUI includes a **Volumes** step after global config. Each select
 | `--dry-run` / `-n` | false | Print seed plan + SQL, do not execute |
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
-| `--batch-size` | `100` | Number of rows per INSERT statement |
+| `--batch-size` | `1000` | Most rows per INSERT statement; smaller batches are sent to stay under 65,535 parameters and ~1MB (Postgres uses COPY) |
 | `--seed` | `0` | Random seed for reproducible generation (0 = random) |
 | `--interactive` / `-i` | false | Launch interactive TUI |
+| `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name |
+
+Any `--rows` is safe: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat (600k rows on Postgres: 7s, under 100MB). A dry run prints the SQL the same way.
+
+Seeding a table that already has rows (no `--truncate`) appends: integer ids continue after the largest existing id, UNIQUE sequences continue past their current maximum, and composite keys and multi-column UNIQUE tuples skip combinations already stored. Rows that cannot be made distinct are dropped with a warning (`no more distinct values for UNIQUE (…)`) rather than failing the insert.
 
 ---
 
@@ -221,14 +229,17 @@ Gap Analysis
 | `--fill` | false | Seed all empty tables |
 | `--dry-run` / `-n` | false | Print SQL without executing (requires `--fill`) |
 | `--yes` / `-y` | false | Skip confirmation prompt |
-| `--batch-size` | `100` | Number of rows per INSERT statement |
+| `--batch-size` | `1000` | Most rows per INSERT statement; smaller batches are sent to stay under 65,535 parameters and ~1MB (Postgres uses COPY) |
 | `--interactive` / `-i` | false | Launch interactive TUI |
+| `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name |
 
 ---
 
 ## `generate`
 
-Generates fake data without connecting to a database. Outputs YAML, JSON, or SQL.
+Generates fake data without connecting to a database. Outputs YAML, JSON, SQL or CSV.
+
+Rows stream into the output as they are generated, so any volume writes in flat memory (300k rows: ~100MB peak in every format). With `--out`, the file only replaces an existing one once it is complete. SQL output is runnable as-is: values are literals escaped for the chosen `--db`.
 
 ```bash
 seedstorm generate --schema schema.yaml --rows 10 --format json --out data.json
@@ -251,22 +262,31 @@ In interactive mode, the **Volumes** step can override row counts per selected t
 | `--rows` / `-r` | `100` | Rows per table |
 | `--table-rows` | — | Per-table row override, repeatable or comma-separated (`table=rows`) |
 | `--self-ref-depth` | `2` | Maximum generated depth for self-referential FK chains |
-| `--format` / `-f` | `yaml` | Output format: `yaml`, `json`, `sql` |
+| `--format` / `-f` | `yaml` | Output format: `yaml`, `json`, `sql`, `csv` |
 | `--out` / `-o` | stdout | Output file (omit for stdout) |
-| `--db` | `postgres` | DB type (affects SQL placeholder style) |
+| `--db` | `postgres` | SQL dialect: identifier quoting and literal escaping |
 | `--seed` | `0` | Random seed for reproducible generation (0 = random) |
 | `--interactive` / `-i` | false | Launch interactive TUI |
+| `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name |
 
 ---
 
 ## `export`
 
-Converts a previously generated data file to another format.
+Converts a previously generated data file (YAML or JSON) to another format. The input is read and the output written a chunk at a time, so files of any size convert in flat memory; block-style YAML (what `generate` writes) and JSON stream, other YAML layouts are parsed whole. SQL statements carry literal values, `--batch-size` rows each.
 
 ```bash
-seedstorm export --data data.yaml --format sql --out seed.sql
-seedstorm export --data data.yaml --format csv --out data.csv
+seedstorm export --data data.yaml --format sql --db mysql --out seed.sql
+seedstorm export --data data.json --format csv --out data.csv
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data` / `-d` | — | Input data file (YAML or JSON) |
+| `--format` / `-f` | `sql` | Output format: `sql`, `csv`, `json`, `yaml` |
+| `--out` / `-o` | stdout | Output file (omit for stdout) |
+| `--db` | `postgres` | SQL dialect: identifier quoting and literal escaping |
+| `--batch-size` | `100` | Rows per INSERT statement; smaller batches are written to stay under 65,535 parameters and ~1MB |
 
 <img src="gifs/export.gif" alt="export demo" width="720" />
 
@@ -314,6 +334,155 @@ Boundaries: `clone-schema` is same-engine only. It does not attempt cross-engine
 
 ---
 
+## `compare`
+
+Reads every table on two databases and reports row counts, on-disk size (data + indexes), the difference, and column-name drift. Both sides are only read. Engines can differ: tables match by name, ignoring case (MySQL `USER_ENTITY` ↔ Postgres `user_entity`).
+
+```bash
+seedstorm compare \
+  --source-db postgres --source-dsn "postgres://user:pass@prod.example/app" \
+  --target-db postgres --target-dsn "postgres://seedstorm:seedstorm@localhost:5432/stage"
+
+# Only tables that differ, planner estimates instead of COUNT(*) on huge tables
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --only-diff --counts estimate
+
+# Machine-readable report
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --format json
+```
+
+Sample output:
+
+```
+Compare  source: app@prod.example:5432 (postgres)  →  target: stage@localhost:5432 (postgres)  · exact counts
+
+TABLE                 SOURCE ROWS  TARGET ROWS  DELTA  SOURCE SIZE  TARGET SIZE  STATUS
+addresses             40           0            -40    32.0 KB      16.0 KB      differs
+brands                40           20           -20    24.0 KB      24.0 KB      differs
+employees             160          80           -80    72.0 KB      64.0 KB      differs
+
+36 tables · same 0 · differs 36 · source only 0 · target only 0 · column drift 0
+rows 3856 → 1888 · size 1.7 MB → 1.3 MB
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source-db` / `$SEEDSTORM_SOURCE_DB` | `postgres` | Source database type |
+| `--source-dsn` / `$SEEDSTORM_SOURCE_DSN` | — | Source connection string (required) |
+| `--target-db` / `$SEEDSTORM_TARGET_DB` | `postgres` | Target database type |
+| `--target-dsn` / `$SEEDSTORM_TARGET_DSN` | — | Target connection string (required) |
+| `--counts` | `exact` | `exact` (COUNT(*)) or `estimate` (Postgres `reltuples`, MySQL `TABLE_ROWS`); tables with no or zero statistics are counted exactly and estimated counts are marked `~` |
+| `--format` / `-f` | `table` | `table` or `json` |
+| `--only-diff` | false | Hide tables whose counts and columns match |
+
+Statuses: `same`, `differs`, `source_only`, `target_only`. MySQL sizes come from cached statistics and are approximate.
+
+---
+
+## `mirror`
+
+Seeds a **target** so each table reaches the source's row count times `--scale`. Typical use: make a staging or load-test database look like production in volume, with fake data. The source is only read; rows are generated from the target's own schema, in FK order, optionally shaped by a [seed profile](profiles.md).
+
+```bash
+# Preview: plan + sample rows, nothing written
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --dry-run
+
+# Top up the target to match production
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE"
+
+# Stress test at 5x production, capped per table, with tagged values
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" \
+  --scale 5 --max-rows 2000000 --profile loadtest
+
+# Rebuild a few tables at 10% (truncates them and their FK dependents first)
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" \
+  --mode reset --scale 0.1 --tables users,orders --yes
+
+# Cross-engine: MySQL production volumes onto a Postgres target
+seedstorm mirror --source-db mysql --source-dsn "$MYSQL_PROD" \
+  --target-db postgres --target-dsn "$PG_STAGE"
+
+# Review, preview samples and confirm in the terminal UI
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --interactive
+```
+
+Sample dry run:
+
+```
+Mirror plan · mode topup · scale 2x · 580 rows into 3 tables
+
+#  TABLE        SOURCE  TARGET  WANT  INSERT  WHY
+1  users        120     60      240   180     match source
+2  orders       300     150     500   350     capped by max rows
+3  order_items  900     450     500   50      capped by max rows
+
+Sample rows (up to 2 per table, run 1bddc1, nothing written):
+users:
+- email: lt+1.1bddc1@example.test
+  first_name: LT Gunner
+  role: guest
+  ...
+```
+
+How the plan is built:
+
+- **topup** (default) inserts `max(0, ceil(source × scale) − target)`; tables that already have enough rows are listed as skipped. Running it again is safe: new rows continue after existing ids and keys.
+- **reset** truncates the selected tables **and every table that references them** (any FK, nullable included) before inserting `ceil(source × scale)`. The truncate list is printed and needs `--yes` or a typed confirmation.
+- A required (non-nullable FK) parent that would stay empty gets `--parent-rows` rows.
+- Tables missing on the target, or whose source count is unknown, are skipped with a reason. Per-table `rows` in a profile do not apply: volumes come from the source.
+- The run refuses when source and target are the same database, however the DSNs are spelled.
+
+Large volumes are safe to run: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat whatever the table size (a 7.2M-row mirror peaks around 150MB). Existing keys are read once per table; tables with more than 500,000 parents reference a rotating sample of them, so children still spread over the whole parent table. After the run, Postgres sequences behind SERIAL/IDENTITY columns are moved past the inserted ids, so the application's own inserts keep working (`advanced orders.id sequence 0 → 2000000`).
+
+What happens when the database refuses rows: a refused `COPY` falls back to batched INSERTs; a rejected batch is retried row by row, and rejected rows are regenerated with fresh values. A table where 25 rows in a row are refused with none accepted, or whose key space is exhausted, is reported as `partial` or `failed` and the run moves on to the next table. The command exits non-zero if any table is incomplete. `--stop-on-error` aborts at the first rejection instead.
+
+```
+TABLE        REQUESTED  INSERTED  REJECTED  MISSING  STATUS
+users        180        180       0         0        ok
+even_stock   200        200       189       0        ok
+pairs        10         4         0         6        partial
+
+inserted 384 rows · missing 6
+  pairs (partial): no more rows possible: finite FK primary-key combinations
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source-db` / `--source-dsn` / `--target-db` / `--target-dsn` | — | As for `compare` |
+| `--counts` | `exact` | `exact` or `estimate` row counts |
+| `--mode` | `topup` | `topup` or `reset` |
+| `--scale` | `1` | Multiply source volumes (`0.1`, `2`, …) |
+| `--max-rows` | `0` | Cap any single table's volume (0 = no cap) |
+| `--parent-rows` | `10` | Rows for an empty required parent |
+| `--tables` | all | Limit to these tables, repeatable or comma-separated |
+| `--profile` / `-p` | — | [Seed profile](profiles.md) file or saved name |
+| `--batch-size` | `1000` | Most rows per INSERT statement (see `seed`) |
+| `--self-ref-depth` | `2` | Maximum depth for self-referential FK chains |
+| `--dry-run` / `-n` | false | Print the plan and sample rows only |
+| `--preview-rows` | `3` | Sample rows per table in a dry run |
+| `--format` / `-f` | `table` | `table` or `json` |
+| `--stop-on-error` | false | Abort at the first rejected insert |
+| `--yes` / `-y` | false | Skip the `reset` confirmation |
+| `--seed` | `0` | Random seed for reproducible generation |
+| `--interactive` / `-i` | false | Review, preview and confirm in the TUI |
+
+---
+
+## `profile`
+
+Manages [seed profiles](profiles.md) saved in `~/.config/seedstorm/profiles.yaml` (override with `$SEEDSTORM_PROFILES`), the same store the web UI uses.
+
+```bash
+seedstorm profile list
+seedstorm profile show loadtest > loadtest.yaml
+seedstorm profile import loadtest.yaml [--name other-name]
+seedstorm profile validate loadtest.yaml --db postgres --dsn "$DSN"
+seedstorm profile delete loadtest
+```
+
+`validate` exits non-zero on errors; with `--dsn` it also checks column rules against the live schema.
+
+---
+
 ## `serve`
 
 Starts a local web UI that exposes every seedstorm feature behind an interactive graph workspace. The UI is bundled into the binary via `go:embed` — no extra files to ship.
@@ -333,7 +502,10 @@ What the UI gives you:
 - **Test connection** — pings the database from the form without creating a session or navigating away, reporting the driver, target and round-trip time on success and the driver's verbatim error on failure. Nothing you typed is lost, password included.
 - **Driver parameters** — add any number of `name` / `value` pairs, merged into the DSN whether you use the structured fields or a raw connection string. Suggestion chips and autocomplete are driver-aware (MySQL: `allowCleartextPasswords`, `tls`, `allowFallbackToPlaintext`, …; Postgres: `connect_timeout`, `application_name`, `search_path`, …). Parameters borrowed from JDBC are flagged as you type with the Go equivalent — `allowPublicKeyRetrieval` is reported as unnecessary (go-sql-driver fetches the server key itself), `useSSL` maps to `tls`, `currentSchema` to `search_path`. Unknown MySQL names reach the server as `SET name = value`, which makes session variables such as `foreign_key_checks=0` work; unknown Postgres names become runtime parameters. When the driver's error names a parameter, the result offers a one-click button to add or remove it.
 - **Multi-session** — hold several DBs open at once and switch from the topbar dropdown; a saved connection that is already live offers **Switch to** instead of a second connect. The workspace can clone schema from the active connection into another matching connected database.
+- **Compare & mirror** — `/compare` puts any two connections (live or saved, engines may differ) side by side: per-table mirrored gauges of source and target rows, size, delta and column drift, filterable. The mirror panel plans a top-up or reset at any scale for the ticked tables, shows the plan, truncate list, skipped tables and sample rows in a review dialog, and runs only after you confirm (reset needs an extra acknowledgement). Counts refresh when the run ends.
+- **Seed profiles** — `/profiles` builds [value rules](profiles.md) with a generator palette (click or drag tokens into a template), ordered column patterns with live example values and match counts, and a table explorer that shows what every column will get plus sample rows from the active connection. Profiles save to disk, import/export as YAML, and are selectable in the workspace action bar and on Compare.
 - **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
+- **Bounded resources** — text a job returns to the browser is capped at 20MB: a dry run's SQL stops there with a note of the rows left out, while generate and export refuse and point at the CLI `--out` flags, since a cut document would be broken. Job requests are limited to 21MB, and a connection's pooled database connections close after two idle minutes (the next query reopens one).
 
 | Flag | Default | Description |
 |------|---------|-------------|

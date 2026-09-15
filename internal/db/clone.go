@@ -230,6 +230,9 @@ func buildColumnDDL(col Column, dbType string) string {
 	}
 	if !col.IsNullable || col.IsPK {
 		def += " NOT NULL"
+	} else if dbType == "mysql" {
+		// Without it MySQL 5.7 makes a TIMESTAMP NOT NULL with a zero default.
+		def += " NULL"
 	}
 	if col.Default != "" && !col.AutoIncrement {
 		def += " DEFAULT " + cloneColumnDefault(col, dbType)
@@ -281,8 +284,12 @@ func buildIndexDDL(tables []Table, dbType string) []string {
 				continue
 			}
 			cols := make([]string, 0, len(idx.Columns))
-			for _, col := range idx.Columns {
-				cols = append(cols, QuoteIdent(col, dbType))
+			for i, col := range idx.Columns {
+				part := QuoteIdent(col, dbType)
+				if dbType == "mysql" && i < len(idx.Prefixes) && idx.Prefixes[i] > 0 {
+					part += fmt.Sprintf("(%d)", idx.Prefixes[i])
+				}
+				cols = append(cols, part)
 			}
 			unique := ""
 			if idx.Unique {

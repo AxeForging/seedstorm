@@ -10,6 +10,7 @@
   <script src="/static/lib/dagre.min.js" defer></script>
   <script src="/static/lib/cytoscape-dagre.js" defer></script>
   <script src="/static/app.js" defer></script>
+  {{block "scripts" .}}{{end}}
 </head>
 <body data-active="{{.Active}}">
   <header class="topbar">
@@ -29,12 +30,20 @@
       </span>
       <span>seedstorm</span>
     </div>
-    <nav class="nav">
+    {{if .Session}}
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-controls="main-nav" aria-expanded="false" aria-label="Open navigation">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-backdrop" id="nav-backdrop" hidden></div>
+    {{end}}
+    <nav class="nav" id="main-nav">
       {{if .Session}}
         <a href="/"         class="navlink {{if eq .Active "workspace"}}active{{end}}">Workspace</a>
         <a href="/generate" class="navlink {{if eq .Active "generate"}}active{{end}}">Generate</a>
         <a href="/enrich"   class="navlink {{if eq .Active "enrich"}}active{{end}}">AI Enrich</a>
         <a href="/export"   class="navlink {{if eq .Active "export"}}active{{end}}">Export</a>
+        <a href="/compare"  class="navlink {{if eq .Active "compare"}}active{{end}}">Compare</a>
+        <a href="/profiles" class="navlink {{if eq .Active "profiles"}}active{{end}}">Profiles</a>
       {{end}}
     </nav>
     <div class="session">

@@ -137,7 +137,7 @@
       </label>
       <label class="field-tight">
         <span>Batch</span>
-        <input id="cfg-batch" type="number" value="100" min="1">
+        <input id="cfg-batch" type="number" value="1000" min="1">
       </label>
       <label class="field-tight">
         <span>Enum/value</span>
@@ -158,6 +158,10 @@
       </label>
       <label class="field-tight inline">
         <input id="cfg-disablefk" type="checkbox"> disable FK
+      </label>
+      <label class="field-tight" title="Seed profile: value rules applied to seed, fill-empty and generate">
+        <span>Profile <a class="ws-profile-link" href="/profiles">edit</a></span>
+        <select id="cfg-profile"><option value="">none (automatic)</option></select>
       </label>
     </div>
     <div class="ws-run-group ws-clone" id="ws-clone-config" hidden>

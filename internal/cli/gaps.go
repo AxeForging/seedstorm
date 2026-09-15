@@ -14,6 +14,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
 	"github.com/urfave/cli/v3"
 )
@@ -83,13 +84,14 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			&cli.IntFlag{
 				Name:  "batch-size",
 				Usage: "Number of rows per INSERT statement (batched multi-row VALUES)",
-				Value: 100,
+				Value: seeder.DefaultBatchSize,
 			},
 			&cli.BoolFlag{
 				Name:    "interactive",
 				Aliases: []string{"i"},
 				Usage:   "Launch interactive TUI to select empty tables and configure filling",
 			},
+			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -140,8 +142,14 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				return fmt.Errorf("row count scan failed: %w", err)
 			}
 
+			profile, err := loadProfile(cmd, s)
+			if err != nil {
+				return err
+			}
+			tableRows = profile.tableRows(tableRows)
+
 			if cmd.Bool("interactive") {
-				return tui.RunGaps(ctx, s, dbType, dsn, counts, rows, batchSize, enumRows, selfRefDepth)
+				return tui.RunGaps(ctx, s, dbType, dsn, counts, rows, batchSize, enumRows, selfRefDepth, profile.tui())
 			}
 
 			// Build FK parents map for display: table → []parent tables.
@@ -190,40 +198,26 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 
 			// Generate data for gap tables only; allSorted is used internally to
 			// preload existing PKs from already-populated parent tables.
-			data, err := faker.GenerateFilteredWithOptions(s, allSorted, gapTables, rows, enumRows, tableRows, dbConn, dbType, faker.GenerateOptions{
-				SelfRefDepth: selfRefDepth,
+			if !dryRun {
+				defer syncSequences(ctx, dbConn, dbType, gapTables)
+			}
+			res, err := seeder.Seed(ctx, dbConn, dbType, s, allSorted, gapTables, seeder.SeedOptions{
+				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
+				Generate: faker.GenerateOptions{
+					SelfRefDepth: selfRefDepth,
+					Overrides:    profile.overrides,
+					OnWarning:    logWarning,
+				},
+				OnRows: printDryRunSQL(dryRun, dbType),
+				OnTableStart: func(table string) error {
+					log.Info().Str("table", table).Msg("Seeding table")
+					return nil
+				},
 			})
 			if err != nil {
-				return fmt.Errorf("data generation failed: %w", err)
+				return err
 			}
-
-			totalRows := 0
-			for _, tableName := range gapTables {
-				tableRows := data[tableName]
-				log.Info().
-					Str("table", tableName).
-					Int("rows", len(tableRows)).
-					Msg("Seeding table")
-
-				if dryRun {
-					for _, row := range tableRows {
-						query, _ := buildInsert(tableName, row, dbType)
-						fmt.Println(query)
-					}
-				} else {
-					for i := 0; i < len(tableRows); i += batchSize {
-						end := i + batchSize
-						if end > len(tableRows) {
-							end = len(tableRows)
-						}
-						query, values := buildBatchInsert(tableName, tableRows[i:end], dbType)
-						if _, err := dbConn.ExecContext(ctx, query, values...); err != nil {
-							return fmt.Errorf("insert into %s failed: %w", tableName, err)
-						}
-					}
-				}
-				totalRows += len(tableRows)
-			}
+			totalRows := res.Total
 
 			elapsed := time.Since(start).Round(time.Millisecond)
 			log.Info().

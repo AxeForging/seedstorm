@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -397,7 +398,7 @@ func (s *Server) handleSavedConnections(w http.ResponseWriter, r *http.Request) 
 			Password      string `json:"password"`
 			ClearPassword bool   `json:"clearPassword"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(io.LimitReader(r.Body, maxProfileBody)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "bad json: "+err.Error())
 			return
 		}
@@ -460,7 +461,7 @@ func (s *Server) handleSavedConnectionsImport(w http.ResponseWriter, r *http.Req
 	var body struct {
 		Connections []SavedConnection `json:"connections"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxProfileBody)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}

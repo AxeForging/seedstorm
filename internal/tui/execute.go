@@ -13,6 +13,7 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
 // tableSeededMsg is sent when a table finishes seeding.
@@ -282,74 +283,76 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 			}
 		}
 
-		data, err := faker.GenerateFilteredWithOptions(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, conn, s.dbType, faker.GenerateOptions{
-			SelfRefDepth: s.selfRefDepth,
-		})
+		// Move Postgres sequences past the inserted ids, even if an insert fails.
+		defer func() { _, _ = db.SyncSequences(ctx, conn, s.dbType, s.tables) }()
+		res, err := seeder.Seed(ctx, conn, s.dbType, s.schema, s.tables, s.tables, s.seedOptions(batchSize, false, nil))
 		if err != nil {
-			return seedDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
+			return seedDoneMsg{err: err}
 		}
-
-		totalRows := 0
-		rowsMap := make(map[string]int, len(s.tables))
-		for _, tableName := range s.tables {
-			tableRows := data[tableName]
-			for i := 0; i < len(tableRows); i += batchSize {
-				end := i + batchSize
-				if end > len(tableRows) {
-					end = len(tableRows)
-				}
-				query, values := db.BuildBatchInsert(tableName, tableRows[i:end], s.dbType)
-				if _, err := conn.ExecContext(ctx, query, values...); err != nil {
-					return seedDoneMsg{err: fmt.Errorf("insert into %s failed: %w", tableName, err)}
-				}
-			}
-			rowsMap[tableName] = len(tableRows)
-			totalRows += len(tableRows)
-		}
-
 		return seedDoneMsg{
-			totalRows: totalRows,
+			totalRows: res.Total,
 			elapsed:   time.Since(start),
 			tables:    s.tables,
-			rowsMap:   rowsMap,
+			rowsMap:   res.Counts,
 		}
 	}
 }
 
 // startDryRun returns a tea.Cmd that generates data and builds a summary.
 func startDryRun(s *seedParams) tea.Cmd {
-	return func() tea.Msg {
-		data, err := faker.GenerateFilteredWithOptions(s.schema, s.tables, s.tables, s.rows, s.enumRows, s.tableRows, nil, s.dbType, faker.GenerateOptions{
-			SelfRefDepth: s.selfRefDepth,
-		})
-		if err != nil {
-			return dryRunDoneMsg{err: fmt.Errorf("data generation failed: %w", err)}
-		}
+	return func() tea.Msg { return dryRunSummary(s, s.tables) }
+}
 
-		var tables []dryRunTable
-		total := 0
-		for _, tableName := range s.tables {
-			rows := data[tableName]
-			dt := dryRunTable{
-				name: tableName,
-				rows: len(rows),
+// seedOptions maps the flow's parameters onto a seeder run.
+func (s *seedParams) seedOptions(batchSize int, dryRun bool, onRows func(string, []map[string]interface{}) error) seeder.SeedOptions {
+	return seeder.SeedOptions{
+		Rows: s.rows, EnumRows: s.enumRows, TableRows: s.tableRows, BatchSize: batchSize, DryRun: dryRun,
+		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides},
+		OnRows:   onRows,
+	}
+}
+
+// dryRunSummary generates every row without a database, keeping only counts
+// and each table's first row, so a preview of any size uses flat memory.
+func dryRunSummary(s *seedParams, preload []string) dryRunDoneMsg {
+	samples := map[string]map[string]interface{}{}
+	res, err := seeder.Seed(context.Background(), nil, s.dbType, s.schema, preload, s.tables, s.seedOptions(0, true, sampleFirstRows(samples, nil)))
+	if err != nil {
+		return dryRunDoneMsg{err: err}
+	}
+	return dryRunDoneMsg{tables: previewTables(s.tables, res.Counts, samples), total: res.Total}
+}
+
+// previewTables summarises a run for the review screen: each table's row count
+// and first row.
+func previewTables(tables []string, counts map[string]int, samples map[string]map[string]interface{}) []dryRunTable {
+	out := make([]dryRunTable, 0, len(tables))
+	for _, tableName := range tables {
+		dt := dryRunTable{name: tableName, rows: counts[tableName]}
+		if sample, ok := samples[tableName]; ok {
+			dt.sample = sample
+			cols := make([]string, 0, len(sample))
+			for c := range sample {
+				cols = append(cols, c)
 			}
-
-			// Sorted column names + first row sample
-			if len(rows) > 0 {
-				dt.sample = rows[0]
-				cols := make([]string, 0, len(rows[0]))
-				for c := range rows[0] {
-					cols = append(cols, c)
-				}
-				sort.Strings(cols)
-				dt.columns = cols
-			}
-
-			tables = append(tables, dt)
-			total += len(rows)
+			sort.Strings(cols)
+			dt.columns = cols
 		}
+		out = append(out, dt)
+	}
+	return out
+}
 
-		return dryRunDoneMsg{tables: tables, total: total}
+// sampleFirstRows returns an OnRows hook that keeps each table's first row in
+// samples and passes every chunk on to next, if set.
+func sampleFirstRows(samples map[string]map[string]interface{}, next func([]map[string]interface{}) error) func(string, []map[string]interface{}) error {
+	return func(table string, rows []map[string]interface{}) error {
+		if _, ok := samples[table]; !ok && len(rows) > 0 {
+			samples[table] = rows[0]
+		}
+		if next == nil {
+			return nil
+		}
+		return next(rows)
 	}
 }

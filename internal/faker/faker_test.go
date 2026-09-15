@@ -129,7 +129,7 @@ func TestTopUpEnumCoverage_topsUpToMinRows(t *testing.T) {
 	pks := map[string][]interface{}{"items": {1, 2}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "items", enumCols, 3); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "items", enumCols, 3, nil); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 
@@ -167,7 +167,7 @@ func TestTopUpEnumCoverage_noOpWhenAllMeetMinRows(t *testing.T) {
 	pks := map[string][]interface{}{"t": {1, 2, 3, 4, 5, 6}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "t", enumCols, 2); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "t", enumCols, 2, nil); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 	if len(data["t"]) != 6 {
@@ -190,7 +190,7 @@ func TestTopUpEnumCoverage_multipleEnumColumns(t *testing.T) {
 	pks := map[string][]interface{}{"tickets": {1, 2}}
 	enumCols := findAllEnumColumns(tbl)
 
-	if err := topUpEnumCoverage(data, pks, tbl, "tickets", enumCols, 2); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "tickets", enumCols, 2, nil); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 
@@ -1382,7 +1382,7 @@ func TestGenerateStandardRows_exhaustedPKSpace_returnsError(t *testing.T) {
 	pks := map[string][]interface{}{"a": {1}, "b": {1}}
 
 	// 2 rows requested but only 1 unique composite key possible → must error.
-	if err := generateStandardRows(data, pks, tbl, "junc", 2); err == nil {
+	if err := generateStandardRows(data, pks, tbl, "junc", 2, nil); err == nil {
 		t.Fatal("expected error when composite PK space is exhausted, got nil")
 	}
 }
@@ -1402,7 +1402,7 @@ func TestGenerateEnumRows_exhaustedPKSpace_returnsError(t *testing.T) {
 	pks := map[string][]interface{}{"a": {1}, "b": {1}}
 
 	// 2 enum rows per value but only 1 unique combo → must error.
-	err := generateEnumRows(data, pks, tbl, "junc", "status", []string{"active", "closed"}, 2)
+	err := generateEnumRows(data, pks, tbl, "junc", "status", []string{"active", "closed"}, 2, nil)
 	if err == nil {
 		t.Fatal("expected error when composite PK space is exhausted in generateEnumRows, got nil")
 	}
@@ -1424,7 +1424,7 @@ func TestTopUpEnumCoverage_noCollisionWithExistingRows(t *testing.T) {
 	pks := map[string][]interface{}{"a": {1, 2}, "b": {1, 2}, "junc": {}}
 
 	enumCols := findAllEnumColumns(tbl)
-	if err := topUpEnumCoverage(data, pks, tbl, "junc", enumCols, 1); err != nil {
+	if err := topUpEnumCoverage(data, pks, tbl, "junc", enumCols, 1, nil); err != nil {
 		t.Fatalf("topUpEnumCoverage: %v", err)
 	}
 

@@ -1,0 +1,138 @@
+{{define "scripts"}}<link rel="stylesheet" href="/static/profiles.css"><script src="/static/profiles.js" defer></script>{{end}}
+{{define "content"}}
+<section class="pf-shell" id="profiles-app">
+  <header class="pf-head">
+    <div class="pf-title">
+      <span class="eyebrow">seed profiles</span>
+      <h1>Shape the values seedstorm generates.</h1>
+      <p class="muted">Rules rewrite matching columns; every other column keeps its automatic generator. Profiles work in the workspace, Compare, and the CLI with <code>--profile</code>.</p>
+    </div>
+    <div class="pf-bar">
+      <label class="pf-picker">
+        <span class="sr-only">Saved profile</span>
+        <select id="pf-select"></select>
+      </label>
+      <button class="btn-ghost" id="pf-new" type="button">New</button>
+      <button class="btn-ghost" id="pf-duplicate" type="button">Duplicate</button>
+      <button class="btn-ghost" id="pf-import" type="button">Import YAML</button>
+      <button class="btn-ghost" id="pf-export" type="button">Export YAML</button>
+      <button class="btn-ghost pf-delete" id="pf-delete" type="button">Delete</button>
+      <button class="btn-primary" id="pf-save" type="button">Save profile</button>
+    </div>
+  </header>
+
+  <section class="pf-meta">
+    <label class="field">
+      <span class="field-label">Name <span class="muted">· used by <code>--profile</code></span></span>
+      <input id="pf-name" type="text" placeholder="loadtest" maxlength="80" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field pf-desc">
+      <span class="field-label">What is this data for?</span>
+      <input id="pf-description" type="text" placeholder="Stress test for checkout; every row tagged for cleanup" maxlength="200" autocomplete="off">
+    </label>
+    <p class="pf-status small" id="pf-status" role="status"></p>
+  </section>
+
+  <div class="pf-grid">
+    <aside class="pf-palette" id="pf-palette">
+      <details open>
+        <summary>
+          <strong>Generators</strong>
+          <span class="muted small">drag into a template, or click to insert</span>
+        </summary>
+        <label class="pf-palette-search">
+          <span class="sr-only">Find generator</span>
+          <input id="pf-gen-search" type="search" placeholder="Find generator" autocomplete="off">
+        </label>
+        <div class="pf-palette-body" id="pf-palette-body"></div>
+      </details>
+    </aside>
+
+    <section class="pf-rules">
+      <header class="pf-section-head">
+        <div>
+          <h2>Column patterns</h2>
+          <p class="muted small">Checked top to bottom, first match wins. Keys, foreign keys and generated columns are never touched, and a rule skips columns whose type cannot take its value.</p>
+        </div>
+        <button class="btn-ghost" id="pf-add-rule" type="button">+ Add rule</button>
+      </header>
+      <div class="pf-presets" id="pf-presets">
+        <span class="muted small">Start from:</span>
+        <button type="button" class="chip" data-preset="emails">Tag every email</button>
+        <button type="button" class="chip" data-preset="names">Prefix names &amp; usernames</button>
+        <button type="button" class="chip" data-preset="notes">Empty optional notes</button>
+      </div>
+      <ol class="pf-rule-list" id="pf-rule-list"></ol>
+      <p class="pf-empty muted small" id="pf-rules-empty">No pattern rules yet. Add one, pick a preset, or set a value on a single column in the table explorer.</p>
+
+      <section class="pf-issues" id="pf-issues" hidden></section>
+    </section>
+
+    <section class="pf-explorer">
+      <header class="pf-section-head">
+        <div>
+          <h2>Table explorer</h2>
+          <p class="muted small">What each column will get on the active connection, with live sample rows.</p>
+        </div>
+      </header>
+      <div class="pf-explorer-bar">
+        <label class="field">
+          <span class="field-label">Table</span>
+          <select id="pf-table"></select>
+        </label>
+        <label class="field pf-rows">
+          <span class="field-label">Rows <span class="muted">(this profile)</span></span>
+          <input id="pf-table-rows" type="number" min="0" placeholder="run default" inputmode="numeric">
+        </label>
+      </div>
+      <div class="pf-columns-wrap">
+        <table class="pf-columns">
+          <thead><tr><th>column</th><th>will generate</th><th><span class="sr-only">actions</span></th></tr></thead>
+          <tbody id="pf-columns"></tbody>
+        </table>
+      </div>
+      <div class="pf-samples">
+        <div class="row spread">
+          <strong class="small">Sample rows</strong>
+          <button class="btn-ghost" id="pf-resample" type="button">Regenerate</button>
+        </div>
+        <div id="pf-samples-body" class="pf-samples-body"><p class="muted small empty-hint">Pick a table to preview.</p></div>
+      </div>
+    </section>
+  </div>
+
+  <dialog class="pf-dialog" id="pf-column-dialog" aria-labelledby="pf-column-title">
+    <form method="dialog" class="pf-dialog-form" id="pf-column-form">
+      <header>
+        <span class="eyebrow">column rule</span>
+        <h2 id="pf-column-title">column</h2>
+        <p class="muted small" id="pf-column-meta"></p>
+      </header>
+      <div id="pf-column-editor"></div>
+      <p class="pf-dialog-note small muted">A column rule beats every pattern rule for this column.</p>
+      <footer>
+        <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+        <button class="btn-ghost pf-delete" id="pf-column-clear" type="button">Remove rule</button>
+        <button class="btn-primary" id="pf-column-apply" value="apply" type="submit">Apply</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="pf-dialog pf-dialog-wide" id="pf-yaml-dialog" aria-labelledby="pf-yaml-title">
+    <form method="dialog" class="pf-dialog-form">
+      <header>
+        <span class="eyebrow" id="pf-yaml-eyebrow">yaml</span>
+        <h2 id="pf-yaml-title">Profile YAML</h2>
+        <p class="muted small" id="pf-yaml-hint"></p>
+      </header>
+      <textarea id="pf-yaml-text" rows="16" spellcheck="false"></textarea>
+      <p class="pf-yaml-error small" id="pf-yaml-error" hidden></p>
+      <footer>
+        <button class="btn-ghost" value="cancel" type="submit">Close</button>
+        <button class="btn-ghost" id="pf-yaml-copy" type="button">Copy</button>
+        <button class="btn-primary" id="pf-yaml-load" type="button">Load into builder</button>
+      </footer>
+    </form>
+  </dialog>
+</section>
+{{end}}

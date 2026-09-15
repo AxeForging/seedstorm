@@ -88,3 +88,78 @@ func TestBuildInsert_nilValue(t *testing.T) {
 		t.Error("nil values should be passed through to the VALUES list")
 	}
 }
+
+func rowsOf(n, cols int, value interface{}) []map[string]interface{} {
+	rows := make([]map[string]interface{}, n)
+	for i := range rows {
+		row := make(map[string]interface{}, cols)
+		for c := 0; c < cols; c++ {
+			row["c"+strings.Repeat("x", c)] = value
+		}
+		rows[i] = row
+	}
+	return rows
+}
+
+func batchSizes(batches [][]map[string]interface{}) []int {
+	out := make([]int, len(batches))
+	for i, b := range batches {
+		out[i] = len(b)
+	}
+	return out
+}
+
+func TestSplitBatches_KeepsEveryRowInOrder(t *testing.T) {
+	rows := rowsOf(10, 2, 1)
+	for i := range rows {
+		rows[i]["id"] = i
+	}
+	batches := SplitBatches(rows, 4)
+	if got := batchSizes(batches); len(got) != 3 || got[0] != 4 || got[1] != 4 || got[2] != 2 {
+		t.Fatalf("batch sizes = %v, want [4 4 2]", got)
+	}
+	i := 0
+	for _, b := range batches {
+		for _, row := range b {
+			if row["id"] != i {
+				t.Fatalf("row %v out of order, want id %d", row["id"], i)
+			}
+			i++
+		}
+	}
+	if len(SplitBatches(nil, 4)) != 0 {
+		t.Fatal("no rows must give no batches")
+	}
+}
+
+// Postgres and MySQL both reject a statement with more than 65535 placeholders:
+// a wide table cannot take thousands of rows per INSERT.
+func TestSplitBatches_StaysUnderThePlaceholderLimit(t *testing.T) {
+	// Empty strings weigh almost nothing, so only the placeholder limit can
+	// stop 200,000 placeholders from going out in one statement.
+	rows := rowsOf(5000, 40, "")
+	for _, b := range SplitBatches(rows, 5000) {
+		if params := len(b) * 40; params > maxPlaceholders {
+			t.Fatalf("batch of %d rows uses %d placeholders", len(b), params)
+		}
+	}
+}
+
+// MySQL 5.7 refuses packets over 4MB by default, so long text values must
+// shrink the batch.
+func TestSplitBatches_StaysUnderTheByteBudget(t *testing.T) {
+	rows := rowsOf(1000, 2, strings.Repeat("p", 20_000)) // ~40KB per row
+	batches := SplitBatches(rows, 1000)
+	if len(batches) < 2 {
+		t.Fatalf("40MB of rows went into %d batch", len(batches))
+	}
+	for _, b := range batches {
+		if len(b) > 1 && len(b)*40_000 > maxBatchBytes {
+			t.Fatalf("batch of %d rows carries ~%dKB", len(b), len(b)*40)
+		}
+	}
+	huge := rowsOf(3, 1, strings.Repeat("p", 2*maxBatchBytes))
+	if got := batchSizes(SplitBatches(huge, 10)); len(got) != 3 {
+		t.Fatalf("oversized rows batch sizes = %v, want each row alone", got)
+	}
+}

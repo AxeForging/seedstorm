@@ -13,13 +13,11 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+
+	"github.com/AxeForging/seedstorm/internal/fsutil"
 )
 
-const (
-	storeVersion  = 1
-	storeFileMode = 0o600
-	storeDirMode  = 0o700
-)
+const storeVersion = 1
 
 // SavedConnection is a connection the user asked seedstorm to remember. It
 // lives on disk between runs, unlike a Session which exists only while the
@@ -299,35 +297,8 @@ func (s *ConnectionStore) write(f *storeFile) error {
 	if err != nil {
 		return fmt.Errorf("encode connections: %w", err)
 	}
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, storeDirMode); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
-	}
-	tmp, err := os.CreateTemp(dir, ".connections-*.yaml")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}()
-	if err := tmp.Chmod(storeFileMode); err != nil {
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if _, err := tmp.Write(b); err != nil {
-		return fmt.Errorf("write connections: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close connections: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("replace connections file: %w", err)
-	}
-	// The rename keeps the temp file's mode, but an operator may have loosened
-	// the directory; make the intent explicit either way.
-	if err := os.Chmod(s.path, storeFileMode); err != nil {
-		return fmt.Errorf("chmod connections file: %w", err)
+	if err := fsutil.WriteFileAtomic(s.path, b); err != nil {
+		return fmt.Errorf("save connections: %w", err)
 	}
 	return nil
 }

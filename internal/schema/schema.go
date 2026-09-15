@@ -15,6 +15,9 @@ type Schema struct {
 // Table holds all columns for a single database table.
 type Table struct {
 	Columns map[string]Column `yaml:"columns"`
+	// Unique lists multi-column UNIQUE constraints (single-column ones are
+	// flagged on the column).
+	Unique [][]string `yaml:"unique,omitempty"`
 }
 
 // Column holds metadata and faker mapping for a single column.
@@ -25,6 +28,7 @@ type Column struct {
 	FK        string `yaml:"fk,omitempty"`
 	PK        bool   `yaml:"pk,omitempty"`
 	Nullable  bool   `yaml:"nullable,omitempty"`
+	Unique    bool   `yaml:"unique,omitempty"`
 	Generated bool   `yaml:"generated,omitempty"`
 }
 

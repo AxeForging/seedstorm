@@ -26,6 +26,10 @@ seedstorm/
 │   │   ├── enrich.go           # ai-enrich command
 │   │   ├── introspect.go       # introspect command
 │   │   ├── export.go           # export command
+│   │   ├── compare.go          # compare command
+│   │   ├── mirror.go           # mirror command
+│   │   ├── profile.go          # profile command + shared --profile flag/loading
+│   │   ├── endpoints.go        # --source-*/--target-* flags and connection opening
 │   │   └── helpers.go          # Shared helpers (buildInsert, normalizeDBType)
 │   ├── db/                     # Database drivers and introspection
 │   │   ├── db.go               # Introspect() dispatcher (postgres / mysql)
@@ -33,20 +37,40 @@ seedstorm/
 │   │   ├── mysql.go            # MySQL schema introspection + constraint parsing
 │   │   ├── truncate.go         # Truncate helper (FK-safe order)
 │   │   ├── counts.go           # GetTableRowCounts helper (used by gaps)
+│   │   ├── stats.go            # Table sizes, estimated counts, column lists, DB identity
+│   │   ├── copy.go             # CopyRows: Postgres COPY for a chunk of rows
+│   │   ├── sequences.go        # SyncSequences: move Postgres sequences past inserted ids
 │   │   └── types.go            # Shared db types (Table, Column, FK, …)
 │   ├── faker/
 │   │   ├── faker.go            # Generate / GenerateFiltered — core data generation
 │   │   ├── mapper.go           # Column name → faker hint heuristics
+│   │   ├── existing.go         # Awareness of rows already in the DB (keys, id and sequence continuation)
+│   │   ├── overrides.go        # Column overrides (value rules), CoerceValue, ValueKind
+│   │   ├── catalog.go          # Generator catalog, Evaluate, BuildSchema
+│   │   ├── stream.go           # Stream: generation state kept across chunks (NewStream, Generate)
+│   │   ├── keys.go             # keySet: exact map, then scalable Bloom filter
+│   │   ├── pools.go            # PK pool reservoir sampling and capping
 │   │   └── *_test.go           # Unit tests alongside production files
 │   ├── graph/
 │   │   ├── graph.go            # Dependency graph (Build, TopologicalSort, RenderPlan)
 │   │   └── graph_test.go       # Unit tests
+│   ├── rules/                  # Seed profile rules: model, templates, resolve/validate/compile
+│   ├── profiles/               # Saved profile store (profiles.yaml) + Resolve(file|name)
+│   ├── compare/                # Snapshots, Diff, PlanMirror, text renderers (never writes)
+│   ├── dataio/                 # Streaming data documents: writers (yaml/json/sql/csv), ReadTables
+│   ├── seeder/                 # Seed (strict chunked seed/gaps), Fill (resilient mirror inserts), MirrorJob, Preview
+│   ├── fsutil/                 # WriteFileAtomic for on-disk stores
+│   ├── tui/                    # Bubble Tea flows (seed, gaps, generate, clone, mirror)
+│   ├── web/                    # serve: handlers_*.go per area, templates/, static/ (page.js + page.css per page)
 │   ├── ai/ai.go                # Gemini enrichment (prompt building, response parsing)
 │   ├── schema/schema.go        # Schema YAML types and loader
 │   ├── build/info.go           # Version info injected at build time
 │   └── logging/logging.go      # Zerolog setup
 ├── integration/
 │   ├── integration_test.go     # Integration tests (build tag: integration)
+│   ├── binary_test.go          # Builds the binary; scratch DB helpers per engine
+│   ├── *_test.go               # Scenario evals: reseed, mirror, seeder, keycloak, compare_web
+│   ├── fixtures/               # Keycloak schema dumps (real-world 87-table stress schema)
 │   ├── schema_postgres.sql     # 28-table schema for Postgres integration tests
 │   └── schema_mysql.sql        # 28-table schema for MySQL integration tests
 ├── README.md                   # User-facing documentation (keep in sync with code)
@@ -79,7 +103,7 @@ Specifically:
   ```bash
   go test ./internal/...                          # unit tests
   make dev-up
-  cd integration && go test -v -tags integration -count=1 ./... -timeout 300s
+  cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
   ```
 
 ### 3. Adding a new command
@@ -107,9 +131,25 @@ The CI `title` job enforces this — it will comment and fail if the format is w
 
 `graph.Build(s)` constructs a DAG where an edge `A → B` means "A must be seeded before B". Nullable FK columns are excluded from edges (they break near-cycles — the column is seeded as NULL on first pass). `TopologicalSort()` uses Kahn's algorithm. Cycles in non-nullable FKs return an error; the user can bypass with `--disable-fk`.
 
+### File naming
+
+One concern per file, named after it: a CLI command lives in `internal/cli/<command>.go`, web handlers in `internal/web/handlers_<area>.go`, page assets in `static/<page>.js` + `static/<page>.css` with `templates/<page>.html.tmpl`. Tests sit next to the file they test (`existing.go` → `existing_test.go`). Scenario evals that drive the binary live in `integration/<scenario>_test.go`.
+
+### Shared engines, thin surfaces
+
+CLI, TUI and web never re-implement logic: value rules compile in `internal/rules` into `faker.Overrides`; comparisons and mirror plans come from `internal/compare`; every insert goes through `internal/seeder` — `Seed` for seed and gaps (stops at the first refused insert, and with `DryRun` for generate), `Fill` for mirror (regenerates refused rows); data files are written and read through `internal/dataio`. A new surface calls these packages; a new behaviour lands there first, with tests.
+
+### Value rules (seed profiles)
+
+`rules.RuleSet.Compile(schema, runID)` yields per-column `faker.ColumnOverride` funcs. `GenerateFilteredWithOptions` applies them **after** PKs, FKs, self-references and sequences are final — rule targets are never PK/FK/generated columns, so nothing references the values being replaced. Resolution: explicit table column rule > first compatible pattern rule > automatic. `GenerateOptions.RowOffset` keeps `{{seq}}` increasing when a table is generated in chunks.
+
+### Mirror and resilient inserts
+
+`seeder.Fill` fills one table at a time in fixed chunks (`DefaultChunkRows`) from one `faker.Stream`: parents are complete before a child starts, so their PK pools and the table's stored keys are read once and kept across chunks. Postgres chunks go through `COPY` (`db.CopyRows`); a refused COPY falls back to batched INSERTs. After the run, `db.SyncSequences` moves Postgres sequences past the inserted ids. A rejected batch is retried row by row; rejected rows are regenerated; `MaxRowFailures` refused rows in a row with none accepted, `maxZeroRounds` rounds that generate nothing, or an exhausted key space end the table with a `partial`/`failed` result instead of looping. `PrepareMirror` refuses when `db.Identity` says source and target are the same database.
+
 ### Composite PK safety
 
-All three generation paths (`generateStandardRows`, `generateEnumRows`, `topUpEnumCoverage`) use a `seenKeys` map and a 200-attempt retry loop before returning an error. This prevents silent duplicate composite PK inserts into junction tables. If you add a new generation path, it must include the same guard.
+All three generation paths (`generateStandardRows`, `generateEnumRows`, `topUpEnumCoverage`) use a `seenKeys` set (`newSeen` over the stored `keySet`) and a 200-attempt retry loop before returning an error. This prevents silent duplicate composite PK inserts into junction tables. If you add a new generation path, it must include the same guard.
 
 ### Enum top-up
 
@@ -134,9 +174,9 @@ After standard row generation, `topUpEnumCoverage` guarantees every enum value (
 | `validate` | Directory/file structure via structlint |
 | `test` | `go test ./...` + `make build` |
 | `lint` | `golangci-lint` |
-| `integration` | Full 28-table suite on Postgres 15 + MySQL 8 |
+| `integration` | Full suite + scenario evals on Postgres 13/15/17 × MySQL 5.7/8.0/8.4 |
 
-The integration job in CI uses `--timeout 120s`. Locally use `300s` when running both engines back-to-back.
+The integration job in CI uses `-timeout 900s` (the suite takes ~5 minutes with the Keycloak and mirror evals). Use the same locally.
 
 ---
 
@@ -162,6 +202,16 @@ The integration job in CI uses `--timeout 120s`. Locally use `300s` when running
 
 3. **Nullable FK = NULL on first pass** — A nullable FK column is seeded as NULL if the referenced table has no PKs yet (e.g., `departments.head_employee_id → employees` when departments is seeded first). This is correct; a second seed pass would fill them.
 
-4. **seenKeys does not include existing DB rows** — The composite PK collision check only tracks rows generated in the current run. Re-seeding a partially populated table (without `--truncate`) can still collide with pre-existing rows for composite-PK junction tables. This is a known limitation to address in a future PR.
+4. **Existing rows are part of the key space** — When a connection is given, `loadExistingState` loads the primary keys already stored (skipped for a single integer or uuid key, which cannot collide), integer ids continue after the largest existing id (`nextSequentialPK`), `sequence` UNIQUE columns continue past their maximum, and composite-FK junction enumeration skips stored combinations. Key values are compared through `keyValue`, which normalises driver types (MySQL `[]byte`, `time.Time`) to the generator's.
 
 5. **Constraint introspection** — Postgres and MySQL serialize CHECK constraints differently. Both parsers live in `db/postgres.go` and `db/mysql.go` respectively. Add tests to `db/constraint_test.go` whenever you touch constraint parsing.
+
+6. **MySQL ignores column-level `REFERENCES`** — In test DDL write table-level `FOREIGN KEY (...) REFERENCES ...`; an inline `REFERENCES` creates no constraint on MySQL, so introspection sees no FK.
+
+7. **Name hints must fit the type** — `semanticFits` stops a column named `update_time` stored as `bigint` from getting a clock-time string. Add a case to `TestMapColumnToFaker_SemanticNameNeverOverridesAnIncompatibleType` when adding semantic mappings.
+
+8. **Multi-column UNIQUE** — `schema.Table.Unique` comes from unique indexes. `enforceUniqueGroups` runs after rules are applied: it regenerates a free column (not key, not ruled) of a repeated tuple, or drops the row and rebuilds the PK pool with `rebuildPKPool` so children never reference it. Self-references are backfilled after this step for the same reason.
+
+9. **Memory must not grow with table size** — `faker.Stream` holds everything generation needs between chunks, and every structure is bounded: PK pools are reservoir samples of `poolLimit` values with the largest id kept last (`nextSequentialPK` reads it), re-drawn every `poolLimit` child rows so children spread over the whole parent; key sets (`keySet`) switch from a map to a scalable Bloom filter past `DefaultExactKeys` (a false positive only skips a free value, never lets a duplicate through). Junction enumeration resumes from `Stream.cursor`. `Stream.GenerateChunks` is the only generation loop: one-shot `Generate` is a single unbounded chunk, and enum coverage counts across chunks. Inserts go through `db.SplitBatches` (row count, 65,535 placeholders, ~1MB). Do not reintroduce per-chunk database re-reads, unbounded maps, or code that collects a whole table before writing it.
+
+10. **SQL text uses literals** — SQL that is printed or saved (generate, export, dry runs) goes through `db.RenderInsert`, which escapes per engine (MySQL treats backslash as an escape, Postgres does not). `db.BuildInsert`/`BuildBatchInsert` return placeholders for bound execution only; printing their query drops the values.

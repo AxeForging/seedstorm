@@ -13,6 +13,7 @@ End-to-end walkthroughs for common seedstorm workflows. All examples assume loca
 7. [MySQL Workflow](#7-mysql-workflow) — same commands, different DSN format
 8. [Interactive Mode (generate)](#8-generate-with-interactive-mode) — TUI wizard for data generation
 9. [Export Formats](#9-export-formats) — JSON, SQL, YAML, CSV output
+10. [Stress-Test Staging Like Production](#10-stress-test-staging-like-production) — compare, profile, mirror, clean up
 
 ---
 
@@ -646,3 +647,81 @@ seedstorm generate --schema schema.yaml --rows 10 --format yaml --out data.yaml
 seedstorm export --data data.yaml --format csv --out data.csv
 seedstorm export --data data.yaml --format sql --db mysql --out seed.sql
 ```
+
+---
+
+## 10. Stress-Test Staging Like Production
+
+Goal: give a staging database production's shape and 5x its volume, with fake data
+that is easy to recognise and remove. Production is only read.
+
+**1. Same tables on staging** (skip if staging already has the schema):
+
+```bash
+seedstorm clone-schema --source-dsn "$PROD" --target-dsn "$STAGE"
+```
+
+**2. See how far apart they are:**
+
+```bash
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --only-diff
+```
+
+```
+TABLE                 SOURCE ROWS  TARGET ROWS  DELTA  SOURCE SIZE  TARGET SIZE  STATUS
+addresses             40           0            -40    32.0 KB      16.0 KB      differs
+employees             160          80           -80    72.0 KB      64.0 KB      differs
+...
+36 tables · same 0 · differs 36 · source only 0 · target only 0 · column drift 0
+```
+
+**3. Tag the data** so every seeded row can be found later:
+
+```yaml
+# loadtest.yaml
+name: loadtest
+description: 5x production for the checkout load test
+rules:
+  - column: "*email*"
+    template: "lt+{{seq}}.{{run}}@example.test"
+  - column: "*_name"
+    template: "LT {{auto}}"
+tables:
+  users:
+    columns:
+      role: { value: guest }
+```
+
+```bash
+seedstorm profile validate loadtest.yaml --dsn "$STAGE"   # errors fail, warnings explain
+seedstorm profile import loadtest.yaml                     # now usable by name, also in the web UI
+```
+
+**4. Review the plan, then run it:**
+
+```bash
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" \
+  --scale 5 --max-rows 2000000 --profile loadtest --dry-run
+
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" \
+  --scale 5 --max-rows 2000000 --profile loadtest
+```
+
+Running the same command again later only tops up what is missing. Use
+`--mode reset` to rebuild instead (it truncates the listed tables and their FK
+dependents after confirmation).
+
+**5. Clean up by tag** when the test is over. Every row a run wrote carries its
+`{{run}}` id, so you can target one run or all of them (delete dependent rows first,
+or simply truncate if staging is disposable):
+
+```sql
+SELECT count(*) FROM users WHERE email LIKE 'lt+%.1bddc1@example.test';  -- one run
+DELETE FROM users WHERE email LIKE 'lt+%@example.test';                   -- every load-test run
+```
+
+The same flow in the web UI: **Profiles** to build and save `loadtest` (with live
+example values), then **Compare** to pick production and staging, choose 5x and the
+profile, **Preview plan**, and **Run mirror**.
+
+<img src="docs/assets/mirror-plan.webp" alt="Mirror plan review dialog" width="820" />

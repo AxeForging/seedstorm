@@ -57,30 +57,7 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 				Int("tables", len(tables)).
 				Msg("Schema discovered")
 
-			s := &schema.Schema{
-				Tables: make(map[string]schema.Table, len(tables)),
-			}
-
-			for _, t := range tables {
-				st := schema.Table{
-					Columns: make(map[string]schema.Column, len(t.Columns)),
-				}
-				for _, c := range t.Columns {
-					sc := schema.Column{
-						Type:      c.Type,
-						DDLType:   c.DDLType,
-						PK:        c.IsPK,
-						Nullable:  c.IsNullable,
-						Generated: c.Generated != "",
-						Faker:     faker.MapColumnToFaker(dbType, c),
-					}
-					if c.FK != nil {
-						sc.FK = fmt.Sprintf("%s.%s", c.FK.TableName, c.FK.ColumnName)
-					}
-					st.Columns[c.Name] = sc
-				}
-				s.Tables[t.Name] = st
-			}
+			s := faker.BuildSchema(dbType, tables)
 
 			if err := schema.Save(out, s); err != nil {
 				return fmt.Errorf("failed to save schema: %w", err)

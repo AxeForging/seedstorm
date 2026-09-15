@@ -39,4 +39,7 @@ type Index struct {
 	Name    string
 	Columns []string
 	Unique  bool
+	// Prefixes holds a MySQL prefix length per column (0 = whole column); nil
+	// when no column is prefixed.
+	Prefixes []int
 }

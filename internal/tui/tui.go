@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
@@ -33,6 +34,7 @@ type seedParams struct {
 	truncate     bool
 	dbType       string
 	dsn          string
+	overrides    faker.Overrides
 }
 
 // Model is the top-level TUI model orchestrating the wizard steps.
@@ -44,6 +46,7 @@ type Model struct {
 	sortedAll []string
 	dbType    string
 	dsn       string
+	profile   Profile
 
 	picker  tablePickerModel
 	config  configModel
@@ -58,7 +61,7 @@ type Model struct {
 }
 
 // Run launches the interactive TUI and returns when the user completes or aborts.
-func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows, defaultBatchSize, defaultEnumRows int, defaultTruncate bool, defaultSelfRefDepth ...int) error {
+func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows, defaultBatchSize, defaultEnumRows int, defaultTruncate bool, defaultSelfRefDepth int, profile Profile) error {
 	g := graph.Build(s)
 	sortedAll, err := g.TopologicalSort()
 	if err != nil {
@@ -84,8 +87,9 @@ func Run(ctx context.Context, s *schema.Schema, dbType, dsn string, defaultRows,
 		sortedAll: sortedAll,
 		dbType:    dbType,
 		dsn:       dsn,
+		profile:   profile,
 		picker:    newTablePicker(items, 24),
-		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, defaultTruncate, defaultSelfRefDepth...),
+		config:    newConfig(defaultRows, defaultBatchSize, defaultEnumRows, defaultTruncate, defaultSelfRefDepth),
 		height:    24,
 		width:     80,
 	}
@@ -225,7 +229,8 @@ func (m Model) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.review = newReview(tables, parents,
-			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), m.config.Truncate(), m.volumes.TableRows())
+			m.config.Rows(), m.config.EnumRows(), m.config.BatchSize(), m.config.Truncate(), m.profile.mergeRows(m.volumes.TableRows()))
+		m.review.profile = m.profile.Summary()
 		m.step = stepReview
 	}
 
@@ -258,6 +263,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			truncate:     m.review.truncate,
 			dbType:       m.dbType,
 			dsn:          m.dsn,
+			overrides:    m.profile.Overrides,
 		}
 
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)
