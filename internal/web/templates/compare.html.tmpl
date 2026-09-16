@@ -1,6 +1,6 @@
 {{define "scripts"}}<link rel="stylesheet" href="/static/compare.css"><script src="/static/compare.js" defer></script>{{end}}
 {{define "content"}}
-<section class="cmp-shell" id="compare-app">
+<section class="cmp-shell" id="compare-app" data-testid="cmp-app">
   <header class="cmp-head">
     <div>
       <span class="eyebrow">compare &amp; mirror</span>
@@ -10,14 +10,17 @@
   </header>
 
   <form class="cmp-pickers" id="cmp-form" autocomplete="off">
-    <label class="field cmp-side">
-      <span class="field-label"><i class="cmp-key cmp-key-src" aria-hidden="true"></i>Source <span class="muted">· read-only</span></span>
-      <select id="cmp-source" required></select>
-    </label>
+    <div class="field cmp-side">
+      <label class="field-label" for="cmp-source"><i class="cmp-key cmp-key-src" aria-hidden="true"></i>Source <span class="muted">· read-only</span></label>
+      <div class="cmp-source-row">
+        <select id="cmp-source" data-testid="cmp-source" required></select>
+        <button class="btn-ghost cmp-import-btn" id="cmp-import" data-testid="cmp-import" type="button" title="Use a counts file (JSON or YAML) as the source">Import counts</button>
+      </div>
+    </div>
     <button class="btn-ghost cmp-swap" id="cmp-swap" type="button" title="Swap source and target" aria-label="Swap source and target">⇄</button>
     <label class="field cmp-side">
       <span class="field-label"><i class="cmp-key cmp-key-tgt" aria-hidden="true"></i>Target <span class="muted">· mirror writes here</span></span>
-      <select id="cmp-target" required></select>
+      <select id="cmp-target" data-testid="cmp-target" required></select>
     </label>
     <fieldset class="cmp-counts">
       <legend class="field-label">Row counts</legend>
@@ -26,7 +29,7 @@
         <label title="Planner statistics: instant on huge tables, approximate"><input type="radio" name="counts" value="estimate"><span>Estimate</span></label>
       </div>
     </fieldset>
-    <button class="btn-primary cmp-go" id="cmp-run" type="submit">Compare</button>
+    <button class="btn-primary cmp-go" id="cmp-run" data-testid="cmp-run" type="submit">Compare</button>
     <p class="cmp-hint muted small" id="cmp-hint" hidden></p>
   </form>
 
@@ -38,8 +41,12 @@
     </div>
   </div>
 
-  <section class="cmp-results" id="cmp-results" hidden>
-    <div class="cmp-stats" id="cmp-stats"></div>
+  <section class="cmp-results" id="cmp-results" data-testid="cmp-results" hidden>
+    <div class="cmp-stale" id="cmp-stale" hidden>
+      <span id="cmp-stale-text">Restored the last comparison.</span>
+      <button class="btn-ghost" id="cmp-recompare" type="button">Re-compare</button>
+    </div>
+    <div class="cmp-stats" id="cmp-stats" data-testid="cmp-stats"></div>
 
     <div class="cmp-grid">
       <section class="cmp-table-panel">
@@ -54,6 +61,7 @@
             <span class="sr-only">Find table</span>
             <input id="cmp-search" type="search" placeholder="Find table">
           </label>
+          <button class="btn-ghost cmp-export-btn" id="cmp-export" data-testid="cmp-export" type="button" title="Download or copy the row counts of either side">Export counts</button>
         </div>
         <div class="cmp-gauge-head" aria-hidden="true">
           <span class="cmp-gh-check"><input type="checkbox" id="cmp-check-all" title="Include every table in the mirror"></span>
@@ -70,6 +78,7 @@
         <header>
           <h2>Mirror onto target</h2>
           <p class="cmp-writes small" id="cmp-writes">Writes only to the target.</p>
+          <p class="cmp-access-note small" id="cmp-access-note" hidden></p>
         </header>
 
         <fieldset class="field">
@@ -111,7 +120,7 @@
         <p class="cmp-scope small" id="cmp-scope">All tables present on both sides.</p>
 
         <details class="cmp-advanced">
-          <summary class="small">Advanced</summary>
+          <summary class="small" data-testid="cmp-advanced-toggle">Advanced</summary>
           <div class="cmp-two">
             <label class="field">
               <span class="field-label">Batch size</span>
@@ -121,19 +130,23 @@
               <span class="field-label">Self-ref depth</span>
               <input id="cmp-selfref" type="number" min="0" value="2" inputmode="numeric">
             </label>
+            <label class="field">
+              <span class="field-label" title="Connections writing one chunk at once">Writers</span>
+              <input id="cmp-workers" type="number" min="1" max="32" value="4" inputmode="numeric">
+            </label>
           </div>
-          <label class="field-check small"><input id="cmp-stop" type="checkbox"> Stop at the first rejected row (default: retry row by row and report)</label>
+          <label class="field-check small"><input id="cmp-stop" data-testid="cmp-stop" type="checkbox"> Stop at the first rejected row (default: retry row by row and report)</label>
         </details>
 
-        <button class="btn-primary cmp-plan-btn" id="cmp-plan" type="button" disabled>Preview plan</button>
+        <button class="btn-primary cmp-plan-btn" id="cmp-plan" data-testid="cmp-plan" type="button" disabled>Preview plan</button>
         <p class="muted small cmp-plan-note">Nothing is written until you confirm the plan.</p>
 
-        <div class="cmp-outcome" id="cmp-outcome" hidden></div>
+        <div class="cmp-outcome" id="cmp-outcome" data-testid="cmp-outcome" hidden></div>
       </aside>
     </div>
 
     <details class="cmp-logs" id="cmp-logs">
-      <summary>Job log <span class="status-pill" id="job-status">idle</span> <span class="muted small" id="job-elapsed"></span></summary>
+      <summary>Job log <span class="status-pill" id="job-status" data-testid="job-status">idle</span> <span class="muted small" id="job-elapsed"></span></summary>
       <div class="row spread">
         <span class="muted small" id="job-name"></span>
         <div class="row">
@@ -142,6 +155,10 @@
         </div>
       </div>
       <div class="job-progress-wrap" id="job-progress-wrap" hidden>
+        <div class="job-progress-head">
+          <strong id="job-progress-count" data-testid="job-progress-count"></strong>
+          <span class="muted small" id="job-progress-pct"></span>
+        </div>
         <progress class="job-progress" id="job-progress" max="100" value="0"></progress>
         <span class="muted small" id="job-progress-label"></span>
       </div>
@@ -150,13 +167,73 @@
     </details>
   </section>
 
-  <div class="cmp-modal" id="cmp-modal" hidden>
+  <dialog class="cmp-dialog" id="cmp-import-dialog" data-testid="cmp-import-dialog" aria-labelledby="cmp-import-title">
+    <form method="dialog" class="cmp-dialog-body" id="cmp-import-form">
+      <header class="cmp-dialog-head">
+        <div>
+          <span class="eyebrow">counts file</span>
+          <h2 id="cmp-import-title">Import row counts as the source</h2>
+          <p class="muted small">A file from <code>seedstorm snapshot</code> or Export counts, or a hand-written <code>tables: {users: 1200, orders: 5000}</code>. JSON or YAML.</p>
+        </div>
+        <button class="btn-ghost" value="cancel" type="submit" aria-label="Close import" data-testid="cmp-import-close">Close</button>
+      </header>
+      <label class="cmp-drop" id="cmp-drop">
+        <input type="file" id="cmp-import-file" data-testid="cmp-import-file" accept=".json,.yaml,.yml,application/json,text/yaml,text/plain">
+        <strong>Choose a file</strong> <span class="muted">or drop it here</span>
+      </label>
+      <label class="field">
+        <span class="field-label">Or paste</span>
+        <textarea id="cmp-import-text" data-testid="cmp-import-text" rows="9" spellcheck="false" placeholder="kind: seedstorm.table-counts&#10;version: 1&#10;tables:&#10;  users:&#10;    rows: 1200"></textarea>
+      </label>
+      <p class="cmp-import-status small" id="cmp-import-status" data-testid="cmp-import-status" role="status"></p>
+      <footer class="cmp-dialog-foot">
+        <button class="btn-primary" id="cmp-import-use" data-testid="cmp-import-use" type="button">Use as source</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="cmp-dialog" id="cmp-export-dialog" data-testid="cmp-export-dialog" aria-labelledby="cmp-export-title">
+    <form method="dialog" class="cmp-dialog-body">
+      <header class="cmp-dialog-head">
+        <div>
+          <span class="eyebrow">counts file</span>
+          <h2 id="cmp-export-title">Export row counts</h2>
+          <p class="muted small" id="cmp-export-meta">Import it later as a compare source, or use it with <code>seedstorm mirror --source-snapshot</code>.</p>
+        </div>
+        <button class="btn-ghost" value="cancel" type="submit" aria-label="Close export" data-testid="cmp-export-close">Close</button>
+      </header>
+      <div class="cmp-export-options">
+        <fieldset>
+          <legend class="field-label">Side</legend>
+          <div class="segmented" role="radiogroup">
+            <label><input type="radio" name="export-side" value="source" checked><span id="cmp-export-source-label">Source</span></label>
+            <label><input type="radio" name="export-side" value="target"><span id="cmp-export-target-label">Target</span></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend class="field-label">Format</legend>
+          <div class="segmented" role="radiogroup">
+            <label><input type="radio" name="export-format" value="yaml" checked><span>YAML</span></label>
+            <label><input type="radio" name="export-format" value="json"><span>JSON</span></label>
+          </div>
+        </fieldset>
+      </div>
+      <pre class="cmp-export-preview" id="cmp-export-preview" data-testid="cmp-export-preview" tabindex="0"></pre>
+      <footer class="cmp-dialog-foot">
+        <span class="muted small" id="cmp-export-status" role="status"></span>
+        <button class="btn-ghost" id="cmp-export-copy" type="button">Copy</button>
+        <a class="btn-primary" id="cmp-export-download" data-testid="cmp-export-download" download>Download</a>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="cmp-modal" id="cmp-modal" data-testid="cmp-plan-modal" hidden>
     <div class="cmp-modal-backdrop" data-close></div>
     <section class="cmp-modal-panel" role="dialog" aria-modal="true" aria-labelledby="cmp-modal-title">
       <header class="cmp-modal-head">
         <div>
           <span class="eyebrow" id="cmp-modal-eyebrow">mirror plan</span>
-          <h2 id="cmp-modal-title">Review the plan</h2>
+          <h2 id="cmp-modal-title" data-testid="cmp-plan-title">Review the plan</h2>
           <p class="muted small" id="cmp-modal-meta"></p>
         </div>
         <button class="btn-ghost" type="button" data-close aria-label="Close plan">Close</button>
@@ -176,7 +253,7 @@
           <input type="checkbox" id="cmp-confirm">
           <span id="cmp-confirm-text">I understand these tables on the target are truncated.</span>
         </label>
-        <button class="btn-primary" id="cmp-execute" type="button">Run mirror</button>
+        <button class="btn-primary" id="cmp-execute" data-testid="cmp-execute" type="button">Run mirror</button>
       </footer>
     </section>
   </div>

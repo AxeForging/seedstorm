@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/brianvoe/gofakeit/v6"
 	"github.com/goccy/go-yaml"
 	"github.com/urfave/cli/v3"
 
@@ -31,6 +30,7 @@ func mirrorCmd() *cli.Command {
 		&cli.StringSliceFlag{Name: "tables", Usage: "Limit to these tables, repeatable or comma-separated (default: all)"},
 		profileFlag(),
 		&cli.IntFlag{Name: "batch-size", Usage: "Rows per INSERT statement", Value: seeder.DefaultBatchSize},
+		workersFlag(),
 		&cli.IntFlag{Name: "self-ref-depth", Usage: "Maximum generated depth for self-referential FK chains", Value: faker.DefaultSelfRefDepth},
 		&cli.BoolFlag{Name: "dry-run", Aliases: []string{"n"}, Usage: "Print the plan and sample rows without writing"},
 		&cli.IntFlag{Name: "preview-rows", Usage: "Sample rows per table shown by --dry-run", Value: 3},
@@ -47,7 +47,9 @@ func mirrorCmd() *cli.Command {
 table reaches the source's row count (times --scale). The source is only read.
 Rows are generated from the target's own schema, optionally shaped by a seed
 profile, in FK-safe order. Rejected inserts are retried row by row; tables that
-cannot progress are reported instead of blocking the run.`,
+cannot progress are reported instead of blocking the run.
+The source can be a file made by "seedstorm snapshot" (--source-snapshot); the
+same-database safety check cannot run then, so double-check --target-dsn.`,
 		Flags: flags,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -64,7 +66,7 @@ cannot progress are reported instead of blocking the run.`,
 				return fmt.Errorf("unknown format %q (use table or json)", format)
 			}
 			if seed := cmd.Int("seed"); seed != 0 {
-				gofakeit.Seed(int64(seed))
+				faker.SeedRandom(int64(seed))
 			}
 			var profile *rules.RuleSet
 			if ref := cmd.String("profile"); ref != "" {
@@ -81,8 +83,7 @@ cannot progress are reported instead of blocking the run.`,
 			if err != nil {
 				return err
 			}
-			defer source.Conn.Close()
-			defer target.Conn.Close()
+			defer closeEndpoints(source, target)
 
 			log.Info().Str("source", source.Label).Str("target", target.Label).Msg("Comparing databases")
 			job, err := seeder.PrepareMirror(ctx, source, target, seeder.MirrorConfig{
@@ -99,6 +100,9 @@ cannot progress are reported instead of blocking the run.`,
 			if err != nil {
 				return err
 			}
+			if job.SameDatabaseUnchecked {
+				log.Warn().Str("source", source.Label).Msg("Source is a snapshot file: cannot check that source and target are different databases")
+			}
 			for _, issue := range job.Issues {
 				if issue.Severity == rules.SeverityWarning {
 					log.Warn().Str("path", issue.Path).Msg(issue.Message)
@@ -106,6 +110,7 @@ cannot progress are reported instead of blocking the run.`,
 			}
 			runOpts := seeder.Options{
 				BatchSize:   cmd.Int("batch-size"),
+				Workers:     cmd.Int("workers"),
 				StopOnError: cmd.Bool("stop-on-error"),
 				Generate:    faker.GenerateOptions{SelfRefDepth: cmd.Int("self-ref-depth")},
 			}
@@ -133,7 +138,9 @@ cannot progress are reported instead of blocking the run.`,
 			}
 
 			start := time.Now()
+			logProgress, _ := progressLogger(time.Now)
 			runOpts.OnProgress = func(p seeder.Progress) {
+				logProgress(p)
 				if p.Inserted >= p.Requested {
 					log.Info().Str("table", p.Table).Int64("rows", p.Inserted).Msg(fmt.Sprintf("[%d/%d] filled", p.TableIndex, p.Tables))
 				}

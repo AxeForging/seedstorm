@@ -7,12 +7,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/schema"
-	"github.com/brianvoe/gofakeit/v6"
 )
 
 const DefaultSelfRefDepth = 2
@@ -26,6 +26,10 @@ type GenerateOptions struct {
 	// RowOffset shifts the row index overrides see, per table, so a table
 	// generated in several chunks keeps {{seq}} increasing across chunks.
 	RowOffset map[string]int
+	// ChunkBytes caps the estimated memory of one chunk (0: rows only). Wide
+	// rows then come in smaller chunks: the first chunk probes the row size
+	// and later ones are sized from it, never above the row cap.
+	ChunkBytes int
 }
 
 type GenerationWarning struct {
@@ -127,11 +131,11 @@ func uniqueSequenceValue(colType string, i int) interface{} {
 
 // queryExistingPKs reads the PK pools of sortedTables and records in sampled
 // which tables were too large to keep whole.
-func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string, sampled map[string]bool) error {
+func (gen generator) queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string, sampled map[string]bool) error {
 	for _, tableName := range sortedTables {
 		table := tables[tableName]
 		for _, colName := range sortedPKColumns(table) {
-			wasSampled, err := scanPKs(conn, tableName, colName, generatedPKs, dbType)
+			wasSampled, err := gen.scanPKs(conn, tableName, colName, generatedPKs, dbType)
 			if err != nil {
 				return err
 			}
@@ -143,14 +147,14 @@ func queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]sch
 	return nil
 }
 
-func scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
+func (gen generator) scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
 	rows, err := conn.Query(fmt.Sprintf("SELECT %s FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType))) //nolint:gosec
 	if err != nil {
 		return false, fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
 	}
 	defer rows.Close()
 
-	pool := newPoolSampler(generatedPKs[tableName], poolLimit)
+	pool := newPoolSampler(generatedPKs[tableName], poolLimit, gen.rnd)
 	for rows.Next() {
 		var pk interface{}
 		if err := rows.Scan(&pk); err != nil {
@@ -165,8 +169,11 @@ func scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]
 	return pool.seen > pool.limit, nil
 }
 
+// findEnumColumn returns the first enum column by name. Sorted, not map order:
+// the column chosen shapes the generated rows, and --seed must reproduce them.
 func findEnumColumn(table schema.Table) (string, []string) {
-	for colName, col := range table.Columns {
+	for _, colName := range sortedColumnNames(table) {
+		col := table.Columns[colName]
 		if strings.HasPrefix(col.Faker, "randomstring(") {
 			if m := reParens.FindStringSubmatch(col.Faker); len(m) > 1 {
 				return colName, strings.Split(m[1], ",")
@@ -206,7 +213,7 @@ const maxEnumTopUpValues = 12
 // cartesian product is produced.
 // Columns with more than maxEnumTopUpValues values are skipped: large pools
 // are AI example lists, not true enums, and top-up would inflate row counts.
-func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int, existingKeys takenKeys) error {
+func (gen generator) topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, enumCols map[string][]string, minRows int, existingKeys takenKeys) error {
 	// Rows already generated occupy keys too, so top-up rows never collide with
 	// them on composite PKs (e.g., junction tables that also carry an enum).
 	enforceUniquePK := pkColumnCount(table) > 0
@@ -219,7 +226,7 @@ func topUpEnumCoverage(data map[string][]map[string]interface{}, generatedPKs ma
 	counts := countEnumValues(nil, enumCols, data[tableName])
 	return enumTopUp(enumCols, minRows, counts, func(col, val string, n int) error {
 		piece := map[string][]map[string]interface{}{tableName: nil}
-		if err := generateEnumRows(piece, generatedPKs, table, tableName, col, []string{val}, n, taken); err != nil {
+		if err := gen.generateEnumRows(piece, generatedPKs, table, tableName, col, []string{val}, n, taken); err != nil {
 			return fmt.Errorf("enum top-up (table %s, %s=%s): %w", tableName, col, val, err)
 		}
 		for _, row := range piece[tableName] {
@@ -278,7 +285,7 @@ func countEnumValues(counts map[string]map[string]int, enumCols map[string][]str
 	return counts
 }
 
-func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int, existingKeys takenKeys) error {
+func (gen generator) generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName, enumCol string, enumVals []string, enumRows int, existingKeys takenKeys) error {
 	seenKeys := newSeen(existingKeys)
 	enforceUniquePK := pkColumnCount(table) > 0
 	for _, enumVal := range enumVals {
@@ -288,7 +295,7 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 			generated := false
 			for attempt := 0; attempt < 200; attempt++ {
 				var err error
-				row, err = generateRow(table, tableName, generatedPKs, &v, enumCol)
+				row, err = gen.generateRow(table, tableName, generatedPKs, &v, enumCol)
 				if err != nil {
 					return err
 				}
@@ -311,7 +318,7 @@ func generateEnumRows(data map[string][]map[string]interface{}, generatedPKs map
 	return nil
 }
 
-func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) error {
+func (gen generator) generateStandardRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) error {
 	seenKeys := newSeen(existingKeys) // guards PK uniqueness against this run and stored rows
 	enforceUniquePK := pkColumnCount(table) > 0
 	for i := 0; i < rows; i++ {
@@ -319,7 +326,7 @@ func generateStandardRows(data map[string][]map[string]interface{}, generatedPKs
 		generated := false
 		for attempt := 0; attempt < 200; attempt++ {
 			var err error
-			row, err = generateRow(table, tableName, generatedPKs, nil, "")
+			row, err = gen.generateRow(table, tableName, generatedPKs, nil, "")
 			if err != nil {
 				return err
 			}
@@ -359,15 +366,15 @@ func pkColumnCount(table schema.Table) int {
 // Random retries can exhaust quickly when the parent pools are small;
 // enumerating combinations avoids false failures and caps impossible requests
 // to the available pool.
-func generateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) (int, bool, error) {
-	generated, _, handled, err := enumerateCompositeFKPKRows(data, generatedPKs, table, tableName, rows, existingKeys, 0)
+func (gen generator) generateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys) (int, bool, error) {
+	generated, _, handled, err := gen.enumerateCompositeFKPKRows(data, generatedPKs, table, tableName, rows, existingKeys, 0)
 	return generated, handled, err
 }
 
 // enumerateCompositeFKPKRows walks key combinations from position start and
 // returns where it stopped, so a table generated in chunks resumes instead of
 // re-walking every combination already used.
-func enumerateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys, start int) (int, int, bool, error) {
+func (gen generator) enumerateCompositeFKPKRows(data map[string][]map[string]interface{}, generatedPKs map[string][]interface{}, table schema.Table, tableName string, rows int, existingKeys takenKeys, start int) (int, int, bool, error) {
 	pkCols := make([]string, 0)
 	for colName, col := range table.Columns {
 		if col.PK {
@@ -424,7 +431,7 @@ func enumerateCompositeFKPKRows(data map[string][]map[string]interface{}, genera
 		if hasKey(existingKeys, compositePKKey(overrides, table)) {
 			continue
 		}
-		row, err := generateRowWithOverrides(table, tableName, generatedPKs, nil, "", overrides)
+		row, err := gen.generateRowWithOverrides(table, tableName, generatedPKs, nil, "", overrides)
 		if err != nil {
 			return generated, i, true, err
 		}
@@ -464,11 +471,11 @@ func rollbackLastRowPKs(generatedPKs map[string][]interface{}, tableName string,
 	}
 }
 
-func generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
-	return generateRowWithOverrides(table, tableName, generatedPKs, enumVal, enumCol, nil)
+func (gen generator) generateRow(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (map[string]interface{}, error) {
+	return gen.generateRowWithOverrides(table, tableName, generatedPKs, enumVal, enumCol, nil)
 }
 
-func generateRowWithOverrides(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string, overrides map[string]interface{}) (map[string]interface{}, error) {
+func (gen generator) generateRowWithOverrides(table schema.Table, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string, overrides map[string]interface{}) (map[string]interface{}, error) {
 	row := make(map[string]interface{})
 	var pksToAdd []interface{}
 
@@ -488,7 +495,7 @@ func generateRowWithOverrides(table schema.Table, tableName string, generatedPKs
 		val, ok := overrides[colName]
 		if !ok {
 			var err error
-			val, err = generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
+			val, err = gen.generateValue(col, colName, tableName, generatedPKs, enumVal, enumCol)
 			if err != nil {
 				return nil, fmt.Errorf("column %s: %w", colName, err)
 			}
@@ -504,7 +511,7 @@ func generateRowWithOverrides(table schema.Table, tableName string, generatedPKs
 	return row, nil
 }
 
-func generateValue(col schema.Column, colName, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (interface{}, error) {
+func (gen generator) generateValue(col schema.Column, colName, tableName string, generatedPKs map[string][]interface{}, enumVal *string, enumCol string) (interface{}, error) {
 	if enumVal != nil && colName == enumCol {
 		return *enumVal, nil
 	}
@@ -531,17 +538,17 @@ func generateValue(col schema.Column, colName, tableName string, generatedPKs ma
 				}
 				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
 			}
-			return pks[gofakeit.Number(0, len(pks)-1)], nil
+			return pks[gen.rnd.Number(0, len(pks)-1)], nil
 		}
 	}
 	if col.PK {
-		pk, err := generatePK(col.Type, nextSequentialPK(generatedPKs[tableName]))
+		pk, err := gen.generatePK(col.Type, nextSequentialPK(generatedPKs[tableName]))
 		if err != nil {
 			return nil, err
 		}
 		return fitStringPK(pk, col), nil
 	}
-	val, err := generate(col.Faker)
+	val, err := gen.generate(col.Faker)
 	if err != nil {
 		return nil, err
 	}
@@ -590,6 +597,15 @@ func backfillSelfReferences(rows []map[string]interface{}, table schema.Table, t
 		}
 
 		levels := make([]int, len(rows))
+		// lastEligible is the latest row whose depth still allows a child: what
+		// chooseSelfRefParent finds by scanning backwards, kept as rows are
+		// assigned so each row costs O(1) instead of O(rows).
+		lastEligible := -1
+		track := func(i int) {
+			if levels[i] < selfRefDepth {
+				lastEligible = i
+			}
+		}
 		for i := range rows {
 			if _, ok := rows[i][refCol]; !ok {
 				return fmt.Errorf("%s references unavailable generated value %s", colName, refCol)
@@ -601,22 +617,27 @@ func backfillSelfReferences(rows []map[string]interface{}, table schema.Table, t
 					rows[i][colName] = rows[i][refCol]
 				}
 				levels[i] = 0
+				track(i)
 				continue
 			}
 
-			parentIdx := chooseSelfRefParent(levels, i, selfRefDepth)
+			parentIdx := lastEligible
+			if selfRefDepth <= 0 {
+				parentIdx = -1
+			}
 			if parentIdx < 0 {
 				if col.Nullable {
 					rows[i][colName] = nil
-					levels[i] = 0
-					continue
+				} else {
+					rows[i][colName] = rows[i][refCol]
 				}
-				rows[i][colName] = rows[i][refCol]
 				levels[i] = 0
+				track(i)
 				continue
 			}
 			rows[i][colName] = rows[parentIdx][refCol]
 			levels[i] = levels[parentIdx] + 1
+			track(i)
 		}
 	}
 	return nil
@@ -647,18 +668,18 @@ func splitFK(fk string) (string, string) {
 
 // generatePK returns an appropriate primary key value based on the column's DB type.
 // Sequential integers for numeric types, UUIDs for uuid/string types.
-func generatePK(colType string, existingCount int) (interface{}, error) {
+func (gen generator) generatePK(colType string, existingCount int) (interface{}, error) {
 	t := strings.ToLower(colType)
 	switch {
 	case t == "uuid":
-		return gofakeit.UUID(), nil
+		return gen.rnd.UUID(), nil
 	case strings.Contains(t, "char") || strings.Contains(t, "text"):
-		return gofakeit.UUID(), nil
+		return gen.rnd.UUID(), nil
 	case temporalPKFaker(t) != "":
 		// Temporal PK columns (e.g. a DATE in a composite key) can't take a
 		// sequential integer — that inserts "1" into a date/timestamp column.
 		// Uniqueness is enforced by the caller's composite-PK retry loop.
-		return generate(temporalPKFaker(t))
+		return gen.generate(temporalPKFaker(t))
 	default:
 		// integer / serial / bigserial — sequential
 		return existingCount + 1, nil
@@ -693,14 +714,29 @@ func temporalPKFaker(t string) string {
 }
 
 func isStringColType(colType string) bool {
+	if v, ok := stringTypeCache.Load(colType); ok {
+		return v.(bool)
+	}
 	t := strings.ToLower(colType)
-	return strings.Contains(t, "char") || strings.Contains(t, "text") ||
+	is := strings.Contains(t, "char") || strings.Contains(t, "text") ||
 		t == "clob" || t == "tinytext" || t == "mediumtext" || t == "longtext"
+	stringTypeCache.Store(colType, is)
+	return is
 }
+
+// Column types and faker strings repeat on every row, so what is parsed from
+// them is cached. The caches grow only with the distinct types and faker
+// strings of a schema.
+var (
+	stringTypeCache  sync.Map // col.Type -> bool
+	stringLimitCache sync.Map // [2]string{DDLType, Type} -> int
+	fakerSpecCache   sync.Map // faker string -> *fakerSpec
+)
 
 func constrainStringValue(value string, col schema.Column) string {
 	maxLen := stringLengthLimit(col)
-	if maxLen <= 0 {
+	// A string never has more runes than bytes, so a short one needs no count.
+	if maxLen <= 0 || len(value) <= maxLen {
 		return value
 	}
 	runes := []rune(value)
@@ -711,12 +747,19 @@ func constrainStringValue(value string, col schema.Column) string {
 }
 
 func stringLengthLimit(col schema.Column) int {
+	key := [2]string{col.DDLType, col.Type}
+	if v, ok := stringLimitCache.Load(key); ok {
+		return v.(int)
+	}
+	limit := 0
 	for _, typ := range []string{col.DDLType, col.Type} {
 		if n := parseStringLength(typ); n > 0 {
-			return n
+			limit = n
+			break
 		}
 	}
-	return 0
+	stringLimitCache.Store(key, limit)
+	return limit
 }
 
 func parseStringLength(colType string) int {
@@ -777,117 +820,160 @@ var (
 	reStringLength = regexp.MustCompile(`^(?:varchar|char|character varying|character)\((\d+)\)$`)
 )
 
-func generate(fakerStr string) (interface{}, error) {
-	s := strings.TrimSpace(fakerStr)
+// fakerSpec is a faker string parsed once: the call name, its raw and split
+// arguments, and numeric bounds with any parse error, returned on every use as
+// parsing on every call did.
+type fakerSpec struct {
+	bare     string // trimmed faker string
+	call     bool   // name(args) form
+	name     string
+	raw      string // text inside the parentheses
+	args     []string
+	intMin   int
+	intMax   int
+	floatMin float64
+	floatMax float64
+	count    int
+	err      error
+}
 
-	// Special cases that return non-string values
-	if m := reArgs.FindStringSubmatch(s); m != nil {
-		funcName := m[1]
-		argsStr := strings.TrimSpace(m[2])
-		args := splitArgs(argsStr)
-
-		switch funcName {
+func parseFakerSpec(fakerStr string) *fakerSpec {
+	if v, ok := fakerSpecCache.Load(fakerStr); ok {
+		return v.(*fakerSpec)
+	}
+	spec := &fakerSpec{bare: strings.TrimSpace(fakerStr)}
+	if m := reArgs.FindStringSubmatch(spec.bare); m != nil {
+		spec.call, spec.name, spec.raw = true, m[1], m[2]
+		spec.args = splitArgs(strings.TrimSpace(m[2]))
+		switch spec.name {
 		case "number":
-			min, err := strconv.Atoi(strings.TrimSpace(args[0]))
-			if err != nil {
-				return nil, fmt.Errorf("number: bad min arg: %w", err)
+			var err error
+			if spec.intMin, err = strconv.Atoi(argAt(spec.args, 0)); err != nil {
+				spec.err = fmt.Errorf("number: bad min arg: %w", err)
+			} else if spec.intMax, err = strconv.Atoi(argAt(spec.args, 1)); err != nil {
+				spec.err = fmt.Errorf("number: bad max arg: %w", err)
 			}
-			max, err := strconv.Atoi(strings.TrimSpace(args[1]))
-			if err != nil {
-				return nil, fmt.Errorf("number: bad max arg: %w", err)
-			}
-			return gofakeit.Number(min, max), nil
 		case "price":
-			min, err := strconv.ParseFloat(strings.TrimSpace(args[0]), 64)
-			if err != nil {
-				return nil, fmt.Errorf("price: bad min arg: %w", err)
+			var err error
+			if spec.floatMin, err = strconv.ParseFloat(argAt(spec.args, 0), 64); err != nil {
+				spec.err = fmt.Errorf("price: bad min arg: %w", err)
+			} else if spec.floatMax, err = strconv.ParseFloat(argAt(spec.args, 1), 64); err != nil {
+				spec.err = fmt.Errorf("price: bad max arg: %w", err)
 			}
-			max, err := strconv.ParseFloat(strings.TrimSpace(args[1]), 64)
-			if err != nil {
-				return nil, fmt.Errorf("price: bad max arg: %w", err)
-			}
-			return gofakeit.Price(min, max), nil
-		case "randomstring":
-			return gofakeit.RandomString(args), nil
 		case "paragraph":
-			count := 1
-			if len(args) > 0 {
-				if n, err := strconv.Atoi(strings.TrimSpace(args[0])); err == nil {
-					count = n
+			spec.count = 1
+			if len(spec.args) > 0 {
+				if n, err := strconv.Atoi(spec.args[0]); err == nil {
+					spec.count = n
 				}
 			}
-			return gofakeit.Paragraph(count, 3, 8, " "), nil
+		}
+	}
+	fakerSpecCache.Store(fakerStr, spec)
+	return spec
+}
+
+// argAt returns args[i] trimmed, or "" (which fails to parse, reported as a
+// bad argument) when absent.
+func argAt(args []string, i int) string {
+	if i < len(args) {
+		return strings.TrimSpace(args[i])
+	}
+	return ""
+}
+
+func (gen generator) generate(fakerStr string) (interface{}, error) {
+	spec := parseFakerSpec(fakerStr)
+	s := spec.bare
+
+	// Special cases that return non-string values
+	if spec.call {
+		switch spec.name {
+		case "number":
+			if spec.err != nil {
+				return nil, spec.err
+			}
+			return gen.rnd.Number(spec.intMin, spec.intMax), nil
+		case "price":
+			if spec.err != nil {
+				return nil, spec.err
+			}
+			return gen.rnd.Price(spec.floatMin, spec.floatMax), nil
+		case "randomstring":
+			return gen.rnd.RandomString(spec.args), nil
+		case "paragraph":
+			return gen.rnd.Paragraph(spec.count, 3, 8, " "), nil
 		case "float64":
-			return gofakeit.Float64(), nil
+			return gen.rnd.Float64(), nil
 		case "lexify":
 			// The pattern is raw text, not a comma-separated list.
-			return gofakeit.Lexify(m[2]), nil
+			return gen.rnd.Lexify(spec.raw), nil
 		case "numerify":
-			return gofakeit.Numerify(m[2]), nil
+			return gen.rnd.Numerify(spec.raw), nil
 		}
 	}
 
 	switch s {
 	case "name":
-		return gofakeit.Name(), nil
+		return gen.rnd.Name(), nil
 	case "firstname":
-		return gofakeit.FirstName(), nil
+		return gen.rnd.FirstName(), nil
 	case "lastname":
-		return gofakeit.LastName(), nil
+		return gen.rnd.LastName(), nil
 	case "username":
-		return gofakeit.Username(), nil
+		return gen.rnd.Username(), nil
 	case "email":
-		return gofakeit.Email(), nil
+		return gen.rnd.Email(), nil
 	case "phone":
-		return gofakeit.Phone(), nil
+		return gen.rnd.Phone(), nil
 	case "street":
-		return gofakeit.Street(), nil
+		return gen.rnd.Street(), nil
 	case "city":
-		return gofakeit.City(), nil
+		return gen.rnd.City(), nil
 	case "state":
-		return gofakeit.State(), nil
+		return gen.rnd.State(), nil
 	case "country":
-		return gofakeit.Country(), nil
+		return gen.rnd.Country(), nil
 	case "zip":
-		return gofakeit.Zip(), nil
+		return gen.rnd.Zip(), nil
 	case "url":
-		return gofakeit.URL(), nil
+		return gen.rnd.URL(), nil
 	case "domain":
-		return gofakeit.DomainName(), nil
+		return gen.rnd.DomainName(), nil
 	case "uuid":
-		return gofakeit.UUID(), nil
+		return gen.rnd.UUID(), nil
 	case "ipv4":
-		return gofakeit.IPv4Address(), nil
+		return gen.rnd.IPv4Address(), nil
 	case "macaddress":
-		return gofakeit.MacAddress(), nil
+		return gen.rnd.MacAddress(), nil
 	case "hexcolor":
-		return gofakeit.HexColor(), nil
+		return gen.rnd.HexColor(), nil
 	case "productname":
-		return gofakeit.ProductName(), nil
+		return gen.rnd.ProductName(), nil
 	case "company":
-		return gofakeit.Company(), nil
+		return gen.rnd.Company(), nil
 	case "jobtitle":
-		return gofakeit.JobTitle(), nil
+		return gen.rnd.JobTitle(), nil
 	case "latitude":
-		return gofakeit.Latitude(), nil
+		return gen.rnd.Latitude(), nil
 	case "longitude":
-		return gofakeit.Longitude(), nil
+		return gen.rnd.Longitude(), nil
 	case "bool":
-		return gofakeit.Bool(), nil
+		return gen.rnd.Bool(), nil
 	case "float64":
-		return gofakeit.Float64(), nil
+		return gen.rnd.Float64(), nil
 	case "word":
-		return gofakeit.Word(), nil
+		return gen.rnd.Word(), nil
 	case "sentence":
-		return gofakeit.Sentence(5), nil
+		return gen.rnd.Sentence(5), nil
 	case "date":
-		return gofakeit.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Now()).Format("2006-01-02"), nil
+		return gen.rnd.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), dateRangeEnd()).Format("2006-01-02"), nil
 	case "time":
-		return gofakeit.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Now()).Format("15:04:05"), nil
+		return gen.rnd.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), dateRangeEnd()).Format("15:04:05"), nil
 	case "datetime":
-		return gofakeit.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Now()), nil
+		return gen.rnd.DateRange(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), dateRangeEnd()), nil
 	case "json":
-		return fmt.Sprintf(`{"key":"%s","value":"%s"}`, gofakeit.Word(), gofakeit.Word()), nil
+		return fmt.Sprintf(`{"key":"%s","value":"%s"}`, gen.rnd.Word(), gen.rnd.Word()), nil
 	case uniqueSequenceFaker:
 		// Placeholder — overwritten per row by assignUniqueSequences once the
 		// full row count for the table is known.
@@ -898,7 +984,7 @@ func generate(fakerStr string) (interface{}, error) {
 		// Unknown faker: return a word as safe fallback but log a warning so
 		// users notice misconfigured or AI-generated faker strings.
 		logging.Log.Warn().Str("faker", s).Msg("Unknown faker function — falling back to random word")
-		return gofakeit.Word(), nil
+		return gen.rnd.Word(), nil
 	}
 }
 

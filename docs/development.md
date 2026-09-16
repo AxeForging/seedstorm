@@ -100,6 +100,17 @@ scratch databases they create and drop, so they test exactly what a user runs:
 | `TestSequences_*` | The application's own inserts succeed after `seed`, `gaps --fill`, `mirror` top-up and reset (Postgres sequences advanced) |
 | `TestCompareEstimates_*` | `--counts estimate` never reports unknown or stale-zero counts |
 | `TestWebCompareMirrorAndProfiles_realDatabases` | Web API: profiles, explain samples, compare and mirror jobs, saved-connection targets |
+| `TestSeed_ConcurrentWritersMatchSequentialAndKeepForeignKeys` | `--workers 8` writes the 36-table schema with the same volumes as `--workers 1`, every FK enforced by the database (caught parallel MySQL `TRUNCATE` breaking FK checks) |
+| `TestSeed_WideSchemaWithCrossReferences` | A generated 150-table schema (FK fan-out, junctions, self-references, near-cycles) seeds and re-seeds with 8 writers; `wideSchemaDDL` is also the fixture for reviewing the workspace graph at scale |
+| `TestSeed_ProfileIgnoreListIsHonoured` | Ignored tables stay empty; an ignored populated parent is referenced; an ignored empty required parent refuses the run before writing |
+| `TestAccess_Postgres` / `TestAccess_MySQL` | Privilege reports for limited users, group roles and MySQL roles match what the server enforces, including Postgres 13's `CREATE` on `public` through `PUBLIC` |
+| `TestSnapshot_BinaryEndToEnd` / `TestSnapshot_CrossEngine` | `snapshot` files (YAML, JSON, hand-written) as compare/mirror sources, readable errors for malformed files |
+| `TestSeed_ConcurrentGenerationKeepsEveryConstraint` | `--gen-workers 4 --workers 8` on the 36-table, 150-table and Keycloak schemas: every FK, junction key and UNIQUE the database enforces holds, twice in a row |
+| `TestGenerate_SameSeedWritesIdenticalData` | Two `generate --seed 42` runs write byte-identical files, and another seed differs (caught table order following map iteration, dates ending at "now", unseeded sampling) |
+| `TestSeed_WideRowsStayUnderAMemoryBound` | ~20KB rows seed under 300MB on both engines with 1 and 8 writers (one old-style chunk alone was ~400MB) |
+| `TestSeed_ManyTablesDoNotKeepEveryKeyPool` | 100 tables × 30k rows peak 82MB; keeping every key pool peaked at 262MB |
+| `TestWebJobs_SeedProgressIsTruthful` / `…CancelIsPromptAndLeavesAUsableServer` / `…GapsFillAndMirrorReportProgress` / `…ConcurrentSeedJobs` | In-process server on real DBs: progress is monotonic and ends at done == total == `COUNT(*)`, one `Table written` per table, cancel ends within 15s with no queries left, concurrent jobs with viewers joining and leaving stay correct. Run with `-race` (found two job-manager races) |
+| `TestCloneSchema_Objects` | `clone-schema --objects all`: view on view, function, procedure and trigger work on the clone; nothing extra without the flags |
 
 Scratch databases on MySQL are created as `root` (`SEEDSTORM_MYSQL_ROOT_PASSWORD`, default `root`).
 
@@ -107,9 +118,35 @@ Scratch databases on MySQL are created as `root` (`SEEDSTORM_MYSQL_ROOT_PASSWORD
 make dev-up
 make test-integration
 
-# Or directly
-cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
+# Or directly (the race detector matters: the web-job tests run the server in-process)
+cd integration && go test -race -v -tags integration -count=1 ./... -timeout 1500s
 ```
+
+### End-to-end tests (Playwright)
+
+The web UI has Playwright journeys in `e2e/` (pnpm). They build the binary, create `ss_e2e_*` scratch databases on the compose Postgres and MySQL (honouring `SEEDSTORM_PG_PORT` / `SEEDSTORM_MYSQL_PORT`), start `seedstorm serve` on a free port with its config in a temp dir, and tear everything down afterwards.
+
+Versions are pinned: Node in `e2e/.nvmrc`, pnpm in `packageManager`, Playwright and the rest exact in `package.json` + `pnpm-lock.yaml`. `e2e/.npmrc` retries registry downloads quickly; CI caches the Chromium build per Playwright version.
+
+```bash
+make dev-up
+make test-e2e                          # all journeys
+make test-e2e ARGS=tests/compare.spec.ts
+cd e2e && SEEDSTORM_E2E_BIN=../bin/seedstorm pnpm exec playwright test   # reuse a built binary
+SEEDSTORM_E2E_KEEP=1 make test-e2e     # keep the scratch databases for debugging
+```
+
+| Spec | Journey |
+|------|---------|
+| `workspace` | 150-table graph opens readable (zoom ≥ 0.3), search match bar steps through matches, Only matches / Show full graph, Navigator and minimap |
+| `seed` | Select a deep table (auto-locked parents), 20k rows with 4 writers: progress never decreases and ends at N / N, every table ends done, SQL counts match |
+| `clone` | Clone with views, routines and triggers; the trigger fires, the function and view-on-view work on the target |
+| `compare` | Compare, normal-sized Advanced checkbox, export YAML → import file → report restored after navigating away, readable import error, mirror from imported counts with SQL check |
+| `access` | SELECT-only MySQL user: read-only badge, banner, warning chips |
+| `profiles` | Ignore glob with live matches, saved to disk, Ignored tab in the workspace, exported YAML |
+| `mobile` | 390 and 320 wide with search and a wide preview open: no overlap, no sideways scroll |
+
+Specs find elements only through `data-testid` names kept in `e2e/support/selectors.ts`: when you change markup a journey uses, keep or move the test id and update that file. Each journey checks what the user sees and, when it writes, the database via SQL. Static assets are embedded in the binary, so the suite always runs against a fresh build.
 
 Expected output:
 
@@ -137,9 +174,12 @@ All tests run automatically on every PR via GitHub Actions (`.github/workflows/p
 | `validate` | Directory/file structure via structlint |
 | `test` | `go test ./...` + `make build` |
 | `lint` | `golangci-lint` |
-| `integration` | Full 29-table suite plus schema-clone smoke tests on the configured Postgres/MySQL pair |
+| `integration` | Full 29-table suite, scenario evals and schema-clone tests with `-race` on each Postgres/MySQL pair |
+| `e2e` | Playwright journeys against a built binary (Postgres 15, MySQL 8.0) |
 
-The integration job in CI uses `--timeout 900s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
+The integration job in CI uses `-race -timeout 1500s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
+
+Throughput and memory numbers, and how to reproduce them, are in [benchmarks.md](benchmarks.md).
 
 ### Supported database versions
 
@@ -150,11 +190,16 @@ The integration job in CI uses `--timeout 900s` across the database-version matr
 | 15-alpine | 8.0 | default |
 | 17-alpine | 8.4 | |
 
-Override locally:
+To run another pair locally, start throwaway containers on spare ports and point the tests at them. Do **not** switch `POSTGRES_VERSION` / `MYSQL_VERSION` on the existing `docker compose` containers: they reuse the data volumes, an older server refuses (Postgres) or damages (MySQL 5.7 over an 8.0 data directory) them.
 
 ```bash
-POSTGRES_VERSION=17-alpine MYSQL_VERSION=8.4 make dev-up
+docker run -d --name ss-pg13 -e POSTGRES_USER=seedstorm -e POSTGRES_PASSWORD=seedstorm -e POSTGRES_DB=testdb -p 5413:5432 postgres:13-alpine
+docker run -d --name ss-my57 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_USER=seedstorm -e MYSQL_PASSWORD=seedstorm -e MYSQL_DATABASE=testdb -p 3357:3306 mysql:5.7
+cd integration && SEEDSTORM_PG_PORT=5413 SEEDSTORM_MYSQL_PORT=3357 go test -race -tags integration -count=1 ./... -timeout 1500s
+docker rm -f ss-pg13 ss-my57
 ```
+
+The engine-specific suites (`TestMySQLIntegration`, `TestMySQLGaps`, `TestMySQLSchemaCloneDDL` and their Postgres twins) still connect to the default ports; CI runs them against every pair.
 
 ---
 

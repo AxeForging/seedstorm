@@ -117,6 +117,8 @@ func (s *Server) routes() {
 	// JSON / API.
 	s.mux.HandleFunc("/api/graph", s.handleGraphJSON)
 	s.mux.HandleFunc("/api/counts", s.handleCountsJSON)
+	s.mux.HandleFunc("/api/access", s.handleAccessJSON)
+	s.mux.HandleFunc("/api/profiles/ignored", s.handleProfileIgnored)
 	s.mux.HandleFunc("/api/schema", s.handleSchemaJSON)
 	s.mux.HandleFunc("/api/table", s.handleTablePreviewJSON)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobsAPI)
@@ -128,6 +130,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/clone-schema", s.handleCloneSchemaRun)
 	s.mux.HandleFunc("/api/compare", s.handleCompareRun)
 	s.mux.HandleFunc("/api/mirror", s.handleMirrorRun)
+	s.mux.HandleFunc("/api/snapshots/encode", s.handleSnapshotEncode)
+	s.mux.HandleFunc("/api/snapshots/parse", s.handleSnapshotParse)
 	s.mux.HandleFunc("/api/generators", s.handleGeneratorsJSON)
 	s.mux.HandleFunc("/api/profiles", s.handleProfiles)
 	s.mux.HandleFunc("/api/profiles/explain", s.handleProfileExplain)

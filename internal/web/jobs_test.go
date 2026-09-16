@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -195,4 +196,76 @@ func TestManager_SubscribeReceivesPhaseAndProgressLive(t *testing.T) {
 		}
 	}
 	<-job.Done()
+}
+
+// Concurrent seed writers log from several goroutines at once (a table
+// finishing while the generator starts the next one). Log lines must arrive
+// whole and the writer must not corrupt its buffer; this panicked in serve.
+func TestJobWriter_ConcurrentLogLinesStayWhole(t *testing.T) {
+	m := NewManager()
+	const writers, lines = 8, 400
+	job := m.Start(context.Background(), "concurrent", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		log := jobLogger(jc)
+		done := make(chan struct{})
+		for w := 0; w < writers; w++ {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				for i := 0; i < lines; i++ {
+					log.Info().Str("table", "t_writer_table_name").Int("rows", i).Msg("Table written")
+					jc.Progress(i, lines, "label")
+				}
+			}()
+		}
+		for w := 0; w < writers; w++ {
+			<-done
+		}
+		return nil, nil
+	})
+	select {
+	case <-job.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("job did not complete")
+	}
+	got := job.Lines()
+	if len(got) != writers*lines {
+		t.Fatalf("log lines = %d, want %d", len(got), writers*lines)
+	}
+	for _, l := range got {
+		if !strings.HasPrefix(l.Text, "INFO Table written") || !strings.Contains(l.Text, "table=t_writer_table_name") {
+			t.Fatalf("mangled log line %q", l.Text)
+		}
+	}
+}
+
+// Browsers open and close a job's stream while it runs, and poll its status.
+// Subscribers were ranged over outside the lock (a concurrent map write is a
+// fatal, unrecoverable crash) and jobView read fields the job goroutine writes.
+func TestJob_StreamsAndStatusPollsDuringARunAreRaceFree(t *testing.T) {
+	m := NewManager()
+	release := make(chan struct{})
+	job := m.Start(context.Background(), "busy", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		for i := 0; i < 2000; i++ {
+			jc.Progress(i, 2000, "tick")
+		}
+		<-release
+		return map[string]any{"ok": true}, nil
+	})
+	var wg sync.WaitGroup
+	for v := 0; v < 8; v++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				ch, _ := job.Subscribe()
+				job.Unsubscribe(ch)
+				_ = jobView(job)
+			}
+		}()
+	}
+	wg.Wait()
+	close(release)
+	<-job.Done()
+	if v := jobView(job); v["status"] != JobDone {
+		t.Fatalf("status = %v, want done", v["status"])
+	}
 }

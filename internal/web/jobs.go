@@ -209,6 +209,21 @@ func (j *Job) Lines() []LogLine {
 	return out
 }
 
+// JobState is a consistent copy of a job's fields that change while it runs.
+type JobState struct {
+	Status  JobStatus
+	EndedAt time.Time
+	Err     error
+	Result  map[string]any
+}
+
+// State returns the job's changing fields, read under its lock.
+func (j *Job) State() JobState {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return JobState{Status: j.Status, EndedAt: j.EndedAt, Err: j.Err, Result: j.Result}
+}
+
 // Done returns a channel closed when the job completes.
 func (j *Job) Done() <-chan struct{} { return j.closeCh }
 
@@ -223,9 +238,15 @@ func (j *Job) appendEvent(ev Event) {
 	ev.Seq = len(j.events) + 1
 	ev.Time = time.Now()
 	j.events = append(j.events, ev)
-	subs := j.subs
+	// Copy the subscribers while locked: Subscribe and Unsubscribe change the
+	// map as viewers come and go, and ranging over it unlocked is a fatal
+	// concurrent map access.
+	subs := make([]chan Event, 0, len(j.subs))
+	for ch := range j.subs {
+		subs = append(subs, ch)
+	}
 	j.mu.Unlock()
-	for ch := range subs {
+	for _, ch := range subs {
 		select {
 		case ch <- ev:
 		default:
@@ -235,12 +256,17 @@ func (j *Job) appendEvent(ev Event) {
 
 // jobWriter implements JobControl. Each Write call appends one or more log
 // events split on newlines so structured zerolog output stays one-line-per-event.
+// Runners log from several goroutines at once (concurrent seed writers), so
+// the partial-line buffer is guarded.
 type jobWriter struct {
 	job *Job
+	mu  sync.Mutex
 	buf []byte
 }
 
 func (w *jobWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.buf = append(w.buf, p...)
 	for {
 		i := indexByte(w.buf, '\n')

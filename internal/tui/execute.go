@@ -278,7 +278,7 @@ func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
 		}
 
 		if s.truncate {
-			if err := db.Truncate(ctx, conn, s.dbType, s.tables); err != nil {
+			if err := db.TruncateConcurrently(ctx, conn, s.dbType, s.tables, seeder.DefaultWorkers, nil); err != nil {
 				return seedDoneMsg{err: fmt.Errorf("truncate failed: %w", err)}
 			}
 		}
@@ -307,6 +307,7 @@ func startDryRun(s *seedParams) tea.Cmd {
 func (s *seedParams) seedOptions(batchSize int, dryRun bool, onRows func(string, []map[string]interface{}) error) seeder.SeedOptions {
 	return seeder.SeedOptions{
 		Rows: s.rows, EnumRows: s.enumRows, TableRows: s.tableRows, BatchSize: batchSize, DryRun: dryRun,
+		Workers:  seeder.DefaultWorkers,
 		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides},
 		OnRows:   onRows,
 	}

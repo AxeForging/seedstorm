@@ -27,6 +27,9 @@ type RuleSet struct {
 	Description string                `json:"description,omitempty" yaml:"description,omitempty"`
 	Rules       []Rule                `json:"rules,omitempty" yaml:"rules,omitempty"`
 	Tables      map[string]TableRules `json:"tables,omitempty" yaml:"tables,omitempty"`
+	// Ignore lists table globs (case-insensitive, path.Match syntax) that no
+	// run may write: seed, gaps, generate and mirror all leave them untouched.
+	Ignore []string `json:"ignore,omitempty" yaml:"ignore,omitempty"`
 }
 
 // Rule applies an action to every column matching the table and column globs.
@@ -235,6 +238,7 @@ func (rs *RuleSet) validateStructure() []Issue {
 			}
 		}
 	}
+	issues = append(issues, rs.validateIgnoreStructure()...)
 	return issues
 }
 

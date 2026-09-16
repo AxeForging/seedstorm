@@ -41,7 +41,7 @@
   };
 
   function blankDoc() {
-    return { version: 1, name: "", description: "", rules: [], tables: {} };
+    return { version: 1, name: "", description: "", rules: [], tables: {}, ignore: [] };
   }
 
   // ── action helpers ──────────────────────────────────────────────────
@@ -186,9 +186,69 @@
     $("pf-name").value = state.doc.name || "";
     $("pf-description").value = state.doc.description || "";
     renderRules();
+    renderIgnore();
     renderStatus();
     renderSelect();
     scheduleExplain(0);
+  }
+
+  // ── ignored tables ──────────────────────────────────────────────────
+  // ignoredBy lists the tables each glob matched on the active connection,
+  // resolved by the server (the same matcher runs use).
+  function ignoredBy() {
+    const out = new Map();
+    for (const it of state.explain?.ignored || []) {
+      if (!out.has(it.pattern)) out.set(it.pattern, []);
+      out.get(it.pattern).push(it.table);
+    }
+    return out;
+  }
+
+  function isIgnored(table) {
+    return (state.explain?.ignored || []).some((it) => it.table === table);
+  }
+
+  function renderIgnore() {
+    const globs = state.doc.ignore || [];
+    const matches = ignoredBy();
+    $("pf-ignore-empty").hidden = globs.length > 0;
+    $("pf-ignore-list").innerHTML = globs.map((glob, i) => {
+      const tables = matches.get(glob) || [];
+      const hits = state.explain
+        ? (tables.length ? tables.slice(0, 8).map((t) => `<code data-testid="pf-ignore-hit">${esc(t)}</code>`).join(" ") + (tables.length > 8 ? ` +${tables.length - 8}` : "") : '<span class="pf-warn-text">matches no table on this connection</span>')
+        : '<span class="muted">…</span>';
+      return `<li class="pf-ignore-item" data-testid="pf-ignore-item">
+        <code class="pf-ignore-glob" data-testid="pf-ignore-glob">${esc(glob)}</code>
+        <span class="pf-ignore-hits small" data-testid="pf-ignore-hits">${hits}</span>
+        <button type="button" class="btn-ghost pf-ignore-remove" data-ignore-index="${i}" aria-label="Stop ignoring ${esc(glob)}">×</button>
+      </li>`;
+    }).join("");
+    $("pf-ignore-tables").innerHTML = state.tables.map((t) => `<option value="${esc(t)}">`).join("");
+    const ignored = isIgnored(state.table);
+    $("pf-table-ignore").checked = ignored;
+    const pattern = (state.explain?.ignored || []).find((it) => it.table === state.table)?.pattern;
+    const exact = (state.doc.ignore || []).some((g) => g.toLowerCase() === (state.table || "").toLowerCase());
+    // A table ignored by a wider glob can only be un-ignored by editing that glob.
+    $("pf-table-ignore").disabled = !state.table || (ignored && !exact);
+    const note = $("pf-ignored-note");
+    note.hidden = !ignored;
+    note.textContent = ignored ? `Ignored by ${pattern}: runs never write ${state.table}, so its column rules below never apply.` : "";
+  }
+
+  function addIgnore(glob) {
+    const value = String(glob || "").trim();
+    if (!value) return;
+    state.doc.ignore ||= [];
+    if (state.doc.ignore.some((g) => g.toLowerCase() === value.toLowerCase())) return;
+    state.doc.ignore.push(value);
+    renderIgnore();
+    markDirty();
+  }
+
+  function removeIgnore(index) {
+    (state.doc.ignore || []).splice(index, 1);
+    renderIgnore();
+    markDirty();
   }
 
   function renderStatus() {
@@ -441,6 +501,8 @@
     renderIssues(data.issues || []);
     renderColumns(data);
     renderSamples(data);
+    renderIgnore();
+    renderTables();
   }
 
   function pickDefaultTable(tables) {
@@ -492,7 +554,8 @@
     const select = $("pf-table");
     select.innerHTML = state.tables.map((t) => {
       const rules = state.doc.tables?.[t];
-      const marks = rules && (rules.rows || Object.keys(rules.columns || {}).length) ? " · customized" : "";
+      let marks = rules && (rules.rows || Object.keys(rules.columns || {}).length) ? " · customized" : "";
+      if (isIgnored(t)) marks += " · ignored";
       return `<option value="${esc(t)}">${esc(t)}${marks}</option>`;
     }).join("");
     select.value = state.table;
@@ -621,6 +684,7 @@
   function cleanDoc() {
     const doc = JSON.parse(JSON.stringify(state.doc));
     const sentFrom = [];
+    doc.ignore = (doc.ignore || []).map((g) => String(g).trim()).filter(Boolean);
     doc.rules = doc.rules.filter((r, i) => {
       const complete = r.column && (r.setNull || rawOf(r) !== "" || kindOf(r) === "value");
       if (complete) sentFrom.push(i);
@@ -640,6 +704,7 @@
     state.doc = p ? JSON.parse(JSON.stringify(p.rules)) : blankDoc();
     state.doc.rules ||= [];
     state.doc.tables ||= {};
+    state.doc.ignore ||= [];
     state.dirty = false;
     state.lastTemplate = null;
     const url = new URL(location.href);
@@ -698,6 +763,13 @@
       $("pf-yaml-hint").textContent = `Save as a file and run: seedstorm seed --profile ${state.doc.name || "profile"}.yaml  (or by name once saved)`;
       $("pf-yaml-load").hidden = true;
       $("pf-yaml-copy").hidden = false;
+      $("pf-yaml-file-wrap").hidden = true;
+      const link = $("pf-yaml-download");
+      link.hidden = false;
+      if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
+      link.dataset.url = URL.createObjectURL(new Blob([text.value], { type: "text/yaml" }));
+      link.href = link.dataset.url;
+      link.download = profileFilename(state.doc.name);
     } else {
       text.value = "";
       text.readOnly = false;
@@ -707,9 +779,31 @@
       $("pf-yaml-hint").textContent = "Loads into the builder so you can review it before saving.";
       $("pf-yaml-load").hidden = false;
       $("pf-yaml-copy").hidden = true;
+      $("pf-yaml-download").hidden = true;
+      $("pf-yaml-file-wrap").hidden = false;
+      $("pf-yaml-file").value = "";
     }
     dialog.showModal();
     if (mode !== "export") text.focus();
+  }
+
+  // profileFilename turns "Load test (EU)" into "load-test-eu.yaml".
+  function profileFilename(name) {
+    const base = String(name || "profile").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return (base || "profile") + ".yaml";
+  }
+
+  // A chosen or dropped file loads straight into the builder; errors show in
+  // the dialog with the file's text left in place to fix.
+  async function importProfileFile(file) {
+    if (!file) return;
+    if (file.size > 1024 * 1024) {
+      $("pf-yaml-error").hidden = false;
+      $("pf-yaml-error").textContent = "That file is larger than 1MB; a profile is usually a few KB.";
+      return;
+    }
+    $("pf-yaml-text").value = await file.text();
+    await loadYAML();
   }
 
   async function loadYAML() {
@@ -726,6 +820,7 @@
     state.doc = data.rules;
     state.doc.rules ||= [];
     state.doc.tables ||= {};
+    state.doc.ignore ||= [];
     $("pf-yaml-dialog").close();
     renderTables();
     renderAll();
@@ -779,6 +874,15 @@
     $("pf-import").addEventListener("click", () => openYAML("import"));
     $("pf-export").addEventListener("click", () => openYAML("export"));
     $("pf-yaml-load").addEventListener("click", loadYAML);
+    $("pf-yaml-file").addEventListener("change", (ev) => importProfileFile(ev.target.files?.[0]));
+    const fileWrap = $("pf-yaml-file-wrap");
+    fileWrap.addEventListener("dragover", (ev) => { ev.preventDefault(); fileWrap.classList.add("dragging"); });
+    fileWrap.addEventListener("dragleave", () => fileWrap.classList.remove("dragging"));
+    fileWrap.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      fileWrap.classList.remove("dragging");
+      importProfileFile(ev.dataTransfer?.files?.[0]);
+    });
     $("pf-yaml-copy").addEventListener("click", async () => {
       await window.seedstorm.ui.copyText($("pf-yaml-text").value);
       $("pf-yaml-copy").textContent = "Copied";
@@ -797,6 +901,24 @@
       markDirty();
     });
     $("pf-resample").addEventListener("click", () => scheduleExplain(0));
+    $("pf-ignore-form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      addIgnore($("pf-ignore-input").value);
+      $("pf-ignore-input").value = "";
+    });
+    $("pf-ignore-list").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-ignore-index]");
+      if (btn) removeIgnore(Number(btn.dataset.ignoreIndex));
+    });
+    $("pf-table-ignore").addEventListener("change", (ev) => {
+      if (!state.table) return;
+      if (ev.target.checked) {
+        addIgnore(state.table);
+        return;
+      }
+      const i = (state.doc.ignore || []).findIndex((g) => g.toLowerCase() === state.table.toLowerCase());
+      if (i >= 0) removeIgnore(i);
+    });
     $("pf-columns").addEventListener("click", (ev) => {
       const btn = ev.target.closest(".pf-col-edit");
       if (btn) openColumnDialog(btn.dataset.column);

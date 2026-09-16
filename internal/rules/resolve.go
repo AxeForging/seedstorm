@@ -329,6 +329,7 @@ func (rs *RuleSet) Validate(sc *schema.Schema) []Issue {
 			}
 		}
 	}
+	issues = append(issues, rs.validateIgnoreSchema(sc)...)
 	return issues
 }
 

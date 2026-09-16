@@ -21,7 +21,9 @@ func compareCmd() *cli.Command {
 		Usage: "Compare row counts, sizes and columns between two databases",
 		Description: `Reads every table on a source and a target database (read-only) and reports,
 per table, row counts, on-disk size, the difference, and column-name drift.
-Works across engines: tables are matched by name, case-insensitively.`,
+Works across engines: tables are matched by name, case-insensitively.
+The source can be a file made by "seedstorm snapshot" (--source-snapshot)
+instead of a live database.`,
 		Flags: flags,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			mode, err := countMode(cmd)
@@ -32,8 +34,7 @@ Works across engines: tables are matched by name, case-insensitively.`,
 			if err != nil {
 				return err
 			}
-			defer source.Conn.Close()
-			defer target.Conn.Close()
+			defer closeEndpoints(source, target)
 
 			report, err := seeder.Snapshots(ctx, source, target, mode, nil)
 			if err != nil {

@@ -16,7 +16,6 @@ import (
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
-	"github.com/brianvoe/gofakeit/v6"
 	"github.com/urfave/cli/v3"
 )
 
@@ -99,6 +98,8 @@ Use --dry-run to print SQL statements without executing them.`,
 				Aliases: []string{"i"},
 				Usage:   "Launch interactive TUI to select tables and configure seeding",
 			},
+			workersFlag(),
+			genWorkersFlag(),
 			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -121,7 +122,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			seed := cmd.Int("seed")
 
 			if seed != 0 {
-				gofakeit.Seed(int64(seed))
+				faker.SeedRandom(int64(seed))
 				log.Info().Int("seed", seed).Msg("Using fixed random seed")
 			}
 
@@ -172,6 +173,13 @@ Use --dry-run to print SQL statements without executing them.`,
 				return fmt.Errorf("failed to ping database: %w", err)
 			}
 
+			// Every table stays in the preload so FKs can reference rows of ignored
+			// tables; only the kept ones are written.
+			allTables := sortedTables
+			if sortedTables, err = profile.applyIgnore(ctx, dbConn, dbType, sortedTables); err != nil {
+				return err
+			}
+
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
 				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, tableRows))
@@ -189,20 +197,24 @@ Use --dry-run to print SQL statements without executing them.`,
 					}
 				}
 				log.Info().Int("tables", len(sortedTables)).Msg("Truncating tables")
-				if err := db.Truncate(ctx, dbConn, dbType, sortedTables); err != nil {
+				if err := db.TruncateConcurrently(ctx, dbConn, dbType, sortedTables, cmd.Int("workers"), nil); err != nil {
 					return fmt.Errorf("truncate failed: %w", err)
 				}
 				log.Info().Msg("Truncate complete")
 			}
 
-			// Generate and insert chunk by chunk: memory stays flat for any --rows.
+			// Rows are generated and written chunk by chunk (memory stays flat for
+			// any --rows), on --workers connections at once.
 			start := time.Now()
-			log.Info().Int("rows", rows).Msg("Generating fake data")
+			log.Info().Int("tables", len(sortedTables)).Int("rows", rows).Int("workers", cmd.Int("workers")).Msg("Seeding: generating and writing in chunks")
 			if !dryRun {
 				defer syncSequences(ctx, dbConn, dbType, sortedTables)
 			}
-			res, err := seeder.Seed(ctx, dbConn, dbType, s, sortedTables, sortedTables, seeder.SeedOptions{
+			onProgress, onTable := progressLogger(time.Now)
+			res, err := seeder.Seed(ctx, dbConn, dbType, s, allTables, sortedTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
+				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
+				GenWorkers: cmd.Int("gen-workers"), Reproducible: cmd.Int("seed") != 0,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,

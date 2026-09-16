@@ -8,7 +8,7 @@ import (
 func TestPoolSampler_LargeTableIsSampledButKeepsTheMaximumLast(t *testing.T) {
 	const total, limit = 10_000, 100
 	order := rand.Perm(total)
-	p := newPoolSampler(nil, limit)
+	p := newPoolSampler(nil, limit, defaultGen.rnd)
 	for _, n := range order {
 		p.offer(int64(n + 1))
 	}
@@ -42,7 +42,7 @@ func TestPoolSampler_LargeTableIsSampledButKeepsTheMaximumLast(t *testing.T) {
 }
 
 func TestPoolSampler_SmallTableKeepsEveryValue(t *testing.T) {
-	p := newPoolSampler([]interface{}{int64(9)}, 100)
+	p := newPoolSampler([]interface{}{int64(9)}, 100, defaultGen.rnd)
 	for _, n := range []int64{3, 7, 1} {
 		p.offer(n)
 	}
@@ -63,7 +63,7 @@ func TestCapPool_ShrinksToLimitKeepingTheLastID(t *testing.T) {
 	for i := range pool {
 		pool[i] = i + 1
 	}
-	capped := capPool(pool, 10)
+	capped := capPool(pool, 10, defaultGen.rnd)
 	if len(capped) != 10 || capped[9] != 1000 {
 		t.Fatalf("capped = %v, want 10 values ending with 1000", capped)
 	}
@@ -74,7 +74,7 @@ func TestCapPool_ShrinksToLimitKeepingTheLastID(t *testing.T) {
 		}
 		seen[v] = true
 	}
-	if small := []interface{}{1, 2}; len(capPool(small, 10)) != 2 {
+	if small := []interface{}{1, 2}; len(capPool(small, 10, defaultGen.rnd)) != 2 {
 		t.Fatal("a pool under the limit must be returned unchanged")
 	}
 }

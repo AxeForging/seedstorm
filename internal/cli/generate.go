@@ -11,7 +11,6 @@ import (
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
-	"github.com/brianvoe/gofakeit/v6"
 	"github.com/urfave/cli/v3"
 )
 
@@ -87,7 +86,7 @@ func generateCmd() *cli.Command {
 			seed := cmd.Int("seed")
 
 			if seed != 0 {
-				gofakeit.Seed(int64(seed))
+				faker.SeedRandom(int64(seed))
 				log.Info().Int("seed", seed).Msg("Using fixed random seed")
 			}
 
@@ -113,6 +112,10 @@ func generateCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
+			allTables := sortedTables
+			if sortedTables, err = profile.applyIgnore(ctx, nil, dbType, sortedTables); err != nil {
+				return err
+			}
 
 			// Rows stream from the generator into the output, so any volume
 			// writes in flat memory.
@@ -126,7 +129,7 @@ func generateCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := seeder.Seed(ctx, nil, dbType, s, sortedTables, sortedTables, seeder.SeedOptions{
+			if _, err := seeder.Seed(ctx, nil, dbType, s, allTables, sortedTables, seeder.SeedOptions{
 				Rows: rows, TableRows: tableRows, DryRun: true,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,

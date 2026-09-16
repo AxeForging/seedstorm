@@ -2,7 +2,6 @@ package faker
 
 import (
 	"fmt"
-	"math/rand"
 	"sort"
 	"strings"
 
@@ -83,7 +82,7 @@ func freeColumns(table schema.Table, group []string, overrides map[string]Column
 // generated rows and the tuples already stored. A colliding row gets its free
 // columns regenerated; a row that stays in collision is dropped. It returns the
 // kept rows and how many rows each group dropped.
-func enforceUniqueGroups(rows []map[string]interface{}, table schema.Table, overrides map[string]ColumnOverride, stored map[string]*keySet) ([]map[string]interface{}, map[string]int) {
+func (gen generator) enforceUniqueGroups(rows []map[string]interface{}, table schema.Table, overrides map[string]ColumnOverride, stored map[string]*keySet) ([]map[string]interface{}, map[string]int) {
 	groups := validGroups(table)
 	if len(groups) == 0 {
 		return rows, nil
@@ -110,8 +109,8 @@ func enforceUniqueGroups(rows []map[string]interface{}, table schema.Table, over
 			if len(free) == 0 {
 				break
 			}
-			colName := free[rand.Intn(len(free))] //nolint:gosec // test data, not security
-			v, err := generate(table.Columns[colName].Faker)
+			colName := free[gen.rnd.Number(0, len(free)-1)]
+			v, err := gen.generate(table.Columns[colName].Faker)
 			if err != nil {
 				break
 			}

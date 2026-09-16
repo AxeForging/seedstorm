@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/faker"
@@ -80,11 +81,13 @@ func (s *Server) handleComparePage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "compare", pageData{Title: "Compare", Active: "compare"})
 }
 
-// CompareRequest compares two connections read-only.
+// CompareRequest compares two connections read-only. SourceSnapshot, when
+// set, replaces the source connection with an imported counts file.
 type CompareRequest struct {
-	Source ConnRef `json:"source"`
-	Target ConnRef `json:"target"`
-	Counts string  `json:"counts"`
+	Source         ConnRef           `json:"source"`
+	SourceSnapshot *compare.Snapshot `json:"sourceSnapshot,omitempty"`
+	Target         ConnRef           `json:"target"`
+	Counts         string            `json:"counts"`
 }
 
 func (s *Server) handleCompareRun(w http.ResponseWriter, r *http.Request) {
@@ -98,11 +101,11 @@ func (s *Server) runCompare(ctx context.Context, _ *Session, req CompareRequest,
 		return nil, err
 	}
 	jc.Phase("connect")
-	source, target, err := s.resolvePair(req.Source, req.Target)
+	srcEP, source, err := s.sourceEndpoint(ctx, req.Source, req.SourceSnapshot)
 	if err != nil {
 		return nil, err
 	}
-	srcEP, _, err := endpointFor(ctx, source, false)
+	target, err := s.resolveConnection(req.Target, "target")
 	if err != nil {
 		return nil, err
 	}
@@ -121,37 +124,48 @@ func (s *Server) runCompare(ctx context.Context, _ *Session, req CompareRequest,
 	jc.Phase("done")
 	t := report.Totals
 	log.Info().Int("same", t.Same).Int("differs", t.Differs).Int("source_only", t.SourceOnly).Int("target_only", t.TargetOnly).Msg("Comparison complete")
-	return map[string]any{"report": report, "sameConnection": source.ID == target.ID}, nil
+	return map[string]any{"report": report, "sameConnection": source != nil && source.ID == target.ID, "sourceIsSnapshot": source == nil}, nil
 }
 
-func (s *Server) resolvePair(src, tgt ConnRef) (*Session, *Session, error) {
-	source, err := s.resolveConnection(src, "source")
-	if err != nil {
-		return nil, nil, err
+// sourceEndpoint is the source side of a compare or mirror: an imported
+// snapshot when one is given (the returned session is nil), else a connection.
+func (s *Server) sourceEndpoint(ctx context.Context, ref ConnRef, snap *compare.Snapshot) (seeder.Endpoint, *Session, error) {
+	if snap != nil {
+		if len(snap.Tables) == 0 {
+			return seeder.Endpoint{}, nil, fmt.Errorf("the imported counts have no tables")
+		}
+		label := snap.Label
+		if label == "" {
+			label = "imported counts"
+		}
+		return seeder.Endpoint{Snapshot: snap, Label: label, DBType: snap.DBType}, nil, nil
 	}
-	target, err := s.resolveConnection(tgt, "target")
+	sess, err := s.resolveConnection(ref, "source")
 	if err != nil {
-		return nil, nil, err
+		return seeder.Endpoint{}, nil, err
 	}
-	return source, target, nil
+	ep, _, err := endpointFor(ctx, sess, false)
+	return ep, sess, err
 }
 
 // MirrorRequest seeds the target so its volumes follow the source.
 type MirrorRequest struct {
-	Source       ConnRef  `json:"source"`
-	Target       ConnRef  `json:"target"`
-	Counts       string   `json:"counts"`
-	Mode         string   `json:"mode"`
-	Scale        float64  `json:"scale"`
-	MaxRows      int64    `json:"maxRows"`
-	ParentRows   int64    `json:"parentRows"`
-	Tables       []string `json:"tables,omitempty"`
-	ProfileID    string   `json:"profileId,omitempty"`
-	BatchSize    int      `json:"batchSize"`
-	SelfRefDepth *int     `json:"selfRefDepth,omitempty"`
-	StopOnError  bool     `json:"stopOnError"`
-	DryRun       bool     `json:"dryRun"`
-	PreviewRows  int      `json:"previewRows"`
+	Source         ConnRef           `json:"source"`
+	SourceSnapshot *compare.Snapshot `json:"sourceSnapshot,omitempty"`
+	Workers        int               `json:"workers,omitempty"`
+	Target         ConnRef           `json:"target"`
+	Counts         string            `json:"counts"`
+	Mode           string            `json:"mode"`
+	Scale          float64           `json:"scale"`
+	MaxRows        int64             `json:"maxRows"`
+	ParentRows     int64             `json:"parentRows"`
+	Tables         []string          `json:"tables,omitempty"`
+	ProfileID      string            `json:"profileId,omitempty"`
+	BatchSize      int               `json:"batchSize"`
+	SelfRefDepth   *int              `json:"selfRefDepth,omitempty"`
+	StopOnError    bool              `json:"stopOnError"`
+	DryRun         bool              `json:"dryRun"`
+	PreviewRows    int               `json:"previewRows"`
 }
 
 func (s *Server) handleMirrorRun(w http.ResponseWriter, r *http.Request) {
@@ -173,11 +187,11 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		return nil, err
 	}
 	jc.Phase("connect")
-	source, target, err := s.resolvePair(req.Source, req.Target)
+	srcEP, _, err := s.sourceEndpoint(ctx, req.Source, req.SourceSnapshot)
 	if err != nil {
 		return nil, err
 	}
-	srcEP, _, err := endpointFor(ctx, source, false)
+	target, err := s.resolveConnection(req.Target, "target")
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +223,11 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		"runId":  job.RunID,
 		"dryRun": req.DryRun,
 		"target": tgtEP.Label,
+		// A snapshot source cannot be checked against the target.
+		"sameDatabaseUnchecked": job.SameDatabaseUnchecked,
+	}
+	if job.SameDatabaseUnchecked {
+		log.Warn().Msg("Source is an imported counts file: cannot check that source and target are different databases")
 	}
 	log.Info().Int64("rows", job.Plan.TotalInsert).Int("tables", len(job.Plan.Entries)).Int("truncate", len(job.Plan.Truncate)).Msg("Mirror planned")
 	depth := requestSelfRefDepth(req.SelfRefDepth)
@@ -232,9 +251,12 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 	}
 
 	jc.Phase("seed")
+	meter := seeder.NewMeter(time.Now())
+	var lastTick time.Time
 	run, runErr := job.Run(ctx, seeder.Options{
 		BatchSize:   req.BatchSize,
 		StopOnError: req.StopOnError,
+		Workers:     requestWorkers(req.Workers),
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: depth,
 			OnWarning: func(w faker.GenerationWarning) {
@@ -242,7 +264,12 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 			},
 		},
 		OnProgress: func(p seeder.Progress) {
-			jc.Progress(p.TableIndex, p.Tables, fmt.Sprintf("%s %d/%d", p.Table, p.Inserted, p.Requested))
+			now := time.Now()
+			est := meter.Observe(now, p.RowsDone, p.RowsTotal)
+			if now.Sub(lastTick) >= progressEvery || p.Inserted >= p.Requested {
+				lastTick = now
+				jc.Progress(int(est.Done), int(est.Total), progressLabel(p, est))
+			}
 			if p.Inserted >= p.Requested {
 				log.Info().Str("table", p.Table).Int64("rows", p.Inserted).Msg("Filling table")
 			}
