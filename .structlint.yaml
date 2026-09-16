@@ -48,6 +48,8 @@ file_naming_pattern:
     - "LICENSE*"
     - "Makefile"
     - ".gitignore"
+    - ".npmrc"
+    - ".nvmrc"
     - ".golangci.yml"
     - ".goreleaser.yml"
     - ".structlint.yaml"
