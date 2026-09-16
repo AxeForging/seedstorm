@@ -51,6 +51,9 @@ type Session struct {
 	schema    *schema.Schema
 	cachedAt  time.Time
 	createdAt time.Time
+
+	accessMu sync.Mutex
+	access   *accessView
 }
 
 // SessionRegistry holds active sessions keyed by their server-issued ID.

@@ -147,8 +147,8 @@
 .pf-issues code { color: var(--text); }
 
 /* ── explorer ── */
-.pf-explorer-bar { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 10px; }
-.pf-explorer-bar select, .pf-explorer-bar input { min-height: 38px; width: 100%; }
+.pf-explorer-bar { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 10px; }
+.pf-explorer-bar select, .pf-explorer-bar input:not([type="checkbox"]) { min-height: 38px; width: 100%; }
 .pf-columns-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); max-height: 48vh; overflow-y: auto; }
 .pf-columns { width: 100%; border-collapse: collapse; font-size: 12px; }
 .pf-columns th {
@@ -254,3 +254,39 @@
    holds the explorer open and the whole page scrolls sideways. */
 .pf-rules > *, .pf-explorer > *, .pf-samples > *, .pf-rule > *, .pf-meta > * { min-width: 0; }
 .pf-section-head .btn-ghost { white-space: nowrap; flex: none; }
+
+/* ── ignored tables ── */
+.pf-ignore { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.pf-ignore .pf-section-head { margin: 0; }
+.pf-ignore-add { display: flex; gap: 6px; }
+.pf-ignore-add input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
+.pf-ignore-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pf-ignore-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.pf-ignore-glob { font-size: 12px; font-weight: 600; }
+.pf-ignore-hits { overflow-wrap: anywhere; line-height: 1.7; }
+.pf-ignore-hits code { font-size: 11px; background: var(--bg); padding: 0 4px; border-radius: 4px; }
+.pf-ignore-remove { padding: 2px 9px; }
+.pf-warn-text { color: var(--warn); }
+.pf-ignore-toggle { align-self: end; min-height: 38px; align-items: center; }
+.pf-ignored-note { margin: 0 0 8px; color: var(--warn); }
+
+/* ── profile file import ── */
+.pf-yaml-file {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.pf-yaml-file.dragging { border-color: var(--accent); background: rgba(121,216,179,0.06); }
+.pf-yaml-file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pf-yaml-file input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; }

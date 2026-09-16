@@ -28,6 +28,8 @@ seedstorm/
 │   │   ├── export.go           # export command
 │   │   ├── compare.go          # compare command
 │   │   ├── mirror.go           # mirror command
+│   │   ├── snapshot.go         # snapshot command (row counts to JSON/YAML)
+│   │   ├── progress.go         # --workers flag, progress log lines, profile ignore
 │   │   ├── profile.go          # profile command + shared --profile flag/loading
 │   │   ├── endpoints.go        # --source-*/--target-* flags and connection opening
 │   │   └── helpers.go          # Shared helpers (buildInsert, normalizeDBType)
@@ -40,6 +42,9 @@ seedstorm/
 │   │   ├── stats.go            # Table sizes, estimated counts, column lists, DB identity
 │   │   ├── copy.go             # CopyRows: Postgres COPY for a chunk of rows
 │   │   ├── sequences.go        # SyncSequences: move Postgres sequences past inserted ids
+│   │   ├── access.go           # InspectAccess: the connected user's privileges (pg has_*_privilege, mysql SHOW GRANTS)
+│   │   ├── objects.go          # Views, routines, triggers for clone-schema (BuildCloneDDL)
+│   │   ├── transient.go        # IsTransient: deadlock / lock-timeout errors a writer may retry
 │   │   └── types.go            # Shared db types (Table, Column, FK, …)
 │   ├── faker/
 │   │   ├── faker.go            # Generate / GenerateFiltered — core data generation
@@ -53,12 +58,14 @@ seedstorm/
 │   │   └── *_test.go           # Unit tests alongside production files
 │   ├── graph/
 │   │   ├── graph.go            # Dependency graph (Build, TopologicalSort, RenderPlan)
+│   │   ├── ignore.go           # ApplyIgnore: drop ignored tables, refuse empty required parents
 │   │   └── graph_test.go       # Unit tests
 │   ├── rules/                  # Seed profile rules: model, templates, resolve/validate/compile
 │   ├── profiles/               # Saved profile store (profiles.yaml) + Resolve(file|name)
-│   ├── compare/                # Snapshots, Diff, PlanMirror, text renderers (never writes)
+│   ├── compare/                # Snapshots, Diff, PlanMirror, snapshot files (Encode/ParseSnapshot), renderers (never writes)
 │   ├── dataio/                 # Streaming data documents: writers (yaml/json/sql/csv), ReadTables
-│   ├── seeder/                 # Seed (strict chunked seed/gaps), Fill (resilient mirror inserts), MirrorJob, Preview
+│   ├── seeder/                 # Seed (strict chunked seed/gaps), Fill (resilient mirror inserts), MirrorJob, Preview,
+│   │                           # writer.go (FK-gated concurrent writes), meter.go (rate/ETA)
 │   ├── fsutil/                 # WriteFileAtomic for on-disk stores
 │   ├── tui/                    # Bubble Tea flows (seed, gaps, generate, clone, mirror)
 │   ├── web/                    # serve: handlers_*.go per area, templates/, static/ (page.js + page.css per page)
@@ -142,6 +149,12 @@ CLI, TUI and web never re-implement logic: value rules compile in `internal/rule
 ### Value rules (seed profiles)
 
 `rules.RuleSet.Compile(schema, runID)` yields per-column `faker.ColumnOverride` funcs. `GenerateFilteredWithOptions` applies them **after** PKs, FKs, self-references and sequences are final — rule targets are never PK/FK/generated columns, so nothing references the values being replaced. Resolution: explicit table column rule > first compatible pattern rule > automatic. `GenerateOptions.RowOffset` keeps `{{seq}}` increasing when a table is generated in chunks.
+
+### Concurrent writes (`--workers`)
+
+Generation stays single-threaded (the `faker.Stream` is stateful and cheap); only writes are concurrent. `seeder.writer` gates each table on every FK parent in the run (nullable included) finishing its writes, keeps a self-referencing table's chunks sequential and in order, and splits other chunks across workers. Tables wait in their own dispatcher goroutine, never in a worker, and a row budget blocks the generator so memory stays flat. `Workers <= 1` keeps the old strictly sequential path. Progress (`OnProgress`) fires per written piece with run totals; `seeder.Meter` turns it into rate/ETA.
+
+Do not parallelise MySQL `TRUNCATE`: concurrent truncates of FK-linked tables (FK checks off) made later inserts fail FK checks against rows that existed. `db.TruncateConcurrently` keeps MySQL on one pinned connection.
 
 ### Mirror and resilient inserts
 

@@ -160,3 +160,26 @@ func TestResolve_FileThenSavedNameWithHelpfulError(t *testing.T) {
 		t.Fatalf("empty ref = %v, %v", rs, err)
 	}
 }
+
+func TestStore_IgnoreListSurvivesReopenAndBlankGlobIsRejected(t *testing.T) {
+	s := newStore(t)
+	withIgnore := loadtest()
+	withIgnore.Ignore = []string{"flyway_*", "*_audit"}
+	if _, err := s.Save("", withIgnore); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewStore(s.Path()).Get("loadtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Rules.Ignore, ",") != "flyway_*,*_audit" {
+		t.Fatalf("reopened ignore = %v", got.Rules.Ignore)
+	}
+
+	blank := loadtest()
+	blank.Name = "blank"
+	blank.Ignore = []string{" "}
+	if _, err := s.Save("", blank); err == nil || !strings.Contains(err.Error(), "ignore[0]") {
+		t.Fatalf("blank ignore glob err = %v", err)
+	}
+}

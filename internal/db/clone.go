@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // CloneOptions controls schema-only cloning from one connected database to
@@ -16,12 +18,18 @@ import (
 type CloneOptions struct {
 	DropExisting bool
 	DryRun       bool
+	// Objects selects views, routines and triggers to clone after tables.
+	Objects CloneObjects
 }
 
 // CloneResult describes the schema copy operation.
 type CloneResult struct {
 	Tables     int
 	Statements []string
+	// Objects counts cloned views, routines and triggers.
+	Objects int
+	// Skipped lists source objects that could not be cloned, with reasons.
+	Skipped []SkippedObject
 }
 
 // CloneSchema introspects source and creates the same table structure in target.
@@ -33,11 +41,15 @@ func CloneSchema(ctx context.Context, sourceType, sourceDSN, targetType, targetD
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("introspect source: %w", err)
 	}
-	stmts, err := BuildSchemaDDL(tables, sourceType, opts.DropExisting)
+	objects, err := LoadObjects(ctx, sourceType, sourceDSN, opts.Objects)
+	if err != nil {
+		return CloneResult{}, fmt.Errorf("introspect source objects: %w", err)
+	}
+	stmts, err := BuildCloneDDL(tables, objects, sourceType, opts.DropExisting)
 	if err != nil {
 		return CloneResult{}, err
 	}
-	result := CloneResult{Tables: len(tables), Statements: stmts}
+	result := CloneResult{Tables: len(tables), Statements: stmts, Objects: len(objects.Objects), Skipped: objects.Skipped}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -66,9 +78,8 @@ func CloneSchema(ctx context.Context, sourceType, sourceDSN, targetType, targetD
 }
 
 // BuildSchemaDDL converts seedstorm's introspection metadata into executable
-// schema DDL. It covers the constraints seedstorm understands and deliberately
-// omits unsupported database objects such as indexes, views, triggers, and
-// procedural code.
+// schema DDL for tables, foreign keys, indexes and comments. Views, routines
+// and triggers are appended by BuildCloneDDL.
 func BuildSchemaDDL(tables []Table, dbType string, dropExisting bool) ([]string, error) {
 	if dbType != "pgx" && dbType != "mysql" {
 		return nil, fmt.Errorf("unsupported database type %q", dbType)
@@ -117,28 +128,89 @@ func ExecSchemaDDLWithProgress(ctx context.Context, conn *sql.DB, dbType string,
 		}
 		progress(done, len(stmts), ddlProgressLabel(stmt))
 	}
+	done := 0
+	markDone := func(stmt string) {
+		done++
+		emit(done, stmt)
+	}
 	if dbType == "pgx" {
 		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin schema clone: %w", err)
 		}
-		for i, stmt := range stmts {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("execute DDL %q: %w", stmt, err)
-			}
-			emit(i+1, stmt)
+		if err := execDDLSequence(ctx, tx, stmts, true, markDone); err != nil {
+			_ = tx.Rollback()
+			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit schema clone: %w", err)
 		}
 		return nil
 	}
-	for i, stmt := range stmts {
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("execute DDL %q: %w", stmt, err)
+	if err := execDDLSequence(ctx, conn, stmts, false, markDone); err != nil {
+		var myErr *mysql.MySQLError
+		if errors.As(err, &myErr) && myErr.Number == 1419 {
+			return fmt.Errorf("%w (creating routines or triggers with binary logging on needs SUPER or log_bin_trust_function_creators=1 on the target server)", err)
 		}
-		emit(i+1, stmt)
+		return err
+	}
+	return nil
+}
+
+type ddlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// execDDLSequence runs statements in order. Consecutive CREATE VIEW statements
+// are retried in passes so views built on other views succeed regardless of
+// name order; inside a Postgres transaction each attempt is wrapped in a
+// savepoint so a failed attempt does not abort the transaction.
+func execDDLSequence(ctx context.Context, exec ddlExecer, stmts []string, savepoints bool, done func(string)) error {
+	if savepoints {
+		for _, stmt := range stmts {
+			if isRoutineCreate(stmt) {
+				// Routine bodies may reference views created later in the clone.
+				if _, err := exec.ExecContext(ctx, "SET LOCAL check_function_bodies = off"); err != nil {
+					return fmt.Errorf("disable function body checks: %w", err)
+				}
+				break
+			}
+		}
+	}
+	for i := 0; i < len(stmts); {
+		if !isViewCreate(stmts[i]) {
+			if _, err := exec.ExecContext(ctx, stmts[i]); err != nil {
+				return fmt.Errorf("execute DDL %q: %w", stmts[i], err)
+			}
+			done(stmts[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(stmts) && isViewCreate(stmts[j]) {
+			j++
+		}
+		attempt := func(stmt string) error {
+			if !savepoints {
+				_, err := exec.ExecContext(ctx, stmt)
+				return err
+			}
+			if _, err := exec.ExecContext(ctx, "SAVEPOINT seedstorm_view"); err != nil {
+				return err
+			}
+			if _, err := exec.ExecContext(ctx, stmt); err != nil {
+				if _, rbErr := exec.ExecContext(ctx, "ROLLBACK TO SAVEPOINT seedstorm_view"); rbErr != nil {
+					return errors.Join(err, rbErr)
+				}
+				return err
+			}
+			_, err := exec.ExecContext(ctx, "RELEASE SAVEPOINT seedstorm_view")
+			return err
+		}
+		if err := execInPasses(stmts[i:j], attempt, done); err != nil {
+			return err
+		}
+		i = j
 	}
 	return nil
 }
@@ -159,13 +231,23 @@ func ddlProgressLabel(stmt string) string {
 		return "fk " + strings.Trim(parts[2], "`\"")
 	}
 	if len(parts) >= 3 && strings.EqualFold(parts[0], "DROP") && strings.EqualFold(parts[1], "TABLE") {
-		return "drop " + strings.Trim(parts[len(parts)-1], "`\"")
+		name := parts[len(parts)-1]
+		if len(parts) >= 5 && strings.EqualFold(parts[2], "IF") && strings.EqualFold(parts[3], "EXISTS") {
+			name = parts[4]
+		}
+		return "drop " + strings.Trim(name, "`\"")
 	}
 	if len(parts) >= 3 && strings.EqualFold(parts[0], "CREATE") && strings.EqualFold(parts[1], "INDEX") {
 		return "index " + strings.Trim(parts[2], "`\"")
 	}
 	if len(parts) >= 4 && strings.EqualFold(parts[0], "CREATE") && strings.EqualFold(parts[1], "UNIQUE") && strings.EqualFold(parts[2], "INDEX") {
 		return "index " + strings.Trim(parts[3], "`\"")
+	}
+	if verb, kind, name, ok := objectStatement(stmt); ok {
+		if verb == "drop" {
+			return "drop " + string(kind) + " " + name
+		}
+		return string(kind) + " " + name
 	}
 	if strings.EqualFold(parts[0], "COMMENT") {
 		return "comment"

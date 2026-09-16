@@ -1575,8 +1575,8 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .ws-actionbar {
   grid-column: 1 / -1;
   grid-row: 2 / 3;
-  display: grid;
-  grid-template-columns: minmax(360px, auto) minmax(320px, 1fr) minmax(300px, auto) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 10px;
   background: var(--panel);
@@ -1681,10 +1681,32 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .field-tight.inline input {
   accent-color: var(--accent);
 }
-.ws-actionbar > #ws-run {
-  min-width: 150px;
+.ws-run-modes { flex: 1 1 400px; }
+.ws-config { flex: 0 1 auto; }
+.ws-risk { flex: 1 1 380px; }
+.ws-clone { flex: 1 1 520px; flex-wrap: wrap; }
+.ws-run-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 170px;
+  min-width: 0;
+}
+.ws-run-wrap > #ws-run {
+  flex: 1;
   justify-content: center;
-  align-self: stretch;
+  min-height: 44px;
+}
+.ws-run-note {
+  margin: 0;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 @keyframes ws-pulse {
@@ -1775,7 +1797,10 @@ textarea { font-family: var(--mono); font-size: 12px; }
   .ws-mode,
   .ws-config,
   .ws-risk,
+  .ws-run-wrap,
   #ws-run { width: 100%; }
+  .ws-run-wrap { flex-basis: auto; }
+  .ws-tuning-panel { left: 0; right: auto; }
   .ws-mode { grid-template-columns: 1fr; }
   .ws-mode-pill { white-space: nowrap; }
 }
@@ -2064,3 +2089,264 @@ textarea { font-family: var(--mono); font-size: 12px; }
 }
 .ws-profile-link { color: var(--accent); margin-left: 4px; font-size: 11px; text-decoration: none; }
 .ws-profile-link:hover { text-decoration: underline; }
+
+/* ── Header: live connections and access ──────────────────────────────── */
+.conn-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(121,216,179,0.12);
+  color: var(--accent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.access-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.access-badge.level-full { color: var(--ok); border-color: rgba(121,216,179,0.35); }
+.access-badge.level-limited { color: var(--warn); border-color: rgba(216,181,111,0.45); }
+.access-badge.level-read-only,
+.access-badge.level-none { color: var(--err); border-color: rgba(255,138,122,0.45); }
+.conn-menu-access {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border-left: 3px solid var(--line);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.conn-menu-access.level-full { border-left-color: var(--ok); }
+.conn-menu-access.level-limited { border-left-color: var(--warn); }
+.conn-menu-access.level-read-only,
+.conn-menu-access.level-none { border-left-color: var(--err); }
+@media (max-width: 560px) {
+  .conn-host, .conn-count { display: none; }
+}
+
+/* ── Workspace: access banner ──────────────────────────────────────────── */
+.ws-access {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  font-size: 12px;
+}
+.ws-access.level-full { border-left-color: var(--ok); }
+.ws-access.level-limited { border-left-color: var(--warn); }
+.ws-access.level-read-only,
+.ws-access.level-none { border-left-color: var(--err); }
+.ws-access.unknown { color: var(--muted); }
+.ws-access-head { display: flex; align-items: center; gap: 8px; }
+.ws-access-head > div { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ws-access-head strong { font-size: 12px; }
+.ws-access-head .muted { overflow-wrap: anywhere; }
+.ws-access-head .btn-ghost { padding: 2px 8px; font-size: 12px; }
+.access-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.level-full .access-dot { background: var(--ok); }
+.level-limited .access-dot { background: var(--warn); }
+.level-read-only .access-dot,
+.level-none .access-dot { background: var(--err); }
+.ws-access-details summary { cursor: pointer; color: var(--muted); margin-top: 4px; }
+.ws-access-details p { margin: 6px 0 0; line-height: 1.7; }
+.ws-access-details code { font-size: 11px; background: var(--bg); padding: 0 4px; border-radius: 4px; }
+
+/* ── Workspace: search, navigator, minimap ─────────────────────────────── */
+.ws-search-count {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+.ws-search:has(.ws-search-count:not(:empty)) input { padding-right: 104px; }
+.ws-view-toggle {
+  display: flex;
+  gap: 2px;
+  padding-right: 4px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(231,236,232,0.08);
+}
+.ws-view-toggle .btn-ghost { min-width: 0; padding-inline: 9px; }
+.ws-view-toggle .btn-ghost[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: rgba(121,216,179,0.45);
+  background: rgba(121,216,179,0.1);
+}
+.ws-minimap {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2;
+  width: 220px;
+  height: 150px;
+  background: rgba(11,15,18,0.9);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+.ws-minimap canvas { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.ws-minimap canvas:active { cursor: grabbing; }
+.ws-minimap-zoom {
+  position: absolute;
+  right: 6px;
+  top: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+.dot-nowrite { color: #ff8a7a; border-style: dotted; }
+.dot-ignored { color: #6b7280; border-style: dashed; opacity: 0.7; }
+@media (max-width: 900px) {
+  .ws-canvas-tools { flex-wrap: wrap; left: 12px; justify-content: flex-end; }
+  .ws-minimap { width: 160px; height: 110px; }
+  .ws-legend { display: none; }
+}
+
+/* ── Workspace: ignored tables tab ─────────────────────────────────────── */
+.ws-tab b {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 0 5px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.ws-ignored-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ws-ignored-table th {
+  text-align: left;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.ws-ignored-table td { padding: 5px 6px; border-bottom: 1px solid rgba(231,236,232,0.05); overflow-wrap: anywhere; }
+.ws-ignored-table .num { text-align: right; font-family: var(--mono); }
+.ws-ignored-edit { margin-top: 10px; display: inline-flex; font-size: 12px; }
+
+/* ── Workspace: action bar details ─────────────────────────────────────── */
+.ws-mode-pill { position: relative; }
+.ws-mode-warn {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--warn);
+  color: #1a1206;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+}
+.ws-mode-pill.has-warning { border-color: rgba(216,181,111,0.35); }
+.ws-tuning { position: relative; }
+.ws-tuning > summary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.ws-tuning > summary::-webkit-details-marker { display: none; }
+.ws-tuning > summary .muted { font-size: 11px; }
+.ws-tuning[open] > summary { border-color: rgba(121,216,179,0.45); }
+.ws-tuning-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 240px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.45);
+}
+.ws-tuning-panel input[type="number"] { width: 100%; }
+.ws-tuning-panel p { grid-column: 1 / -1; margin: 0; line-height: 1.35; }
+.ws-clone-objects {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.ws-clone-objects-label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Job progress: numbers over the bar ────────────────────────────────── */
+.job-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.job-progress-head strong { font-weight: 600; }
+.job-progress-wrap:has(.job-progress-head) { flex-direction: column; align-items: stretch; gap: 4px; }
+.job-progress-wrap:has(.job-progress-head) .job-progress { flex: none; width: 100%; }
+.ws-sel-item .ws-sel-tag.ignored { background: rgba(107,114,128,0.18); color: #9aa3ad; }
+.ws-sel-item .ws-sel-tag.no-write { background: rgba(255,138,122,0.14); color: var(--err); }
+
+/* ── Action bar: one row on desktop ────────────────────────────────────── */
+@media (min-width: 901px) {
+  .ws-actionbar { flex-wrap: nowrap; padding: 8px; gap: 8px; }
+  .ws-run-group { padding: 6px; gap: 8px; }
+  .ws-run-modes { flex: 1 1 360px; }
+  .ws-config, .ws-risk, .ws-clone { flex: 0 1 auto; flex-wrap: nowrap; }
+  .ws-mode-pill { padding: 6px 8px; }
+  .ws-mode-pill strong, .ws-mode-pill span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ws-mode-pill.has-warning strong { padding-right: 14px; }
+  .ws-risk .field-tight:not(.inline) { flex-direction: row; align-items: center; gap: 6px; }
+  .ws-risk select { max-width: 170px; min-height: 34px; padding: 5px 8px; font-size: 12px; }
+  .field-tight.inline { padding: 0 8px; }
+  .ws-run-wrap { flex: 0 0 150px; }
+  .ws-run-wrap > #ws-run { min-height: 40px; }
+  .ws-run-note { -webkit-line-clamp: 1; font-size: 10px; }
+}
+@media (min-width: 901px) and (max-width: 1680px) {
+  .ws-run-label { display: none; }
+  .ws-clone-objects-label { display: none; }
+}
+
+/* Tabs stay on one line; the ignored table fits the rail. */
+.ws-tabs { overflow-x: auto; scrollbar-width: none; }
+.ws-tab { white-space: nowrap; }
+.ws-ignored-table { table-layout: fixed; }
+.ws-ignored-table th:nth-child(1) { width: 48%; }
+.ws-ignored-table th:nth-child(3), .ws-ignored-table td.num { width: 58px; white-space: nowrap; }
+.ws-ignored-table td code { font-size: 11px; }
+@media (min-width: 901px) {
+  /* The topbar and main padding take ~82px; the workspace fills the rest. */
+  .workspace { height: calc(100dvh - 82px); }
+}

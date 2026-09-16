@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
@@ -44,6 +45,9 @@ type Options struct {
 	BatchSize int
 	// ChunkRows bounds rows generated in memory at once (0: DefaultChunkRows).
 	ChunkRows int
+	// Workers is how many connections write one chunk at once (0 or 1: one).
+	// Tables still fill one after another: each reads its parents' stored keys.
+	Workers int
 	// StopOnError aborts the run at the first failed insert instead of
 	// degrading to row-by-row and moving on.
 	StopOnError bool
@@ -55,13 +59,16 @@ type Options struct {
 	OnProgress func(p Progress)
 }
 
-// Progress is one progress tick.
+// Progress is one progress tick: the table that just advanced, and the run.
 type Progress struct {
 	Table      string
-	TableIndex int // 1-based
+	TableIndex int // 1-based position in the run order
 	Tables     int
 	Inserted   int64
 	Requested  int64
+	// RowsDone and RowsTotal count rows across every table of the run.
+	RowsDone  int64
+	RowsTotal int64
 }
 
 // TableResult is the outcome for one table. Rejected counts insert attempts
@@ -126,20 +133,21 @@ func Fill(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, o
 			res.SequenceError = syncErr.Error()
 		}
 	}()
-	tables := 0
+	run := runPosition{}
 	for _, t := range order {
 		if counts[t] > 0 {
-			tables++
+			run.tables++
+			run.rowsTotal += int64(counts[t])
 		}
 	}
-	index := 0
 	for _, tableName := range order {
 		want := counts[tableName]
 		if want <= 0 {
 			continue
 		}
-		index++
-		tr, fillErr := fillTable(ctx, conn, dbType, sc, tableName, want, index, tables, opts)
+		run.index++
+		tr, fillErr := fillTable(ctx, conn, dbType, sc, tableName, want, run, opts)
+		run.rowsDone += tr.Inserted
 		res.Tables = append(res.Tables, tr)
 		res.Inserted += tr.Inserted
 		res.Missing += tr.Missing
@@ -150,13 +158,20 @@ func Fill(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, o
 	return res, nil
 }
 
-func fillTable(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, tableName string, want, index, tables int, opts Options) (TableResult, error) {
+// runPosition is where a fill is: the table being filled and rows so far.
+type runPosition struct {
+	index, tables       int
+	rowsDone, rowsTotal int64
+}
+
+func fillTable(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, tableName string, want int, run runPosition, opts Options) (TableResult, error) {
 	tr := TableResult{Table: tableName, Requested: int64(want)}
 	if _, ok := sc.Tables[tableName]; !ok {
 		return finishStuck(tr, "table is not in the schema", opts)
 	}
 	chunk := chunkSize(opts.ChunkRows)
 	preload := preloadTables(sc, tableName)
+	_, selfRef := referencedTables(sc, tableName, nil)
 	// Parents are complete by now (tables run in FK order), so their pools and
 	// this table's stored keys are read once and kept for every chunk.
 	stream, err := faker.NewStream(sc, preload, []string{tableName}, conn, dbType, opts.Generate.Overrides)
@@ -204,14 +219,17 @@ func fillTable(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Sche
 			}
 			continue
 		}
-		inserted, rejected, lastErr, err := insertRows(ctx, conn, dbType, tableName, rows, opts)
+		inserted, rejected, lastErr, err := insertRowsConcurrently(ctx, conn, dbType, tableName, rows, opts, selfRef)
 		tr.Inserted += int64(inserted)
 		tr.Rejected += int64(rejected)
 		if lastErr != "" {
 			tr.Error = lastErr
 		}
 		if opts.OnProgress != nil {
-			opts.OnProgress(Progress{Table: tableName, TableIndex: index, Tables: tables, Inserted: tr.Inserted, Requested: tr.Requested})
+			opts.OnProgress(Progress{
+				Table: tableName, TableIndex: run.index, Tables: run.tables, Inserted: tr.Inserted, Requested: tr.Requested,
+				RowsDone: run.rowsDone + tr.Inserted, RowsTotal: run.rowsTotal,
+			})
 		}
 		if err != nil {
 			return finish(tr), err
@@ -267,6 +285,47 @@ func stopErr(opts Options, tr TableResult) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %s", tr.Table, tr.Error)
+}
+
+// insertRowsConcurrently splits a chunk over opts.Workers connections. Rows of
+// a self-referencing table stay in one ordered piece: a row may reference an
+// earlier row of the same chunk.
+func insertRowsConcurrently(ctx context.Context, conn *sql.DB, dbType, tableName string, rows []map[string]interface{}, opts Options, selfRef bool) (inserted, rejected int, lastErr string, err error) {
+	if opts.Workers <= 1 || selfRef || len(rows) <= opts.BatchSize {
+		return insertRows(ctx, conn, dbType, tableName, rows, opts)
+	}
+	size := max((len(rows)+opts.Workers-1)/opts.Workers, opts.BatchSize)
+	type outcome struct {
+		inserted, rejected int
+		lastErr            string
+		err                error
+	}
+	var pieces [][]map[string]interface{}
+	for start := 0; start < len(rows); start += size {
+		pieces = append(pieces, rows[start:min(start+size, len(rows))])
+	}
+	results := make([]outcome, len(pieces))
+	var wg sync.WaitGroup
+	for i, piece := range pieces {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o := &results[i]
+			o.inserted, o.rejected, o.lastErr, o.err = insertRows(ctx, conn, dbType, tableName, piece, opts)
+		}()
+	}
+	wg.Wait()
+	for _, o := range results {
+		inserted += o.inserted
+		rejected += o.rejected
+		if o.lastErr != "" {
+			lastErr = o.lastErr
+		}
+		if err == nil {
+			err = o.err
+		}
+	}
+	return inserted, rejected, lastErr, err
 }
 
 // insertRows writes rows in batches. A failed batch is retried row by row so one

@@ -91,6 +91,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Aliases: []string{"i"},
 				Usage:   "Launch interactive TUI to select empty tables and configure filling",
 			},
+			workersFlag(),
 			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -155,12 +156,15 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			// Build FK parents map for display: table → []parent tables.
 			fkParents := buildFKParents(s, allSorted)
 
-			// Identify gap tables in topological order.
+			// Identify gap tables in topological order, minus the profile's ignored ones.
 			var gapTables []string
 			for _, t := range allSorted {
 				if counts[t] == 0 {
 					gapTables = append(gapTables, t)
 				}
+			}
+			if gapTables, err = profile.applyIgnore(ctx, dbConn, dbType, gapTables); err != nil {
+				return err
 			}
 
 			// Print gap analysis report.
@@ -194,15 +198,18 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			log.Info().
 				Int("rows", rows).
 				Int("gap_tables", len(gapTables)).
-				Msg("Generating fake data for empty tables")
+				Int("workers", cmd.Int("workers")).
+				Msg("Filling empty tables: generating and writing in chunks")
 
 			// Generate data for gap tables only; allSorted is used internally to
 			// preload existing PKs from already-populated parent tables.
 			if !dryRun {
 				defer syncSequences(ctx, dbConn, dbType, gapTables)
 			}
+			onProgress, onTable := progressLogger(time.Now)
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allSorted, gapTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
+				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,

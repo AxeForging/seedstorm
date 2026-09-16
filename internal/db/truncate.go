@@ -26,13 +26,16 @@ func Truncate(ctx context.Context, conn *sql.DB, dbType string, seedOrder []stri
 // atomically, so there are no intermediate per-table steps — progress fires once
 // on completion with an empty table name.
 func TruncateWithProgress(ctx context.Context, conn *sql.DB, dbType string, seedOrder []string, progress func(done, total int, table string)) error {
-	total := len(seedOrder)
-	emit := func(done int, table string) {
-		if progress != nil {
-			progress(done, total, table)
-		}
-	}
+	return TruncateConcurrently(ctx, conn, dbType, seedOrder, 1, progress)
+}
 
+// TruncateConcurrently clears tables like TruncateWithProgress. workers is
+// accepted for callers that size every phase from one setting, but MySQL
+// truncates stay on one pinned connection: concurrent TRUNCATEs of tables
+// linked by foreign keys (FK checks off) left later inserts failing FK checks
+// against rows that did exist. progress calls never overlap.
+func TruncateConcurrently(ctx context.Context, conn *sql.DB, dbType string, seedOrder []string, _ int, progress func(done, total int, table string)) error {
+	total := len(seedOrder)
 	if dbType == "pgx" {
 		names := make([]string, len(seedOrder))
 		for i, t := range seedOrder {
@@ -46,26 +49,50 @@ func TruncateWithProgress(ctx context.Context, conn *sql.DB, dbType string, seed
 		if _, err := conn.ExecContext(ctx, query); err != nil {
 			return err
 		}
-		emit(total, "")
+		if progress != nil {
+			progress(total, total, "")
+		}
 		return nil
 	}
 
-	// MySQL: disable FK checks, truncate in reverse order, re-enable
-	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
+	// Reverse seed order: children first.
+	queue := make(chan string, total)
+	for i := len(seedOrder) - 1; i >= 0; i-- {
+		queue <- seedOrder[i]
+	}
+	close(queue)
+	done := 0
+	return truncateMySQLTables(ctx, conn, queue, func(table string) {
+		done++
+		if progress != nil {
+			progress(done, total, table)
+		}
+	})
+}
+
+// truncateMySQLTables truncates tables from queue on one pinned connection with
+// FK checks disabled, restoring them before the connection returns to the pool.
+func truncateMySQLTables(ctx context.Context, conn *sql.DB, queue <-chan string, emit func(table string)) error {
+	c, err := conn.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open connection: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
 		return fmt.Errorf("disable FK checks: %w", err)
 	}
-	done := 0
-	for i := len(seedOrder) - 1; i >= 0; i-- {
-		query := fmt.Sprintf("TRUNCATE TABLE %s", QuoteIdent(seedOrder[i], dbType)) //nolint:gosec
-		if _, err := conn.ExecContext(ctx, query); err != nil {
-			_, _ = conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1") //nolint:errcheck
-			return fmt.Errorf("truncate %s: %w", seedOrder[i], err)
+	defer func() {
+		_, _ = c.ExecContext(context.WithoutCancel(ctx), "SET FOREIGN_KEY_CHECKS=1") //nolint:errcheck
+	}()
+	for table := range queue {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		done++
-		emit(done, seedOrder[i])
-	}
-	if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=1"); err != nil {
-		return fmt.Errorf("re-enable FK checks: %w", err)
+		query := fmt.Sprintf("TRUNCATE TABLE %s", QuoteIdent(table, "mysql")) //nolint:gosec
+		if _, err := c.ExecContext(ctx, query); err != nil {
+			return fmt.Errorf("truncate %s: %w", table, err)
+		}
+		emit(table)
 	}
 	return nil
 }

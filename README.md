@@ -113,6 +113,8 @@ seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --scale 5 --max-rows
 seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --scale 5 --max-rows 2000000
 ```
 
+No live access to production at mirror time? Save its counts once with `seedstorm snapshot --out prod-counts.yaml` (or **Export counts** in the web UI) and pass `--source-snapshot prod-counts.yaml`.
+
 Engines can differ (MySQL volumes onto Postgres works). Only the target is written;
 the command refuses when source and target are the same database. Rows the database
 rejects are regenerated, and a table that cannot be filled is reported without
@@ -163,10 +165,13 @@ live example values and sample rows. See [docs/profiles.md](docs/profiles.md).
 - **Compare two databases** — `compare` reports per-table rows, size, delta and column drift between any two connections, across engines
 - **Mirror volumes** — `mirror` seeds a target to a source's row counts at any scale (top-up or reset), with a reviewable plan, sample rows, FK-aware parents, and resilient inserts that report what could not be filled
 - **Seed profiles** — value rules (templates with `{{auto}}`/`{{seq}}`/`{{run}}`, fixed values, lists, NULL) applied by column pattern or per column; saved from the web UI and reused with `--profile` in the CLI and TUI
+- **Parallel writes with live progress** — unrelated tables (and pieces of a large table) write on `--workers` connections while generation streams in chunks; runs report rows written, rate and ETA (174k rows into MySQL: 41s → 14.5s)
+- **Counts snapshots** — `snapshot` saves row counts to JSON/YAML; `compare` and `mirror` accept `--source-snapshot`, and the web UI exports and imports the same files
+- **Ignored tables** — a profile's `ignore:` globs keep tables out of every seed, fill, generate and mirror run
 - **Re-seed safely** — seeding a populated table appends: ids, UNIQUE sequences and composite keys continue past existing rows
-- **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, preserving compatible table metadata before seeding it with safe fake data
+- **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, preserving compatible table metadata before seeding it with safe fake data; `--objects all` adds views, functions/procedures and triggers
 - **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
-- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
+- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with search that zooms to matches, a navigator minimap for large schemas, privilege checks for the connected user, click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
 - **Saved connections** — connections persist on the machine and survive a restart, with test-before-connect, opt-in password storage, and driver-aware connection parameters (with JDBC-to-Go translation) for both Postgres and MySQL
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, SQL or CSV without a live connection, streamed in flat memory; SQL files load as-is

@@ -169,6 +169,7 @@ func (s *Server) handleProfileExplain(w http.ResponseWriter, r *http.Request) {
 		"issues":   nonNilIssues(req.Rules.Validate(sc)),
 		"counts":   ruleCoverage(&req.Rules, sc),
 		"examples": req.Rules.Examples(sc, 3, req.Table),
+		"ignored":  nonNilIgnored(req.Rules.IgnoredTables(sc)),
 	}
 	if req.Table == "" {
 		writeJSON(w, http.StatusOK, resp)
@@ -280,6 +281,48 @@ func nonNilIssues(issues []rules.Issue) []rules.Issue {
 }
 
 // profileByID loads a saved profile for a run; empty id means no profile.
+// handleProfileIgnored lists the tables a saved profile ignores in the active
+// connection's schema, with the glob that matched each.
+//
+//	GET /api/profiles/ignored?id=<profile>
+func (s *Server) handleProfileIgnored(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	sess, err := s.sessions.fromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	rs, err := s.profileByID(r.URL.Query().Get("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	sc, err := sess.Schema(false)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := map[string]any{"ignored": []rules.IgnoredTable{}, "tableRows": map[string]int{}}
+	if rs != nil {
+		resp["ignored"] = nonNilIgnored(rs.IgnoredTables(sc))
+		if rows := rules.MergeTableRowsFor(rs, sc, nil); rows != nil {
+			resp["tableRows"] = rows
+		}
+		resp["name"] = rs.Name
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func nonNilIgnored(list []rules.IgnoredTable) []rules.IgnoredTable {
+	if list == nil {
+		return []rules.IgnoredTable{}
+	}
+	return list
+}
+
 func (s *Server) profileByID(id string) (*rules.RuleSet, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, nil

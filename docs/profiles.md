@@ -33,6 +33,9 @@ rules:                       # pattern rules, checked top to bottom
   - table: "audit_*"         # glob, default "*"
     column: "*_name"
     template: "LT {{auto}}"
+ignore:                      # tables never written (globs, case-insensitive)
+  - flyway_*
+  - "*_audit"
 tables:                      # explicit settings per table
   users:
     rows: 500                # rows for seed/generate/gaps (mirror ignores it)
@@ -40,6 +43,12 @@ tables:                      # explicit settings per table
       role: { value: guest }
       phone: { setNull: true }
 ```
+
+### Ignored tables
+
+`ignore:` lists table-name globs that seedstorm never writes: seed, gaps, generate and mirror skip them (no inserts, no truncation). Globs match the whole name and ignore case, so `flyway_*` also matches MySQL's `FLYWAY_SCHEMA_HISTORY`; `*` matches any run of characters and `?` exactly one.
+
+A seeded table can still point at an ignored one. If its FK column is NOT NULL, the ignored table must already have rows, which new rows reference; if it is empty the run stops with an error naming both tables (mirror skips the child and says why). Nullable FKs to an empty ignored table are left NULL. Validation warns when a glob matches no table, and when a table has rules under `tables:` that never apply because it is ignored.
 
 ### Actions
 

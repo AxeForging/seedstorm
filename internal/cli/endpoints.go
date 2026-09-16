@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -18,25 +20,64 @@ import (
 func endpointFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "source-db", Usage: "Source database type: mysql or postgres", Value: "postgres", Sources: cli.EnvVars("SEEDSTORM_SOURCE_DB")},
-		&cli.StringFlag{Name: "source-dsn", Usage: "Source data source name", Required: true, Sources: cli.EnvVars("SEEDSTORM_SOURCE_DSN")},
+		&cli.StringFlag{Name: "source-dsn", Usage: "Source data source name (required unless --source-snapshot is given)", Sources: cli.EnvVars("SEEDSTORM_SOURCE_DSN")},
+		&cli.StringFlag{Name: "source-snapshot", Usage: "Read source row counts from a file made by `seedstorm snapshot` (JSON or YAML) instead of connecting"},
 		&cli.StringFlag{Name: "target-db", Usage: "Target database type: mysql or postgres", Value: "postgres", Sources: cli.EnvVars("SEEDSTORM_TARGET_DB")},
 		&cli.StringFlag{Name: "target-dsn", Usage: "Target data source name", Required: true, Sources: cli.EnvVars("SEEDSTORM_TARGET_DSN")},
 		&cli.StringFlag{Name: "counts", Usage: "Row counts: exact (COUNT(*)) or estimate (planner statistics, fast on large tables)", Value: "exact"},
 	}
 }
 
-// openEndpoints connects to both sides. The caller closes the connections.
+// openEndpoints connects to both sides; the source may instead be a snapshot
+// file (--source-snapshot). The caller releases them with closeEndpoints.
 func openEndpoints(ctx context.Context, cmd *cli.Command) (source, target seeder.Endpoint, err error) {
-	source, err = openEndpoint(ctx, cmd.String("source-db"), cmd.String("source-dsn"))
-	if err != nil {
-		return source, target, fmt.Errorf("source: %w", err)
+	snapshotPath, sourceDSN := cmd.String("source-snapshot"), cmd.String("source-dsn")
+	switch {
+	case snapshotPath != "" && sourceDSN != "":
+		return source, target, fmt.Errorf("use either --source-dsn or --source-snapshot, not both")
+	case snapshotPath != "":
+		if source, err = snapshotEndpoint(snapshotPath); err != nil {
+			return source, target, fmt.Errorf("source snapshot: %w", err)
+		}
+	case sourceDSN != "":
+		if source, err = openEndpoint(ctx, cmd.String("source-db"), sourceDSN); err != nil {
+			return source, target, fmt.Errorf("source: %w", err)
+		}
+	default:
+		return source, target, fmt.Errorf("a source is required: pass --source-dsn (or SEEDSTORM_SOURCE_DSN) or --source-snapshot <file>")
 	}
 	target, err = openEndpoint(ctx, cmd.String("target-db"), cmd.String("target-dsn"))
 	if err != nil {
-		_ = source.Conn.Close()
+		closeEndpoints(source)
 		return source, target, fmt.Errorf("target: %w", err)
 	}
 	return source, target, nil
+}
+
+// snapshotEndpoint loads a table-counts file as a source that needs no connection.
+func snapshotEndpoint(path string) (seeder.Endpoint, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return seeder.Endpoint{}, err
+	}
+	snap, err := compare.ParseSnapshot(data)
+	if err != nil {
+		return seeder.Endpoint{}, fmt.Errorf("%s: %w", path, err)
+	}
+	label := "snapshot " + filepath.Base(path)
+	if snap.Label == "" {
+		snap.Label = label
+	}
+	return seeder.Endpoint{DBType: snap.DBType, Label: label, Snapshot: &snap}, nil
+}
+
+// closeEndpoints closes every live connection; snapshot endpoints have none.
+func closeEndpoints(endpoints ...seeder.Endpoint) {
+	for _, ep := range endpoints {
+		if ep.Conn != nil {
+			_ = ep.Conn.Close()
+		}
+	}
 }
 
 func openEndpoint(ctx context.Context, dbFlag, dsn string) (seeder.Endpoint, error) {

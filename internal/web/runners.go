@@ -53,6 +53,8 @@ type SeedRequest struct {
 	Tables       []string       `json:"tables,omitempty"`
 	TableRows    map[string]int `json:"tableRows,omitempty"`
 	ProfileID    string         `json:"profileId,omitempty"`
+	// Workers is how many connections write at once (0: seeder.DefaultWorkers).
+	Workers int `json:"workers,omitempty"`
 }
 
 type CloneSchemaRequest struct {
@@ -63,6 +65,8 @@ type CloneSchemaRequest struct {
 	Password      string         `json:"password,omitempty"`
 	DropExisting  bool           `json:"dropExisting"`
 	DryRun        bool           `json:"dryRun"`
+	// Objects adds views, routines and triggers to the tables clone.
+	Objects db.CloneObjects `json:"objects"`
 }
 
 func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSchemaRequest, jc JobControl) (map[string]any, error) {
@@ -85,8 +89,18 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 		return nil, fmt.Errorf("source introspection: %w", err)
 	}
 	log.Info().Int("tables", len(tables)).Msg("Source schema introspected")
+	objects, err := db.IntrospectObjects(ctx, sess.Conn(), sess.DBType, req.Objects)
+	if err != nil {
+		return nil, fmt.Errorf("source objects: %w", err)
+	}
+	if req.Objects.Any() {
+		log.Info().Int("objects", len(objects.Objects)).Int("skipped", len(objects.Skipped)).Msg("Source views, routines and triggers read")
+	}
+	for _, sk := range objects.Skipped {
+		log.Warn().Str("kind", string(sk.Kind)).Str("name", sk.Name).Msg("Object not cloned: " + sk.Reason)
+	}
 	jc.Phase("plan")
-	stmts, err := db.BuildSchemaDDL(tables, sess.DBType, req.DropExisting)
+	stmts, err := db.BuildCloneDDL(tables, objects, sess.DBType, req.DropExisting)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +113,8 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 	if req.DryRun {
 		return map[string]any{
 			"tables":     len(tables),
+			"objects":    len(objects.Objects),
+			"skipped":    objects.Skipped,
 			"statements": len(stmts),
 			"dryRun":     true,
 			"format":     "sql",
@@ -142,6 +158,8 @@ func (s *Server) runCloneSchema(ctx context.Context, sess *Session, req CloneSch
 		Msg("Schema clone complete")
 	return map[string]any{
 		"tables":     len(tables),
+		"objects":    len(objects.Objects),
+		"skipped":    objects.Skipped,
 		"statements": len(stmts),
 		"target":     target.Info.DBName,
 	}, nil
@@ -184,10 +202,12 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	if err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	overrides, tableRows, err := s.applyProfile(req.ProfileID, sc, tableRows, log)
+	profile, err := s.applyProfile(req.ProfileID, sc, tableRows, log)
 	if err != nil {
 		return nil, err
 	}
+	overrides, tableRows := profile.overrides, profile.tableRows
+	workers := requestWorkers(req.Workers)
 
 	var allSorted []string
 	if req.DisableFK {
@@ -224,8 +244,6 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		// FK disabled: honor selection literally, no closure.
 		targetTables = req.Tables
 	}
-	log.Info().Str("order", strings.Join(targetTables, " → ")).Msg("Seed order resolved")
-
 	conn := sess.Conn()
 	if !req.DryRun {
 		runConn, err := sess.OpenRunConn(ctx)
@@ -235,11 +253,15 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		defer runConn.Close()
 		conn = runConn
 	}
+	if targetTables, err = profile.applyIgnore(ctx, conn, sess.DBType, targetTables, log); err != nil {
+		return nil, err
+	}
+	log.Info().Str("order", strings.Join(targetTables, " → ")).Msg("Seed order resolved")
 
 	if req.Truncate && !req.DryRun {
 		jc.Phase("truncate")
 		log.Info().Int("tables", len(targetTables)).Msg("Truncating tables")
-		if err := db.TruncateWithProgress(ctx, conn, sess.DBType, targetTables, func(done, total int, table string) {
+		if err := db.TruncateConcurrently(ctx, conn, sess.DBType, targetTables, workers, func(done, total int, table string) {
 			if table != "" {
 				log.Info().Str("table", table).Msg("Truncating table")
 			}
@@ -284,7 +306,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	} else {
 		jc.Phase("insert")
 	}
-	log.Info().Int("rows", req.Rows).Msg("Generating fake data")
+	log.Info().Int("tables", len(targetTables)).Int("rows", req.Rows).Int("workers", workers).Msg("Generating and writing rows chunk by chunk")
 	connArg := conn
 	if req.DryRun {
 		connArg = nil
@@ -296,8 +318,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	dryRunSQL := &cappedSQL{limit: webOutputLimit}
 	// allSorted is preloaded so target tables can FK-reference already-populated
 	// parents; targetTables alone is what gets generated.
+	onProgress, onTable := runProgress(jc, log)
 	res, err := seeder.Seed(ctx, connArg, sess.DBType, sc, allSorted, targetTables, seeder.SeedOptions{
 		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: tableRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
+		Workers: workers, OnProgress: onProgress, OnTable: onTable,
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
@@ -310,7 +334,6 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 			}
 			return nil
 		},
-		OnTable: func(p seeder.Progress) { jc.Progress(p.TableIndex, p.Tables, p.Table) },
 	})
 	if err != nil {
 		return nil, err
@@ -359,6 +382,7 @@ type GapsRequest struct {
 	Tables       []string       `json:"tables,omitempty"`
 	TableRows    map[string]int `json:"tableRows,omitempty"`
 	ProfileID    string         `json:"profileId,omitempty"`
+	Workers      int            `json:"workers,omitempty"`
 }
 
 func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
@@ -423,6 +447,13 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 			}
 		}
 	}
+	profile, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
+	if err != nil {
+		return nil, err
+	}
+	if gapTables, err = profile.applyIgnore(ctx, conn, sess.DBType, gapTables, log); err != nil {
+		return nil, err
+	}
 	log.Info().Int("gap_tables", len(gapTables)).Msg("Gap analysis complete")
 
 	result := map[string]any{
@@ -435,26 +466,23 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		return result, nil
 	}
 
-	jc.Phase("generate")
-	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Msg("Generating data for empty tables")
-	overrides, gapRows, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
-	if err != nil {
-		return nil, err
-	}
-	warnings := make([]faker.GenerationWarning, 0)
+	workers := requestWorkers(req.Workers)
 	jc.Phase("insert")
+	log.Info().Int("gap_tables", len(gapTables)).Int("rows", req.Rows).Int("workers", workers).Msg("Generating and writing rows for empty tables")
+	warnings := make([]faker.GenerationWarning, 0)
 	if !req.DryRun {
 		defer syncSequencesLogged(ctx, conn, sess.DBType, gapTables, log)
 	}
+	onProgress, onTable := runProgress(jc, log)
 	res, err := seeder.Seed(ctx, conn, sess.DBType, sc, allSorted, gapTables, seeder.SeedOptions{
-		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: gapRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
+		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: profile.tableRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
+		Workers: workers, OnProgress: onProgress, OnTable: onTable,
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
-			Overrides:    overrides,
+			Overrides:    profile.overrides,
 			OnWarning:    collectWarning(&warnings, log),
 		},
 		OnTableStart: func(table string) error { log.Info().Str("table", table).Msg("Filling table"); return nil },
-		OnTable:      func(p seeder.Progress) { jc.Progress(p.TableIndex, p.Tables, p.Table) },
 	})
 	if err != nil {
 		return nil, err
@@ -508,11 +536,15 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 	}
 
 	jc.Phase("generate")
-	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
-	overrides, genRows, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
+	profile, err := s.applyProfile(req.ProfileID, sc, cleanTableRows(req.TableRows), log)
 	if err != nil {
 		return nil, err
 	}
+	if targetTables, err = profile.applyIgnore(ctx, nil, sess.DBType, targetTables, log); err != nil {
+		return nil, err
+	}
+	overrides, genRows := profile.overrides, profile.tableRows
+	log.Info().Int("rows", req.Rows).Int("tables", len(targetTables)).Msg("Generating fake data")
 	warnings := make([]faker.GenerationWarning, 0)
 	// The document streams into a bounded buffer: the browser gets a complete
 	// file or a clear refusal, never an unbounded or truncated one.
@@ -564,12 +596,21 @@ func syncSequencesLogged(ctx context.Context, conn *sql.DB, dbType string, table
 	}
 }
 
+// runProfile is a saved profile compiled for one run. The zero value (no
+// profile) changes nothing.
+type runProfile struct {
+	rules     *rules.RuleSet
+	schema    *schema.Schema
+	overrides faker.Overrides
+	tableRows map[string]int
+}
+
 // applyProfile compiles a saved profile for a run and merges its per-table row
 // counts under the explicit ones. No profile id is a no-op.
-func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string]int, log zerolog.Logger) (faker.Overrides, map[string]int, error) {
+func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string]int, log zerolog.Logger) (runProfile, error) {
 	rs, err := s.profileByID(id)
 	if err != nil || rs == nil {
-		return nil, tableRows, err
+		return runProfile{schema: sc, tableRows: tableRows}, err
 	}
 	for _, issue := range rs.Validate(sc) {
 		if issue.Severity == rules.SeverityWarning {
@@ -579,11 +620,87 @@ func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string
 	runID := rules.NewRunID()
 	overrides, err := rs.Compile(sc, runID)
 	if err != nil {
-		return nil, nil, err
+		return runProfile{}, err
 	}
 	log.Info().Str("profile", rs.Name).Str("run", runID).Msg("Seed profile applied")
-	return overrides, cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows)), nil
+	return runProfile{rules: rs, schema: sc, overrides: overrides, tableRows: cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows))}, nil
 }
+
+// applyIgnore removes the profile's ignored tables from a run. A kept table
+// that needs an ignored, empty parent fails the run naming both tables.
+func (p runProfile) applyIgnore(ctx context.Context, conn *sql.DB, dbType string, order []string, log zerolog.Logger) ([]string, error) {
+	if p.rules == nil {
+		return order, nil
+	}
+	ignored := p.rules.IgnoredSet(p.schema)
+	if len(ignored) == 0 {
+		return order, nil
+	}
+	kept, err := graph.ApplyIgnore(p.schema, order, ignored, func(table string) (bool, error) {
+		if conn == nil {
+			return false, nil
+		}
+		counts, err := db.GetTableRowCounts(ctx, conn, dbType, []string{table})
+		return counts[table] > 0, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if skipped := len(order) - len(kept); skipped > 0 {
+		log.Info().Int("tables", skipped).Msg("Ignoring tables listed by the profile")
+	}
+	return kept, nil
+}
+
+// progressEvery is the most often a run emits a progress event.
+var progressEvery = 300 * time.Millisecond
+
+// runProgress streams a run's rows to the job: a progress event (rows written
+// of rows planned, with rate and ETA in its label) at most every progressEvery,
+// and a log line per finished table, which also drives the graph highlight.
+func runProgress(jc JobControl, log zerolog.Logger) (onProgress, onTable func(seeder.Progress)) {
+	meter := seeder.NewMeter(time.Now())
+	var last time.Time
+	onProgress = func(p seeder.Progress) {
+		now := time.Now()
+		est := meter.Observe(now, p.RowsDone, p.RowsTotal)
+		if now.Sub(last) < progressEvery && est.Done < est.Total {
+			return
+		}
+		last = now
+		jc.Progress(int(est.Done), int(est.Total), progressLabel(p, est))
+	}
+	onTable = func(p seeder.Progress) {
+		log.Info().Str("table", p.Table).Int64("rows", p.Inserted).Msg("Table written")
+	}
+	return onProgress, onTable
+}
+
+// progressLabel reads "booking 120.0k/1.5M · 4200 rows/s · ETA 5m40s".
+func progressLabel(p seeder.Progress, est seeder.Estimate) string {
+	label := fmt.Sprintf("%s %s/%s", p.Table, seeder.CompactCount(p.Inserted), seeder.CompactCount(p.Requested))
+	if est.RowsPerSec > 0 {
+		label += " · " + seeder.CompactCount(int64(est.RowsPerSec)) + " rows/s"
+	}
+	if est.ETA > 0 {
+		label += " · ETA " + seeder.ShortDuration(est.ETA)
+	}
+	return label
+}
+
+// requestWorkers bounds a requested writer count.
+func requestWorkers(n int) int {
+	switch {
+	case n <= 0:
+		return seeder.DefaultWorkers
+	case n > maxWorkers:
+		return maxWorkers
+	}
+	return n
+}
+
+// maxWorkers caps connections one web run may open against a database.
+const maxWorkers = 32
 
 func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any {
 	out := make([]map[string]any, 0, len(warnings))

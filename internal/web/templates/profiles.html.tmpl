@@ -65,6 +65,23 @@
       <ol class="pf-rule-list" id="pf-rule-list"></ol>
       <p class="pf-empty muted small" id="pf-rules-empty">No pattern rules yet. Add one, pick a preset, or set a value on a single column in the table explorer.</p>
 
+      <section class="pf-ignore" aria-labelledby="pf-ignore-title">
+        <header class="pf-section-head">
+          <div>
+            <h2 id="pf-ignore-title">Ignored tables</h2>
+            <p class="muted small">Never written by seed, fill empty, generate or mirror. Globs, case-insensitive: <code>flyway_*</code>, <code>*_audit</code>. A table that needs an ignored one uses its existing rows.</p>
+          </div>
+        </header>
+        <form class="pf-ignore-add" id="pf-ignore-form" autocomplete="off">
+          <label class="sr-only" for="pf-ignore-input">Table or glob to ignore</label>
+          <input id="pf-ignore-input" type="text" placeholder="table name or glob" list="pf-ignore-tables" spellcheck="false">
+          <datalist id="pf-ignore-tables"></datalist>
+          <button class="btn-ghost" type="submit">Ignore</button>
+        </form>
+        <ul class="pf-ignore-list" id="pf-ignore-list"></ul>
+        <p class="pf-empty muted small" id="pf-ignore-empty">No ignored tables: every table can be written.</p>
+      </section>
+
       <section class="pf-issues" id="pf-issues" hidden></section>
     </section>
 
@@ -84,7 +101,11 @@
           <span class="field-label">Rows <span class="muted">(this profile)</span></span>
           <input id="pf-table-rows" type="number" min="0" placeholder="run default" inputmode="numeric">
         </label>
+        <label class="field-check small pf-ignore-toggle">
+          <input id="pf-table-ignore" type="checkbox"> Ignore this table
+        </label>
       </div>
+      <p class="pf-ignored-note small" id="pf-ignored-note" hidden></p>
       <div class="pf-columns-wrap">
         <table class="pf-columns">
           <thead><tr><th>column</th><th>will generate</th><th><span class="sr-only">actions</span></th></tr></thead>
@@ -125,11 +146,16 @@
         <h2 id="pf-yaml-title">Profile YAML</h2>
         <p class="muted small" id="pf-yaml-hint"></p>
       </header>
+      <label class="pf-yaml-file" id="pf-yaml-file-wrap">
+        <input type="file" id="pf-yaml-file" accept=".yaml,.yml,.json,text/yaml,application/json,text/plain">
+        <strong>Choose a file</strong> <span class="muted">or drop it here, or paste below</span>
+      </label>
       <textarea id="pf-yaml-text" rows="16" spellcheck="false"></textarea>
       <p class="pf-yaml-error small" id="pf-yaml-error" hidden></p>
       <footer>
         <button class="btn-ghost" value="cancel" type="submit">Close</button>
         <button class="btn-ghost" id="pf-yaml-copy" type="button">Copy</button>
+        <a class="btn-primary" id="pf-yaml-download" download>Download</a>
         <button class="btn-primary" id="pf-yaml-load" type="button">Load into builder</button>
       </footer>
     </form>

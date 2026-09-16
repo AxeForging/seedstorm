@@ -164,7 +164,9 @@
 .cmp-writes strong { color: var(--tgt); font-weight: 600; overflow-wrap: anywhere; }
 .cmp-mirror fieldset { border: 0; margin: 0; padding: 0; }
 .cmp-mirror legend { padding: 0; margin-bottom: 6px; }
-.cmp-mirror input, .cmp-mirror select { min-height: 38px; width: 100%; }
+/* Text-like controls fill their field; checkboxes and radios keep their size. */
+.cmp-mirror input:not([type="checkbox"]):not([type="radio"]), .cmp-mirror select { min-height: 38px; width: 100%; }
+.cmp-mirror .field-check input { width: auto; min-height: 0; flex: none; }
 .cmp-mirror .field-label a { color: var(--accent); margin-left: 4px; }
 .cmp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cmp-scale-custom input { width: 72px; min-height: 28px; padding: 3px 8px; font-size: 12px; }
@@ -269,7 +271,7 @@
   .cmp-grid { grid-template-columns: minmax(0, 1fr); }
   .cmp-mirror { position: static; }
   .cmp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .cmp-pickers input, .cmp-pickers select, .cmp-mirror input, .cmp-mirror select, .cmp-search input { font-size: 16px; }
+  .cmp-pickers input, .cmp-pickers select, .cmp-mirror input:not([type="checkbox"]):not([type="radio"]), .cmp-mirror select, .cmp-search input { font-size: 16px; }
 }
 
 @media (max-width: 640px) {
@@ -307,4 +309,70 @@
   .cmp-stat, .cmp-gauge, .cmp-outcome, .cmp-modal-panel { animation: none; }
   .cmp-bar i, .cmp-meter i, .cmp-swap, .chip, .segmented span { transition: none; }
   .cmp-empty-art { display: none; }
+}
+
+/* ── counts import / export ── */
+.cmp-source-row { display: flex; gap: 6px; min-width: 0; }
+.cmp-source-row select { flex: 1; min-width: 0; }
+.cmp-import-btn { white-space: nowrap; min-height: 42px; }
+.cmp-export-btn { white-space: nowrap; }
+.cmp-stale {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(216,181,111,0.4);
+  border-radius: var(--radius-md);
+  background: rgba(216,181,111,0.07);
+  color: var(--warn);
+  font-size: 13px;
+}
+.cmp-stale .btn-ghost { padding: 5px 12px; font-size: 12px; }
+.cmp-access-note { margin: 4px 0 0; color: var(--warn); }
+.cmp-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+}
+.cmp-dialog::backdrop { background: rgba(6,10,13,0.72); backdrop-filter: blur(2px); }
+.cmp-dialog-body { display: grid; gap: 14px; padding: 20px; }
+.cmp-dialog-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.cmp-dialog-head h2 { margin: 2px 0 4px; font-size: 18px; }
+.cmp-dialog-head p { margin: 0; }
+.cmp-dialog-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.cmp-dialog-foot .muted { margin-right: auto; }
+.cmp-drop {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.cmp-drop.dragging { border-color: var(--accent); background: rgba(121,216,179,0.06); }
+.cmp-drop input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.cmp-drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cmp-dialog textarea { width: 100%; resize: vertical; }
+.cmp-import-status { margin: 0; min-height: 1.4em; }
+.cmp-import-status.ok { color: var(--ok); }
+.cmp-import-status.err { color: var(--err); white-space: pre-wrap; }
+.cmp-export-options { display: flex; gap: 18px; flex-wrap: wrap; }
+.cmp-export-options fieldset { border: 0; margin: 0; padding: 0; }
+.cmp-export-preview {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre;
+}
+@media (max-width: 640px) {
+  .cmp-source-row { flex-direction: column; }
+  .cmp-stale { flex-direction: column; align-items: stretch; }
+  .cmp-dialog-foot { flex-wrap: wrap; }
 }

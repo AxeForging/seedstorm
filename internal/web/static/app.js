@@ -7,6 +7,7 @@
   const PRESET_MIGRATED_KEY = "seedstorm.presetsMigrated.v1";
   const GENERATED_DRAFT_KEY = "seedstorm.generatedData.v1";
   const GRAPH_ROUTE_KEY = "seedstorm.graphRoute.v1";
+  const GRAPH_VIEW_KEY = "seedstorm.graphView.v1";
 
   const apiHeaders = { "Content-Type": "application/json", "X-Seedstorm-Request": "1" };
 
@@ -567,8 +568,10 @@
     phases.started = 0;
     const wrap = document.getElementById("job-progress-wrap");
     if (wrap) wrap.hidden = true;
-    const label = document.getElementById("job-progress-label");
-    if (label) label.textContent = "";
+    ["job-progress-label", "job-progress-count", "job-progress-pct"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = "";
+    });
     const bar = document.getElementById("job-progress");
     if (bar) bar.value = 0;
   }
@@ -620,18 +623,31 @@
     }
     if (det.open) pre.scrollTop = pre.scrollHeight;
   }
+  // Row phases (insert, generate) count rows; the others (truncate, clone DDL,
+  // compare) count tables or statements, which the label names.
+  const ROW_PHASES = new Set(["insert", "generate", "seed"]);
   function setProgress(done, total, label) {
     const wrap = document.getElementById("job-progress-wrap");
     const bar = document.getElementById("job-progress");
     const lab = document.getElementById("job-progress-label");
     if (!wrap || !bar || !lab) return;
     wrap.hidden = false;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    bar.value = pct;
+    const pct = total > 0 ? (done / total) * 100 : 0;
+    bar.value = Math.round(pct * 10) / 10;
     bar.max = 100;
     const phase = phases.current ? phases.current.dataset.phase : "";
-    const tail = label ? " · " + label : "";
-    lab.textContent = (phase ? phase + " · " : "") + done + " / " + total + tail;
+    const count = document.getElementById("job-progress-count");
+    const pctEl = document.getElementById("job-progress-pct");
+    const unit = ROW_PHASES.has(phase) ? " rows" : "";
+    const numbers = `${done.toLocaleString()} / ${total.toLocaleString()}${unit}`;
+    if (count && pctEl) {
+      // Two-line layout (workspace): numbers on top, what is happening below.
+      count.textContent = numbers;
+      pctEl.textContent = `${phase ? phase + " · " : ""}${pct.toFixed(pct < 10 ? 1 : 0)}%`;
+      lab.textContent = label || "";
+    } else {
+      lab.textContent = (phase ? phase + " · " : "") + numbers + (label ? " · " + label : "");
+    }
   }
   function finalizeLastPhase(status) {
     if (!phases.current) return;
@@ -809,6 +825,7 @@
     if (fmt) items.push({ label: "format", value: fmt });
     if (typeof result.totalRows === "number") items.push({ label: "rows", value: formatCount(result.totalRows) });
     if (typeof result.tables === "number") items.push({ label: "tables", value: String(result.tables) });
+    if (typeof result.objects === "number" && result.objects > 0) items.push({ label: "objects", value: String(result.objects) });
     else if (Array.isArray(result.tables)) items.push({ label: "tables", value: String(result.tables.length) });
     if (Array.isArray(result.auto) && result.auto.length > 0) items.push({ label: "auto-required", value: String(result.auto.length) });
     if (typeof result.durationMs === "number") items.push({ label: "duration", value: result.durationMs < 1000 ? `${result.durationMs}ms` : `${(result.durationMs / 1000).toFixed(1)}s` });
@@ -1113,6 +1130,13 @@
     peek: new Set(),
     schemaColumns: {},
     connections: [],
+    access: null,         // privilege report of the active connection
+    cloneAccess: null,    // privilege report of the selected clone target
+    ignored: new Map(),   // table → glob of the selected profile
+    profileRows: {},      // table → rows from the selected profile
+    view: loadGraphView(), // { autoZoom, navigator }
+    searchHits: [],
+    searchIndex: 0,
   };
 
   function setupWorkspace() {
@@ -1148,10 +1172,22 @@
     document.getElementById("ws-search")?.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
         ev.preventDefault();
-        focusFirstSearchHit();
+        focusNextSearchHit(ev.shiftKey ? -1 : 1);
+      }
+      if (ev.key === "Escape" && ev.target.value) {
+        ev.target.value = "";
+        applySearch("");
       }
     });
     document.getElementById("cfg-rows")?.addEventListener("input", () => refreshSelectionUI());
+    document.getElementById("cfg-workers")?.addEventListener("input", syncTuningSummary);
+    document.getElementById("cfg-truncate")?.addEventListener("change", updateAccessWarnings);
+    document.getElementById("cfg-profile")?.addEventListener("change", (ev) => loadProfileInsights(ev.target.value));
+    document.getElementById("cfg-clone-target")?.addEventListener("change", loadCloneTargetAccess);
+    document.getElementById("ws-autozoom")?.addEventListener("click", () => setGraphView({ autoZoom: !ws.view.autoZoom }));
+    document.getElementById("ws-navigator")?.addEventListener("click", () => setGraphView({ navigator: !ws.view.navigator }));
+    setupMinimap();
+    syncTuningSummary();
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
@@ -1175,6 +1211,13 @@
     loadCloneTargets();
     loadProfileOptions();
     loadGraph();
+    loadWorkspaceAccess(false);
+  }
+
+  function syncTuningSummary() {
+    const n = Number(document.getElementById("cfg-workers")?.value || 0);
+    const el = document.getElementById("ws-tuning-summary");
+    if (el) el.textContent = n > 1 ? `${n} writers` : "sequential";
   }
 
   // Seed profiles apply to seed, fill-empty and generate runs from the workspace.
@@ -1265,6 +1308,7 @@
       target.appendChild(opt);
     }
     updateCloneControls();
+    loadCloneTargetAccess();
   }
 
   function updateCloneControls() {
@@ -1274,6 +1318,7 @@
     document.querySelectorAll(".ws-config, .ws-risk").forEach((el) => {
       el.hidden = clone;
     });
+    updateAccessWarnings();
   }
 
   function activateTab(name) {
@@ -1350,12 +1395,17 @@
     setGraphLoading("Laying out graph", "Positioning tables by dependency level.");
     const layout = ws.cy.layout(dagreLayout());
     layout.on("layoutstop", () => {
+      applyGraphView();
       fitGraph();
       clearGraphLoading();
+      drawMinimap();
     });
+    ws.cy.on("viewport render", scheduleMinimap);
     layout.run();
     updateStats();
     refreshSelectionUI();
+    applyAccessToGraph();
+    applyIgnoredToGraph();
   }
 
   function nodeData(n) {
@@ -1459,6 +1509,24 @@
       {
         selector: "node.hover-node",
         style: { "border-color": "#b196ff" },
+      },
+      {
+        selector: "node.no-write",
+        style: {
+          "border-color": "#ff8a7a",
+          "border-style": "dotted",
+          "border-width": 2,
+        },
+      },
+      {
+        selector: "node.ignored",
+        style: {
+          "opacity": 0.42,
+          "border-style": "dashed",
+          "border-color": "#6b7280",
+          "background-color": "#12161b",
+          "color": "#9aa3ad",
+        },
       },
       {
         selector: "node.search-hit",
@@ -1600,6 +1668,8 @@
       for (const p of (ws.parents[t] || [])) {
         if (ws.selected.has(p) || auto.has(p)) continue;
         if (ws.mode === "gaps" && isPopulated(p)) continue;
+        // An ignored parent is never written: its existing rows are used.
+        if (ws.ignored.has(p)) continue;
         auto.add(p);
         queue.push(p);
       }
@@ -1648,6 +1718,8 @@
     document.getElementById("ws-count-selected").textContent = String(ws.selected.size);
     document.getElementById("ws-count-auto").textContent = String(ws.auto.size);
     updateRunScope();
+    updateAccessWarnings();
+    scheduleMinimap();
 
     const list = document.getElementById("ws-selected-list");
     const empty = document.getElementById("ws-selected-empty");
@@ -1683,7 +1755,7 @@
       volumeInput.type = "number";
       volumeInput.min = "1";
       volumeInput.inputMode = "numeric";
-      volumeInput.placeholder = String(defaultRows());
+      volumeInput.placeholder = String(ws.profileRows[item.id] || defaultRows());
       volumeInput.value = ws.tableRows[item.id] ? String(ws.tableRows[item.id]) : "";
       volumeInput.addEventListener("click", (ev) => ev.stopPropagation());
       volumeInput.addEventListener("input", (ev) => {
@@ -1700,6 +1772,15 @@
       const tag = document.createElement("span");
       tag.className = "ws-sel-tag";
       tag.textContent = item.kind === "sel" ? "selected" : "auto";
+      if (ws.ignored.has(item.id)) {
+        tag.textContent = "ignored";
+        tag.classList.add("ignored");
+        tag.title = `Ignored by profile pattern ${ws.ignored.get(item.id)}: not written`;
+      } else if (ws.access && !ws.access.superuser && (ws.access.noInsert || []).includes(item.id)) {
+        tag.textContent = "no INSERT";
+        tag.classList.add("no-write");
+        tag.title = "The connected user has no INSERT privilege on this table";
+      }
       const peek = document.createElement("button");
       peek.className = "ws-sel-view";
       peek.type = "button";
@@ -1764,9 +1845,13 @@
   }
 
   function nodeDisplayLabel(id) {
+    if (ws.ignored.has(id)) return `${id}\nignored`;
     const override = ws.tableRows[id];
     const effective = ws.selected.has(id) || ws.auto.has(id);
-    return effective && override > 0 ? `${id}\n${formatCount(override)} rows` : id;
+    if (effective && override > 0) return `${id}\n${formatCount(override)} rows`;
+    // A profile's per-table volume applies whether or not the table is selected.
+    if (ws.profileRows[id] > 0) return `${id}\n${formatCount(ws.profileRows[id])} rows (profile)`;
+    return id;
   }
 
   function syncNodeRowLabels() {
@@ -1826,8 +1911,8 @@
   }
 
   function updateRunScope() {
-    const total = ws.nodes.length;
-    const explicit = ws.selected.size;
+    const total = ws.nodes.length - ws.ignored.size;
+    const explicit = [...ws.selected].filter((t) => !ws.ignored.has(t)).length;
     const auto = ws.auto.size;
     const effective = explicit + auto;
     const scope = document.getElementById("ws-scope");
@@ -1838,11 +1923,12 @@
       const volumeText = overrideCount > 0
         ? ` · ${overrideCount} customized`
         : "";
+      const ignoredText = ws.ignored.size > 0 && ws.mode !== "clone" ? ` · ${ws.ignored.size} ignored` : "";
       scope.textContent = ws.mode === "clone"
         ? "Run scope: full source schema"
         : effective === 0
-        ? `Run scope: all ${total} tables`
-        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)${volumeText}`;
+        ? `Run scope: all ${total} tables${ignoredText}`
+        : `Run scope: ${effective} tables (${explicit} selected, ${auto} required)${volumeText}${ignoredText}`;
     }
     if (run) {
       run.textContent = ws.mode === "clone"
@@ -1851,6 +1937,7 @@
     }
   }
 
+  let searchZoomTimer = null;
   function applySearch(raw) {
     ws.search = (raw || "").trim().toLowerCase();
     if (!ws.cy) return;
@@ -1866,25 +1953,380 @@
         if (!e.source().hasClass("search-hit") && !e.target().hasClass("search-hit")) e.addClass("search-dim");
       });
     });
+    const hits = ws.search ? ws.cy.nodes(".search-hit") : ws.cy.collection();
+    // Exact name first, then names that start with the query, then the rest.
+    ws.searchHits = hits.map((n) => n.id()).sort((a, b) => searchRank(a) - searchRank(b) || a.localeCompare(b));
+    ws.searchIndex = -1;
+    const count = document.getElementById("ws-search-count");
+    if (count) count.textContent = ws.search ? (hits.length ? `${hits.length} match${hits.length === 1 ? "" : "es"}` : "no match") : "";
+    scheduleMinimap();
+    if (!ws.view.autoZoom) return;
+    clearTimeout(searchZoomTimer);
+    // Wait for typing to settle so the camera does not jump on every key.
+    searchZoomTimer = setTimeout(() => {
+      if (!ws.search) fitGraph();
+      else if (hits.length) fitElements(hits, 1.6);
+    }, 260);
   }
 
-  function focusFirstSearchHit() {
-    if (!ws.cy || !ws.search) return;
-    const hit = ws.cy.nodes(".search-hit")[0];
-    if (!hit) return;
-    ws.cy.animate({ center: { eles: hit }, zoom: Math.max(ws.cy.zoom(), 1.1) }, { duration: 220 });
-    showDetail(hit.id());
+  function searchRank(id) {
+    const name = id.toLowerCase();
+    if (name === ws.search) return 0;
+    if (name.startsWith(ws.search)) return 1;
+    return 2;
+  }
+
+  // Enter walks through the matches (Shift+Enter backwards), centring each and
+  // opening its details.
+  function focusNextSearchHit(step) {
+    if (!ws.cy || !ws.searchHits.length) return;
+    const n = ws.searchHits.length;
+    ws.searchIndex = ((ws.searchIndex + step) % n + n) % n;
+    const id = ws.searchHits[ws.searchIndex];
+    const node = ws.cy.getElementById(id);
+    ws.cy.animate({ center: { eles: node }, zoom: Math.max(ws.cy.zoom(), 1.1) }, { duration: 220 });
+    const count = document.getElementById("ws-search-count");
+    if (count && n > 1) count.textContent = `${ws.searchIndex + 1} of ${n}`;
+    showDetail(id);
+  }
+
+  // fitElements fits the view to eles without zooming in past maxZoom, so one
+  // match does not fill the screen.
+  function fitElements(eles, maxZoom) {
+    if (!ws.cy || !eles || !eles.length) return;
+    const bb = eles.boundingBox();
+    const pad = 60;
+    const w = ws.cy.width(), h = ws.cy.height();
+    let zoom = Math.min((w - pad * 2) / Math.max(bb.w, 1), (h - pad * 2) / Math.max(bb.h, 1));
+    zoom = Math.min(zoom, maxZoom || 2);
+    zoom = Math.max(zoom, ws.cy.minZoom());
+    ws.cy.animate({
+      zoom,
+      pan: { x: w / 2 - (bb.x1 + bb.w / 2) * zoom, y: h / 2 - (bb.y1 + bb.h / 2) * zoom },
+    }, { duration: 260 });
   }
 
   function fitGraph() {
     if (!ws.cy) return;
-    const eles = ws.search ? ws.cy.nodes(".search-hit") : ws.cy.elements();
-    ws.cy.animate({ fit: { eles: eles.length ? eles : ws.cy.elements(), padding: 42 } }, { duration: 220 });
+    const hits = ws.search ? ws.cy.nodes(".search-hit") : null;
+    if (hits && hits.length) {
+      fitElements(hits, 1.6);
+      return;
+    }
+    if (ws.view.navigator) {
+      // Navigator keeps labels readable: centre on the selection (or the whole
+      // graph) at the smallest readable zoom instead of shrinking everything.
+      const focus = ws.cy.nodes(".selected, .auto");
+      fitElements(focus.length ? focus : ws.cy.elements(), 1.2);
+      return;
+    }
+    ws.cy.animate({ fit: { eles: ws.cy.elements(), padding: 42 } }, { duration: 220 });
   }
 
   function zoomGraph(factor) {
     if (!ws.cy) return;
-    ws.cy.animate({ zoom: ws.cy.zoom() * factor, center: { eles: ws.cy.elements() } }, { duration: 160 });
+    const zoom = Math.min(Math.max(ws.cy.zoom() * factor, ws.cy.minZoom()), ws.cy.maxZoom());
+    ws.cy.animate({ zoom, center: { eles: ws.cy.elements() } }, { duration: 160 });
+  }
+
+  // ── graph view: auto-zoom and navigator (readable zoom + minimap) ──────
+  // Below this zoom a 12px label renders under 9px: unreadable.
+  const NAVIGATOR_MIN_ZOOM = 0.72;
+
+  function loadGraphView() {
+    const view = { autoZoom: true, navigator: false };
+    try {
+      const saved = JSON.parse(localStorage.getItem(GRAPH_VIEW_KEY) || "null");
+      if (saved && typeof saved === "object") {
+        if (typeof saved.autoZoom === "boolean") view.autoZoom = saved.autoZoom;
+        if (typeof saved.navigator === "boolean") view.navigator = saved.navigator;
+      }
+    } catch (_) {}
+    return view;
+  }
+
+  function setGraphView(patch) {
+    ws.view = { ...ws.view, ...patch };
+    try { localStorage.setItem(GRAPH_VIEW_KEY, JSON.stringify(ws.view)); } catch (_) {}
+    applyGraphView();
+    if ("navigator" in patch) fitGraph();
+    if (patch.autoZoom && ws.search) applySearch(ws.search);
+  }
+
+  function applyGraphView() {
+    const auto = document.getElementById("ws-autozoom");
+    const nav = document.getElementById("ws-navigator");
+    auto?.setAttribute("aria-pressed", String(ws.view.autoZoom));
+    nav?.setAttribute("aria-pressed", String(ws.view.navigator));
+    auto?.classList.toggle("active", ws.view.autoZoom);
+    nav?.classList.toggle("active", ws.view.navigator);
+    const mini = document.getElementById("ws-minimap");
+    if (mini) mini.hidden = !ws.view.navigator;
+    if (!ws.cy) return;
+    ws.cy.minZoom(ws.view.navigator ? NAVIGATOR_MIN_ZOOM : 1e-50);
+    if (ws.view.navigator && ws.cy.zoom() < NAVIGATOR_MIN_ZOOM) ws.cy.zoom(NAVIGATOR_MIN_ZOOM);
+    drawMinimap();
+  }
+
+  let minimapFrame = 0;
+  function scheduleMinimap() {
+    if (!ws.view.navigator || minimapFrame) return;
+    minimapFrame = requestAnimationFrame(() => {
+      minimapFrame = 0;
+      drawMinimap();
+    });
+  }
+
+  // minimapTransform maps model coordinates onto the minimap canvas.
+  function minimapTransform(canvas) {
+    const bb = ws.cy.elements().boundingBox();
+    const pad = 8;
+    const scale = Math.min((canvas.width - pad * 2) / Math.max(bb.w, 1), (canvas.height - pad * 2) / Math.max(bb.h, 1));
+    const ox = pad + (canvas.width - pad * 2 - bb.w * scale) / 2 - bb.x1 * scale;
+    const oy = pad + (canvas.height - pad * 2 - bb.h * scale) / 2 - bb.y1 * scale;
+    return { scale, ox, oy };
+  }
+
+  function drawMinimap() {
+    const canvas = document.getElementById("ws-minimap-canvas");
+    if (!canvas || !ws.cy || !ws.view.navigator) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || 220, cssH = canvas.clientHeight || 150;
+    if (canvas.width !== Math.round(cssW * dpr)) {
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!ws.cy.nodes().length) return;
+    const t = minimapTransform(canvas);
+    ctx.strokeStyle = "rgba(148,160,154,0.18)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ws.cy.edges().forEach((e) => {
+      const a = e.source().position(), b = e.target().position();
+      ctx.moveTo(a.x * t.scale + t.ox, a.y * t.scale + t.oy);
+      ctx.lineTo(b.x * t.scale + t.ox, b.y * t.scale + t.oy);
+    });
+    ctx.stroke();
+    ws.cy.nodes().forEach((n) => {
+      const bb = n.boundingBox();
+      let color = "rgba(148,160,154,0.55)";
+      if (n.hasClass("ignored")) color = "rgba(107,114,128,0.35)";
+      if (n.data("count") > 0) color = "rgba(95,210,142,0.7)";
+      if (n.hasClass("auto")) color = "#b196ff";
+      if (n.hasClass("selected")) color = "#7c9eff";
+      if (n.hasClass("seeding")) color = "#ffcc66";
+      if (n.hasClass("search-hit")) color = "#ffcc66";
+      ctx.fillStyle = color;
+      ctx.fillRect(bb.x1 * t.scale + t.ox, bb.y1 * t.scale + t.oy, Math.max(bb.w * t.scale, 2), Math.max(bb.h * t.scale, 2));
+    });
+    const ext = ws.cy.extent();
+    ctx.strokeStyle = "#79d8b3";
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeRect(ext.x1 * t.scale + t.ox, ext.y1 * t.scale + t.oy, ext.w * t.scale, ext.h * t.scale);
+    const zoomLabel = document.getElementById("ws-minimap-zoom");
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(ws.cy.zoom() * 100)}%`;
+  }
+
+  function setupMinimap() {
+    const canvas = document.getElementById("ws-minimap-canvas");
+    if (!canvas) return;
+    let dragging = false;
+    const moveTo = (ev) => {
+      if (!ws.cy) return;
+      const rect = canvas.getBoundingClientRect();
+      const t = minimapTransform(canvas);
+      const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
+      const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
+      const mx = (px - t.ox) / t.scale, my = (py - t.oy) / t.scale;
+      const zoom = ws.cy.zoom();
+      ws.cy.pan({ x: ws.cy.width() / 2 - mx * zoom, y: ws.cy.height() / 2 - my * zoom });
+    };
+    canvas.addEventListener("pointerdown", (ev) => {
+      dragging = true;
+      canvas.setPointerCapture(ev.pointerId);
+      moveTo(ev);
+    });
+    canvas.addEventListener("pointermove", (ev) => { if (dragging) moveTo(ev); });
+    const stop = () => { dragging = false; };
+    canvas.addEventListener("pointerup", stop);
+    canvas.addEventListener("pointercancel", stop);
+    window.addEventListener("resize", scheduleMinimap);
+  }
+
+  // ── access: what the connected user may do ────────────────────────────
+  async function fetchAccess(query) {
+    const res = await fetch("/api/access" + (query ? "?" + query : ""), { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  async function loadWorkspaceAccess(refresh) {
+    try {
+      ws.access = await fetchAccess(refresh ? "refresh=1" : "");
+    } catch (err) {
+      ws.access = null;
+      const box = document.getElementById("ws-access");
+      if (box) {
+        box.hidden = false;
+        box.className = "ws-access unknown";
+        box.textContent = "Could not read this user's privileges: " + (err.message || err);
+      }
+      return;
+    }
+    renderAccessBanner();
+    applyAccessToGraph();
+    updateAccessWarnings();
+  }
+
+  function renderAccessBanner() {
+    const box = document.getElementById("ws-access");
+    const a = ws.access;
+    if (!box || !a) return;
+    box.hidden = false;
+    box.className = "ws-access level-" + a.level;
+    const esc = escapeHTML;
+    const noInsert = a.noInsert || [], noTruncate = a.noTruncate || [];
+    const bits = [];
+    if (a.superuser) bits.push("admin privileges");
+    if (noInsert.length) bits.push(`no INSERT on ${noInsert.length} ${noInsert.length === 1 ? "table" : "tables"}`);
+    if (noTruncate.length && noTruncate.length !== noInsert.length) bits.push(`no TRUNCATE on ${noTruncate.length}`);
+    if (!a.createTables && !a.superuser) bits.push("cannot create tables");
+    const headline = {
+      full: "Can seed, truncate and clone here",
+      limited: "Some runs are limited here",
+      "read-only": "Read-only here: seeding will be refused",
+      none: "No access to these tables",
+    }[a.level] || "Privileges checked";
+    const list = (title, names) => names.length
+      ? `<p><strong>${esc(title)}</strong> ${names.slice(0, 40).map((n) => `<code>${esc(n)}</code>`).join(" ")}${names.length > 40 ? ` +${names.length - 40} more` : ""}</p>`
+      : "";
+    const details = list("No INSERT:", noInsert) + list("No TRUNCATE:", noTruncate) + (a.notes || []).map((n) => `<p class="muted">${esc(n)}</p>`).join("");
+    box.innerHTML = `
+      <div class="ws-access-head">
+        <span class="access-dot" aria-hidden="true"></span>
+        <div>
+          <strong>${esc(headline)}</strong>
+          <span class="muted small">${esc(a.user || "user")}${bits.length ? " · " + esc(bits.join(" · ")) : ""}</span>
+        </div>
+        <button class="btn-ghost" type="button" data-access-refresh title="Read privileges again">↻</button>
+      </div>
+      ${details ? `<details class="ws-access-details"><summary class="small">Details</summary>${details}<p class="muted small">Granted privileges only: row-level security, triggers and constraints can still refuse a write.</p></details>` : ""}`;
+    box.querySelector("[data-access-refresh]")?.addEventListener("click", () => loadWorkspaceAccess(true));
+  }
+
+  function applyAccessToGraph() {
+    if (!ws.cy || !ws.access) return;
+    const noInsert = new Set(ws.access.superuser ? [] : (ws.access.noInsert || []));
+    ws.cy.batch(() => {
+      ws.cy.nodes().forEach((n) => n.toggleClass("no-write", noInsert.has(n.id())));
+    });
+    const legend = document.querySelector('[data-legend="nowrite"]');
+    if (legend) legend.hidden = noInsert.size === 0;
+  }
+
+  async function loadCloneTargetAccess() {
+    const target = document.getElementById("cfg-clone-target");
+    const selected = target?.selectedOptions?.[0];
+    ws.cloneAccess = null;
+    if (selected && selected.value && selected.dataset.kind !== "empty") {
+      const key = selected.dataset.kind === "saved" ? "savedId" : "id";
+      try {
+        ws.cloneAccess = await fetchAccess(`${key}=${encodeURIComponent(selected.value)}`);
+      } catch (_) { ws.cloneAccess = null; }
+    }
+    updateAccessWarnings();
+  }
+
+  // runScopeTables is every table the current mode would write.
+  function runScopeTables() {
+    const scope = ws.selected.size + ws.auto.size > 0
+      ? [...ws.selected, ...ws.auto]
+      : ws.nodes.map((n) => n.id);
+    return scope.filter((t) => !ws.ignored.has(t) && (ws.mode !== "gaps" || !isPopulated(t)));
+  }
+
+  // accessProblems explains, per mode, what the user's privileges will refuse.
+  function accessProblems(mode) {
+    if (mode === "clone") {
+      const a = ws.cloneAccess;
+      if (!a || a.superuser || a.createTables) return [];
+      return ["The clone target user cannot create tables"];
+    }
+    const a = ws.access;
+    if (!a || a.superuser || mode === "generate") return [];
+    const scope = new Set(runScopeTables());
+    const noInsert = (a.noInsert || []).filter((t) => scope.has(t));
+    const out = [];
+    if (noInsert.length) out.push(`No INSERT on ${noInsert.length} ${noInsert.length === 1 ? "table" : "tables"} in scope: ${noInsert.slice(0, 3).join(", ")}${noInsert.length > 3 ? "…" : ""}`);
+    if (mode === "seed" && document.getElementById("cfg-truncate")?.checked) {
+      const noTruncate = (a.noTruncate || []).filter((t) => scope.has(t));
+      if (noTruncate.length) out.push(`No TRUNCATE on ${noTruncate.length} ${noTruncate.length === 1 ? "table" : "tables"}${ws.access.user && ws.access.user.includes("@") ? " (MySQL needs DROP)" : ""}`);
+    }
+    return out;
+  }
+
+  function updateAccessWarnings() {
+    document.querySelectorAll("[data-warn]").forEach((chip) => {
+      const problems = accessProblems(chip.dataset.warn);
+      chip.hidden = problems.length === 0;
+      chip.title = problems.join("\n");
+      chip.closest(".ws-mode-pill")?.classList.toggle("has-warning", problems.length > 0);
+    });
+    const note = document.getElementById("ws-run-note");
+    if (!note) return;
+    const problems = accessProblems(ws.mode);
+    note.hidden = problems.length === 0;
+    note.textContent = problems[0] || "";
+    note.title = problems.join("\n");
+  }
+
+  // ── profile insights: ignored tables and per-table rows ───────────────
+  async function loadProfileInsights(id) {
+    ws.ignored = new Map();
+    ws.profileRows = {};
+    let name = "";
+    if (id) {
+      try {
+        const res = await fetch("/api/profiles/ignored?id=" + encodeURIComponent(id), { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok) {
+          for (const it of data.ignored || []) ws.ignored.set(it.table, it.pattern);
+          ws.profileRows = data.tableRows || {};
+          name = data.name || "";
+        }
+      } catch (_) { /* the run still applies the profile server-side */ }
+    }
+    renderIgnoredTab(name);
+    applyIgnoredToGraph();
+    refreshSelectionUI();
+  }
+
+  function renderIgnoredTab(profileName) {
+    const tab = document.getElementById("ws-tab-ignored");
+    const list = document.getElementById("ws-ignored-list");
+    if (!tab || !list) return;
+    tab.hidden = ws.ignored.size === 0;
+    document.getElementById("ws-ignored-count").textContent = String(ws.ignored.size);
+    document.getElementById("ws-ignored-profile").textContent = profileName || "selected";
+    if (tab.hidden && tab.classList.contains("active")) activateTab("selected");
+    list.innerHTML = [...ws.ignored.entries()].map(([table, pattern]) => {
+      const node = ws.nodes.find((n) => n.id === table);
+      const rows = node && node.counted ? formatCount(node.count) : "?";
+      return `<tr><td><code>${escapeHTML(table)}</code></td><td><code class="muted">${escapeHTML(pattern)}</code></td><td class="num">${rows}</td></tr>`;
+    }).join("");
+  }
+
+  function applyIgnoredToGraph() {
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      ws.cy.nodes().forEach((n) => n.toggleClass("ignored", ws.ignored.has(n.id())));
+    });
+    const legend = document.querySelector('[data-legend="ignored"]');
+    if (legend) legend.hidden = ws.ignored.size === 0;
+    scheduleMinimap();
   }
 
   // ── detail tab ────────────────────────────────────────────────────────
@@ -2150,6 +2592,7 @@
       truncate: document.getElementById("cfg-truncate").checked,
       dryRun: document.getElementById("cfg-dryrun").checked,
       disableFK: document.getElementById("cfg-disablefk").checked,
+      workers: Number(document.getElementById("cfg-workers")?.value || 0),
       tables,
       tableRows: tableRowPayload(),
     };
@@ -2186,6 +2629,11 @@
     const cfg = {
       dropExisting: !!document.getElementById("cfg-clone-drop")?.checked,
       dryRun: !!document.getElementById("cfg-clone-dryrun")?.checked,
+      objects: {
+        views: !!document.getElementById("cfg-clone-views")?.checked,
+        routines: !!document.getElementById("cfg-clone-routines")?.checked,
+        triggers: !!document.getElementById("cfg-clone-triggers")?.checked,
+      },
     };
     if (selected?.dataset.kind === "connection") {
       cfg.targetId = selected.value;
@@ -2208,7 +2656,17 @@
     streamJob(j.id, j.name, {
       onEnd: (job) => {
         const out = document.getElementById("job-result");
-        if (out) renderJobResult(out, job.result || {}, "clone-schema");
+        if (!out) return;
+        const result = job.result || {};
+        renderJobResult(out, result, "clone-schema");
+        const skipped = result.skipped || [];
+        if (skipped.length) {
+          const box = document.createElement("div");
+          box.className = "result-warnings";
+          box.innerHTML = `<strong>${skipped.length} ${skipped.length === 1 ? "object was" : "objects were"} not cloned</strong>` +
+            skipped.map((sk) => `<p><code>${escapeHTML(sk.kind)} ${escapeHTML(sk.name)}</code>: ${escapeHTML(sk.reason)}</p>`).join("");
+          out.querySelector(".result-shell")?.appendChild(box);
+        }
       },
     });
   }
@@ -2222,18 +2680,19 @@
     return out;
   }
 
+  // Tables write concurrently: a table is "seeding" from its first generated
+  // chunk (`Seeding table` / `Filling table`) until `Table written`.
   function onLogPulse(line) {
     if (!ws.cy) return;
-    // zerolog console writer renders `Seeding table` and `Filling table` with key=value pairs.
-    const m = line.match(/Seeding table.*?table=(\w+)|Filling table.*?table=(\w+)/);
-    if (m) {
-      const t = m[1] || m[2];
-      const node = ws.cy.getElementById(t);
-      if (node) {
-        ws.cy.nodes(".seeding").removeClass("seeding").addClass("done");
-        node.addClass("seeding");
-      }
-    }
+    const started = line.match(/(?:Seeding|Filling) table.*?table=(\S+)/);
+    const written = line.match(/Table written.*?table=(\S+)/);
+    const id = (started || written || [])[1];
+    if (!id) return;
+    const node = ws.cy.getElementById(id);
+    if (!node || !node.length) return;
+    if (written) node.removeClass("seeding").addClass("done");
+    else node.addClass("seeding");
+    scheduleMinimap();
   }
 
   function onJobEnd(job) {
@@ -2267,6 +2726,7 @@
       updateStats();
       recomputeAuto();
       refreshSelectionUI();
+      renderIgnoredTab(document.getElementById("ws-ignored-profile")?.textContent);
       clearGraphLoading();
     }).catch((err) => {
       setGraphLoading("Count refresh failed", err.message || String(err), true);
@@ -2297,8 +2757,33 @@
     });
   }
 
+  // The header badge summarises what the connected user may do, on every page.
+  async function setupAccessBadge() {
+    const badge = document.getElementById("access-badge");
+    if (!badge) return;
+    let a;
+    try { a = await fetchAccess(""); } catch (_) { return; }
+    const text = { full: "full access", limited: "limited", "read-only": "read-only", none: "no access" }[a.level];
+    if (!text) return;
+    badge.hidden = false;
+    badge.className = "access-badge level-" + a.level;
+    badge.textContent = text;
+    const missing = [];
+    if ((a.noInsert || []).length) missing.push(`no INSERT on ${a.noInsert.length} tables`);
+    if ((a.noTruncate || []).length) missing.push(`no TRUNCATE on ${a.noTruncate.length} tables`);
+    if (!a.createTables && !a.superuser) missing.push("cannot create tables");
+    badge.title = `${a.user} on ${a.database}${missing.length ? ": " + missing.join(", ") : ""}`;
+    const menu = document.getElementById("conn-menu-access");
+    if (menu) {
+      menu.hidden = false;
+      menu.className = "conn-menu-access level-" + a.level;
+      menu.innerHTML = `<strong>${escapeHTML(a.user)}</strong><span class="muted small">${escapeHTML(text)}${missing.length ? " · " + escapeHTML(missing.join(" · ")) : ""}</span>`;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     setupNavDrawer();
+    setupAccessBadge();
     setupConnectForm();
     setupConnectionDialog();
     setupSavedChooser();
@@ -2316,7 +2801,7 @@
     // Shared helpers for page scripts (compare.js, profiles.js).
     ui: {
       streamJob, resetPhases, appendLog, escapeHTML, formatCount, copyText,
-      fetchConnections, fetchSavedConnections, connectionLabel, connectionKey,
+      fetchConnections, fetchSavedConnections, connectionLabel, connectionKey, fetchAccess,
     },
     state: ws,
     select: (id) => { toggleSelect(id); },
@@ -2326,9 +2811,11 @@
     setMode: (m) => {
       ws.mode = m;
       document.querySelectorAll(".ws-mode-pill").forEach(b => b.classList.toggle("active", b.dataset.mode === m));
+      updateCloneControls();
       recomputeAuto();
       refreshSelectionUI();
     },
+    setGraphView,
     run: runMode,
   };
 })();

@@ -18,6 +18,7 @@ func Commands() []*cli.Command {
 		exportCmd(),
 		cloneSchemaCmd(),
 		compareCmd(),
+		snapshotCmd(),
 		mirrorCmd(),
 		profileCmd(),
 		serveCmd(),

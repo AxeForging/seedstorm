@@ -8,8 +8,24 @@
   const ui = () => window.seedstorm.ui;
   const $ = (id) => document.getElementById(id);
 
+  const IMPORTED_KEY = "seedstorm.importedCounts.v1";
+  const REPORT_KEY = "seedstorm.compareReport.v1";
+  const MAX_IMPORTED = 8;
+  const MAX_SAVED_REPORTS = 6;
+
+  // Browser storage can be unavailable (private windows, blocked site data):
+  // every read and write falls back to nothing.
+  function readStore(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch (_) { return fallback; }
+  }
+  function writeStore(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; }
+  }
+
   const state = {
     report: null,
+    reportSavedAt: 0,
+    imported: readStore(IMPORTED_KEY, []),
     filter: "all",
     search: "",
     scale: 1,
@@ -37,7 +53,12 @@
         group: "Saved", disabled: locked, dbType: c.dbType,
       });
     }
-    fillSelect($("cmp-source"), options);
+    const importedOptions = state.imported.map((it) => ({
+      value: "snap:" + it.id,
+      label: `${it.name} — ${it.tables} tables, imported ${new Date(it.importedAt).toLocaleDateString()}`,
+      group: "Imported counts",
+    }));
+    fillSelect($("cmp-source"), [...options, ...importedOptions]);
     fillSelect($("cmp-target"), options);
     const params = new URLSearchParams(location.search);
     const active = options.find((o) => o.active);
@@ -82,6 +103,17 @@
     return {};
   }
 
+  // sourceSnapshot is the imported counts chosen as source, if any.
+  function sourceSnapshot() {
+    const [kind, id] = String($("cmp-source").value || "").split(/:(.+)/);
+    if (kind !== "snap") return undefined;
+    return state.imported.find((it) => it.id === id)?.snapshot;
+  }
+
+  function pairKey() {
+    return $("cmp-source").value + "|" + $("cmp-target").value;
+  }
+
   function syncPickers() {
     const same = $("cmp-source").value && $("cmp-source").value === $("cmp-target").value;
     $("cmp-run").disabled = !$("cmp-source").value || !$("cmp-target").value;
@@ -96,6 +128,29 @@
     url.searchParams.set("source", $("cmp-source").value);
     url.searchParams.set("target", $("cmp-target").value);
     history.replaceState(null, "", url);
+    checkTargetAccess();
+  }
+
+  // ── target privileges: warn before a mirror the user cannot write ──
+  let accessSeq = 0;
+  async function checkTargetAccess() {
+    const note = $("cmp-access-note");
+    const ref = refOf($("cmp-target"));
+    const seq = ++accessSeq;
+    note.hidden = true;
+    if (!ref.id && !ref.savedId) return;
+    let a;
+    try {
+      a = await ui().fetchAccess(ref.id ? "id=" + encodeURIComponent(ref.id) : "savedId=" + encodeURIComponent(ref.savedId));
+    } catch (_) { return; }
+    if (seq !== accessSeq || a.superuser) return;
+    const bits = [];
+    if ((a.noInsert || []).length) bits.push(`no INSERT on ${a.noInsert.length} ${a.noInsert.length === 1 ? "table" : "tables"}`);
+    if ((a.noTruncate || []).length) bits.push(`no TRUNCATE on ${a.noTruncate.length} (Reset mode needs it)`);
+    if (!bits.length) return;
+    note.hidden = false;
+    note.textContent = `${a.user} on the target: ${bits.join(" · ")}.`;
+    note.title = (a.noInsert || []).join(", ");
   }
 
   function targetLabel() {
@@ -127,13 +182,14 @@
     setBusy(true, "Comparing…");
     const counts = app.querySelector('input[name="counts"]:checked').value;
     try {
-      const job = await runJob("/api/compare", { source: refOf($("cmp-source")), target: refOf($("cmp-target")), counts });
+      const job = await runJob("/api/compare", { source: refOf($("cmp-source")), sourceSnapshot: sourceSnapshot(), target: refOf($("cmp-target")), counts });
       if (job.status !== "done") throw new Error(job.error || "compare " + job.status);
       state.report = job.result.report;
       // Keep the user's table picks when re-comparing the same pair (e.g. after a run).
-      const pairKey = $("cmp-source").value + "|" + $("cmp-target").value;
-      if (pairKey !== state.pairKey) state.excluded.clear();
-      state.pairKey = pairKey;
+      const key = pairKey();
+      if (key !== state.pairKey) state.excluded.clear();
+      state.pairKey = key;
+      saveReport();
       render();
     } catch (err) {
       showOutcome("error", "Compare failed", err.message);
@@ -170,6 +226,50 @@
       case "drift": return drift(row);
     }
     return true;
+  }
+
+  // ── persistence: the last report per pair survives leaving the page ──
+  function saveReport() {
+    state.reportSavedAt = Date.now();
+    const saved = readStore(REPORT_KEY, []).filter((e) => e.pairKey !== state.pairKey);
+    saved.unshift({ pairKey: state.pairKey, savedAt: state.reportSavedAt, report: state.report, excluded: [...state.excluded] });
+    // A report holds every table of both sides; if storage is full, keep fewer.
+    for (let n = Math.min(saved.length, MAX_SAVED_REPORTS); n > 0; n--) {
+      if (writeStore(REPORT_KEY, saved.slice(0, n))) break;
+    }
+    renderStale();
+  }
+
+  function restoreReport() {
+    const key = pairKey();
+    const entry = readStore(REPORT_KEY, []).find((e) => e.pairKey === key);
+    if (!entry || !entry.report || !Array.isArray(entry.report.rows)) return false;
+    state.report = entry.report;
+    state.pairKey = key;
+    state.reportSavedAt = entry.savedAt || 0;
+    state.excluded = new Set(entry.excluded || []);
+    render();
+    renderStale();
+    return true;
+  }
+
+  function ago(ms) {
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 45) return "just now";
+    if (s < 90) return "a minute ago";
+    if (s < 3600) return `${Math.round(s / 60)} minutes ago`;
+    if (s < 5400) return "an hour ago";
+    if (s < 86400) return `${Math.round(s / 3600)} hours ago`;
+    return new Date(ms).toLocaleString();
+  }
+
+  function renderStale() {
+    const box = $("cmp-stale");
+    if (!state.report || !state.reportSavedAt) { box.hidden = true; return; }
+    const age = Date.now() - state.reportSavedAt;
+    // A report from this visit is current; a restored or older one may not be.
+    box.hidden = age < 60_000;
+    $("cmp-stale-text").textContent = `Compared ${ago(state.reportSavedAt)} — counts may have changed since.`;
   }
 
   function render() {
@@ -280,9 +380,11 @@
     const { all, picked } = mirrorTables();
     return {
       source: refOf($("cmp-source")),
+      sourceSnapshot: sourceSnapshot(),
       target: refOf($("cmp-target")),
       counts: app.querySelector('input[name="counts"]:checked').value,
       mode: app.querySelector('input[name="mode"]:checked').value,
+      workers: Number($("cmp-workers").value || 0),
       scale: state.scale,
       maxRows: Number($("cmp-max-rows").value || 0),
       parentRows: Number($("cmp-parent-rows").value || 0),
@@ -305,6 +407,8 @@
       if (job.status !== "done") throw new Error(job.error || "plan " + job.status);
       state.plan = job.result;
       state.report = job.result.report; // counts are fresh from the plan run
+      state.pairKey = pairKey();
+      saveReport();
       render();
       openModal(job.result);
     } catch (err) {
@@ -327,9 +431,11 @@
     const truncate = reset && plan.truncate?.length
       ? `<div class="cmp-callout danger"><strong>Truncates ${plan.truncate.length} target tables first</strong><span>${plan.truncate.map(esc).join(", ")}</span></div>`
       : "";
-    const issues = (result.issues || []).length
+    const issues = ((result.issues || []).length
       ? `<div class="cmp-callout"><strong>Profile notes</strong><span>${result.issues.map((i) => esc(`${i.path}: ${i.message}`)).join("<br>")}</span></div>`
-      : "";
+      : "") + (result.sameDatabaseUnchecked
+      ? `<div class="cmp-callout"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
+      : "");
     const rows = plan.entries.map((e, i) => `
       <tr>
         <td class="num">${i + 1}</td>
@@ -431,6 +537,14 @@
     $("cmp-outcome").hidden = false;
   }
 
+  // hideReport clears a report that belongs to another pair.
+  function hideReport() {
+    if (!state.report || state.pairKey === pairKey()) return;
+    state.report = null;
+    $("cmp-results").hidden = true;
+    $("cmp-empty").hidden = false;
+  }
+
   function showOutcome(kind, title, detail, problems) {
     const esc = ui().escapeHTML;
     const box = $("cmp-outcome");
@@ -439,6 +553,105 @@
     const list = (problems || []).map((p) =>
       `<li><code>${esc(p.table)}</code><span>${esc(p.status)} · ${fmt(p.inserted)}/${fmt(p.requested)}</span><small>${esc(p.error || "")}</small></li>`).join("");
     box.innerHTML = `<strong>${esc(title)}</strong>${detail ? `<p>${esc(detail)}</p>` : ""}${list ? `<ul>${list}</ul>` : ""}`;
+  }
+
+  // ── counts import ───────────────────────────────────────────────────
+  function openImport() {
+    $("cmp-import-status").textContent = "";
+    $("cmp-import-status").className = "cmp-import-status small";
+    $("cmp-import-dialog").showModal();
+    $("cmp-import-text").focus();
+  }
+
+  async function readImportFile(file) {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      importStatus("err", "That file is larger than 8MB; a counts file is usually a few KB.");
+      return;
+    }
+    $("cmp-import-text").value = await file.text();
+    state.importName = file.name.replace(/\.(ya?ml|json)$/i, "");
+    await useImport();
+  }
+
+  function importStatus(kind, text) {
+    const el = $("cmp-import-status");
+    el.className = "cmp-import-status small " + kind;
+    el.textContent = text;
+  }
+
+  async function useImport() {
+    const data = $("cmp-import-text").value;
+    if (!data.trim()) {
+      importStatus("err", "Paste a counts document or choose a file first.");
+      return;
+    }
+    importStatus("", "Checking…");
+    let parsed;
+    try {
+      const res = await fetch("/api/snapshots/parse", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
+      parsed = await res.json();
+      if (!res.ok) throw new Error(parsed.error || res.statusText);
+    } catch (err) {
+      importStatus("err", err.message || String(err));
+      return;
+    }
+    const snap = parsed.snapshot;
+    const name = snap.label || state.importName || "imported counts";
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name, importedAt: Date.now(), tables: parsed.tables, rows: parsed.rows, snapshot: snap,
+    };
+    state.imported = [entry, ...state.imported.filter((it) => it.name !== name)].slice(0, MAX_IMPORTED);
+    if (!writeStore(IMPORTED_KEY, state.imported)) {
+      importStatus("ok", `Loaded ${parsed.tables} tables for this visit (the browser would not store it).`);
+    }
+    state.importName = "";
+    await loadPickers();
+    setSelect($("cmp-source"), "snap:" + entry.id);
+    syncPickers();
+    $("cmp-import-dialog").close();
+    $("cmp-import-text").value = "";
+    compare();
+  }
+
+  // ── counts export ───────────────────────────────────────────────────
+  let exportSeq = 0;
+  async function renderExport() {
+    if (!state.report) return;
+    const side = app.querySelector('input[name="export-side"]:checked').value;
+    const format = app.querySelector('input[name="export-format"]:checked').value;
+    const seq = ++exportSeq;
+    $("cmp-export-status").textContent = "Rendering…";
+    let out;
+    try {
+      const res = await fetch("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: state.report, side, format }) });
+      out = await res.json();
+      if (!res.ok) throw new Error(out.error || res.statusText);
+    } catch (err) {
+      if (seq !== exportSeq) return;
+      $("cmp-export-preview").textContent = "";
+      $("cmp-export-status").textContent = err.message || String(err);
+      $("cmp-export-download").removeAttribute("href");
+      return;
+    }
+    if (seq !== exportSeq) return;
+    $("cmp-export-preview").textContent = out.content;
+    $("cmp-export-status").textContent = `${out.tables} tables · ${out.filename}`;
+    const link = $("cmp-export-download");
+    const type = format === "json" ? "application/json" : "text/yaml";
+    if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
+    link.dataset.url = URL.createObjectURL(new Blob([out.content], { type }));
+    link.href = link.dataset.url;
+    link.download = out.filename;
+  }
+
+  function openExport() {
+    if (!state.report) return;
+    $("cmp-export-source-label").textContent = "Source · " + (state.report.source?.label || "source");
+    $("cmp-export-target-label").textContent = "Target · " + (state.report.target?.label || "target");
+    $("cmp-export-dialog").showModal();
+    renderExport();
   }
 
   // ── wiring ──────────────────────────────────────────────────────────
@@ -470,11 +683,18 @@
     $("cmp-target").addEventListener("change", syncPickers);
     $("cmp-swap").addEventListener("click", () => {
       const s = $("cmp-source").value;
+      if (s.startsWith("snap:")) {
+        showOutcome("warn", "Imported counts can only be the source", "A target must be a live connection: mirror writes to it.");
+        $("cmp-results").hidden = !state.report;
+        return;
+      }
       $("cmp-source").value = $("cmp-target").value;
       $("cmp-target").value = s;
       syncPickers();
       if (state.report) compare();
     });
+    $("cmp-source").addEventListener("change", () => { if (!restoreReport()) hideReport(); });
+    $("cmp-target").addEventListener("change", () => { if (!restoreReport()) hideReport(); });
     $("cmp-filters").addEventListener("click", (ev) => {
       const chip = ev.target.closest("[data-filter]");
       if (!chip) return;
@@ -503,12 +723,32 @@
       $("cmp-mirror").classList.toggle("mode-reset", r.value === "reset" && r.checked);
     }));
     $("cmp-plan").addEventListener("click", preview);
+    $("cmp-recompare").addEventListener("click", compare);
+    $("cmp-import").addEventListener("click", openImport);
+    $("cmp-import-use").addEventListener("click", useImport);
+    $("cmp-import-file").addEventListener("change", (ev) => readImportFile(ev.target.files?.[0]));
+    const drop = $("cmp-drop");
+    drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("dragging"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("dragging"));
+    drop.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      drop.classList.remove("dragging");
+      readImportFile(ev.dataTransfer?.files?.[0]);
+    });
+    $("cmp-export").addEventListener("click", openExport);
+    app.querySelectorAll('input[name="export-side"], input[name="export-format"]').forEach((r) => r.addEventListener("change", renderExport));
+    $("cmp-export-copy").addEventListener("click", async () => {
+      await ui().copyText($("cmp-export-preview").textContent);
+      $("cmp-export-copy").textContent = "Copied";
+      setTimeout(() => { $("cmp-export-copy").textContent = "Copy"; }, 1400);
+    });
+    setInterval(renderStale, 30_000);
     $("cmp-execute").addEventListener("click", execute);
     $("cmp-confirm").addEventListener("change", (ev) => { $("cmp-execute").disabled = !ev.target.checked; });
     app.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", closeModal));
     app.querySelectorAll(".cmp-tab").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("cmp-modal").hidden) closeModal(); });
-    loadPickers();
+    loadPickers().then(() => restoreReport());
     loadProfiles();
   });
 })();
