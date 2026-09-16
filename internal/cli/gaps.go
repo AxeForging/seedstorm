@@ -92,6 +92,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Usage:   "Launch interactive TUI to select empty tables and configure filling",
 			},
 			workersFlag(),
+			genWorkersFlag(),
 			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -210,6 +211,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allSorted, gapTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
 				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
+				GenWorkers: cmd.Int("gen-workers"),
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,

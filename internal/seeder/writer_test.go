@@ -29,6 +29,7 @@ type insertEvent struct {
 	table      string
 	firstKey   interface{}
 	start, end time.Time
+	rows       []map[string]interface{} // decoded from the batch INSERT
 }
 
 type recording struct {
@@ -40,9 +41,24 @@ type recording struct {
 	active map[string]int
 	// overlapSelf records a table that ever had two inserts in flight.
 	overlapSelf map[string]bool
+	// discard keeps no events (benchmarks).
+	discard bool
 }
 
 func openRecording(t *testing.T, delay map[string]time.Duration, fail func(table string, n int) error) (*sql.DB, *recording) {
+	t.Helper()
+	return openRecordingTB(t, delay, fail)
+}
+
+// openRecordingB is openRecording for benchmarks; rows are not kept.
+func openRecordingB(b *testing.B) (*sql.DB, *recording) {
+	b.Helper()
+	conn, rec := openRecordingTB(b, nil, nil)
+	rec.discard = true
+	return conn, rec
+}
+
+func openRecordingTB(t testing.TB, delay map[string]time.Duration, fail func(table string, n int) error) (*sql.DB, *recording) {
 	t.Helper()
 	recordingOnce.Do(func() { sql.Register("seeder_recording", recordingDriver{}) })
 	rec := &recording{delay: delay, fail: fail, perTab: map[string]int{}, active: map[string]int{}, overlapSelf: map[string]bool{}}
@@ -89,6 +105,9 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 		r.overlapSelf[table] = true
 	}
 	ev := insertEvent{table: table, start: time.Now()}
+	if !r.discard {
+		ev.rows = decodeInsert(query, args)
+	}
 	if len(args) > 0 {
 		ev.firstKey = args[0].Value
 	}
@@ -106,7 +125,7 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 	r.mu.Lock()
 	r.active[table]--
 	ev.end = time.Now()
-	if err == nil {
+	if err == nil && !r.discard {
 		r.events = append(r.events, ev)
 	}
 	r.mu.Unlock()
@@ -114,6 +133,37 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 		return nil, err
 	}
 	return driver.RowsAffected(1), nil
+}
+
+// decodeInsert rebuilds the rows of a batch INSERT from its column list and
+// arguments (columns are sorted and repeat per row, see db.BuildBatchInsert).
+func decodeInsert(query string, args []driver.NamedValue) []map[string]interface{} {
+	open, closing := strings.Index(query, "("), strings.Index(query, ")")
+	if open < 0 || closing < open {
+		return nil
+	}
+	var cols []string
+	for _, c := range strings.Split(query[open+1:closing], ",") {
+		cols = append(cols, strings.Trim(strings.TrimSpace(c), `"`+"`"))
+	}
+	var rows []map[string]interface{}
+	for start := 0; start+len(cols) <= len(args); start += len(cols) {
+		row := make(map[string]interface{}, len(cols))
+		for i, c := range cols {
+			row[c] = args[start+i].Value
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// rowsOf returns every row written into table.
+func (r *recording) rowsOf(table string) []map[string]interface{} {
+	var out []map[string]interface{}
+	for _, e := range r.inserts(table) {
+		out = append(out, e.rows...)
+	}
+	return out
 }
 
 func (r *recording) inserts(table string) []insertEvent {

@@ -25,6 +25,14 @@ func workersFlag() cli.Flag {
 	}
 }
 
+func genWorkersFlag() cli.Flag {
+	return &cli.IntFlag{
+		Name:  "gen-workers",
+		Usage: "Tables generated at once on separate cores (needs --workers > 1; seed ignores it with --seed so runs stay reproducible)",
+		Value: 1,
+	}
+}
+
 // progressLogger logs rows written, rate and ETA at most every progressInterval,
 // plus a line per finished table, so a long table is never silent.
 func progressLogger(now func() time.Time) (onProgress, onTable func(seeder.Progress)) {

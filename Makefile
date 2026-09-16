@@ -64,6 +64,12 @@ test-integration: dev-up
 	done
 	cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
 
+.PHONY: test-e2e
+# Playwright journeys against a freshly built `seedstorm serve` and the compose
+# databases (make dev-up). Pass ARGS to filter, e.g. ARGS=tests/compare.spec.ts
+test-e2e:
+	cd e2e && pnpm install --frozen-lockfile && pnpm exec playwright install chromium && pnpm exec playwright test $(ARGS)
+
 lint:
 	golangci-lint run --timeout=5m
 

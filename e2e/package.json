@@ -1,0 +1,20 @@
+{
+  "name": "seedstorm-e2e",
+  "private": true,
+  "description": "Playwright journeys for the seedstorm web UI (seedstorm serve)",
+  "packageManager": "pnpm@10.16.1",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.13.5",
+    "@types/pg": "8.23.1",
+    "mysql2": "3.24.4",
+    "pg": "8.23.0",
+    "typescript": "5.9.3"
+  }
+}

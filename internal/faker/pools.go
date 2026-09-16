@@ -1,7 +1,5 @@
 package faker
 
-import "math/rand"
-
 // poolLimit bounds how many primary-key values are kept per table for foreign
 // keys to pick from. Larger tables are sampled uniformly, so children still
 // spread across the whole parent table while memory stays flat.
@@ -16,10 +14,11 @@ type poolSampler struct {
 	seen    int
 	allInts bool
 	max     int64
+	rnd     randomSource
 }
 
-func newPoolSampler(initial []interface{}, limit int) *poolSampler {
-	p := &poolSampler{pool: initial, limit: limit, allInts: true}
+func newPoolSampler(initial []interface{}, limit int, rnd randomSource) *poolSampler {
+	p := &poolSampler{pool: initial, limit: limit, allInts: true, rnd: rnd}
 	for _, v := range initial {
 		p.track(v)
 	}
@@ -48,7 +47,7 @@ func (p *poolSampler) offer(v interface{}) {
 		p.pool = append(p.pool, v)
 		return
 	}
-	if j := rand.Intn(p.seen); j < p.limit { //nolint:gosec // sampling test data
+	if j := p.rnd.Number(0, p.seen-1); j < p.limit {
 		p.pool[j] = v
 	}
 }
@@ -67,13 +66,13 @@ func (p *poolSampler) values() []interface{} {
 // capPool shrinks a pool that grew past limit during generation to a uniform
 // sample, keeping its last value (the largest generated id) at the end. It
 // returns a new slice so the old backing array can be freed.
-func capPool(pool []interface{}, limit int) []interface{} {
+func capPool(pool []interface{}, limit int, rnd randomSource) []interface{} {
 	if limit <= 0 || len(pool) <= limit {
 		return pool
 	}
 	body := pool[:len(pool)-1]
 	for i := 0; i < limit-1; i++ {
-		j := i + rand.Intn(len(body)-i) //nolint:gosec // sampling test data
+		j := i + rnd.Number(0, len(body)-i-1)
 		body[i], body[j] = body[j], body[i]
 	}
 	out := make([]interface{}, limit)

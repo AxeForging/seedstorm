@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,4 +105,51 @@ func runBinStderr(t *testing.T, args ...string) string {
 		t.Fatalf("seedstorm %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout, stderr)
 	}
 	return stderr
+}
+
+// Tables generated on several cores must satisfy every constraint the database
+// enforces: FKs (incl. near-cycles and self-references), composite junction
+// keys and UNIQUE columns, on the 36-table schema, the 150-table cross-
+// referenced schema and Keycloak's real 87 tables, and a second run appends.
+func TestSeed_ConcurrentGenerationKeepsEveryConstraint(t *testing.T) {
+	for _, e := range engines() {
+		t.Run(e.name, func(t *testing.T) {
+			schemas := []struct {
+				name string
+				load func(conn *sql.DB)
+				rows string
+			}{
+				{"shop", func(conn *sql.DB) { e.schema(t, conn) }, "300"},
+				{"wide150", func(conn *sql.DB) {
+					for _, stmt := range wideSchemaDDL(150, e.driver) {
+						execSQL(t, conn, stmt)
+					}
+				}, "200"},
+				{"keycloak", func(conn *sql.DB) { loadKeycloak(t, e, conn) }, "40"},
+			}
+			for _, sc := range schemas {
+				t.Run(sc.name, func(t *testing.T) {
+					dsn, conn := e.scratchDB(t, "ss_gen_"+sc.name)
+					sc.load(conn)
+					schemaPath := filepath.Join(t.TempDir(), "schema.yaml")
+					runBin(t, "introspect", "--db", e.name, "--dsn", dsn, "--out", schemaPath)
+					seed := []string{"seed", "--db", e.name, "--dsn", dsn, "--schema", schemaPath, "--rows", sc.rows, "--workers", "8", "--gen-workers", "4"}
+
+					runBin(t, seed...)
+					first := tableCounts(t, e, conn)
+					for table, n := range first {
+						if n == 0 {
+							t.Errorf("%s is empty after a concurrent-generation seed", table)
+						}
+					}
+					runBin(t, seed...)
+					for table, n := range tableCounts(t, e, conn) {
+						if n < first[table] {
+							t.Errorf("%s shrank on the second run: %d -> %d", table, first[table], n)
+						}
+					}
+				})
+			}
+		})
+	}
 }

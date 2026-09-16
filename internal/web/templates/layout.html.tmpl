@@ -53,7 +53,7 @@
             <span class="conn-dot {{.Session.Info.DBType}}"></span>
             <span class="conn-label">{{connName .Session.Info}}</span>
             <span class="muted small conn-host">@{{.Session.Info.Host}}</span>
-            <span class="access-badge" id="access-badge" hidden></span>
+            <span class="access-badge" id="access-badge" data-testid="access-badge" hidden></span>
             <span class="conn-count" title="{{len .Connections}} live {{if eq (len .Connections) 1}}connection{{else}}connections{{end}} in this server">{{len .Connections}} live</span>
             <span class="caret">▾</span>
           </summary>

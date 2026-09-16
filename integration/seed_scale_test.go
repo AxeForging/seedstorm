@@ -129,3 +129,73 @@ func TestSeed_WideTableStaysUnderThePlaceholderLimit(t *testing.T) {
 		})
 	}
 }
+
+// Memory used to follow row width: 20,000 rows per chunk whatever each row
+// held, so ~6KB rows peaked at 320MB (377MB with 8 writers) and wider rows grew
+// without bound. Chunks and the write queue are now bounded by memory. Rows here
+// are ~20KB, where one old-style chunk alone is ~400MB; the bound is far below.
+// (Live heap stays flat as rows grow; peak RSS varies with GC timing, so the
+// limit leaves room for that but not for a row-count-sized chunk.)
+func TestSeed_WideRowsStayUnderAMemoryBound(t *testing.T) {
+	const limitMB = 300
+	for _, e := range engines() {
+		t.Run(e.name, func(t *testing.T) {
+			rows, workerCounts := 30000, []string{"1", "8"}
+			if e.driver == mysqlDriver {
+				rows, workerCounts = 22000, []string{"8"} // MySQL writes wide rows slowly
+			}
+			dsn, conn := e.scratchDB(t, "ss_widerows")
+			body := "TEXT"
+			if e.driver == mysqlDriver {
+				body = "MEDIUMTEXT" // MySQL TEXT stops at 64KB
+			}
+			execSQL(t, conn, "CREATE TABLE docs (id BIGINT PRIMARY KEY, title VARCHAR(80) NOT NULL, body "+body+" NOT NULL)")
+			dir := t.TempDir()
+			schemaPath := filepath.Join(dir, "schema.yaml")
+			runBin(t, "introspect", "--db", e.name, "--dsn", dsn, "--out", schemaPath)
+			profile := filepath.Join(dir, "wide.yaml")
+			writeProfile(t, profile, "name: wide\ntables:\n  docs:\n    columns:\n      body: { faker: \"paragraph(130)\" }\n")
+
+			for _, workers := range workerCounts {
+				peak := runBinPeakRSS(t, "seed", "--db", e.name, "--dsn", dsn, "--schema", schemaPath,
+					"--rows", fmt.Sprint(rows), "--truncate", "--yes", "--workers", workers, "--profile", profile)
+				if n := countRows(t, conn, "docs"); n != rows {
+					t.Fatalf("workers=%s: docs has %d rows, want %d", workers, n, rows)
+				}
+				var avg float64
+				if err := conn.QueryRow("SELECT AVG(LENGTH(body)) FROM docs").Scan(&avg); err != nil {
+					t.Fatal(err)
+				}
+				if avg < 15000 {
+					t.Fatalf("average body is %.0f bytes: rows are not wide enough to test memory", avg)
+				}
+				t.Logf("workers=%s: %d rows of ~%.0f bytes, peak %dMB", workers, rows, avg, peak)
+				if peak > limitMB {
+					t.Errorf("workers=%s: seeding %d rows of ~%.0f bytes peaked at %dMB, limit %dMB", workers, rows, avg, peak, limitMB)
+				}
+			}
+		})
+	}
+}
+
+// Every table used to keep its generated keys (up to 500k each) until the run
+// ended, even tables nothing references: 100 tables × 30k rows peaked at 272MB.
+// Pools are now freed once no remaining table reads them.
+func TestSeed_ManyTablesDoNotKeepEveryKeyPool(t *testing.T) {
+	const tables, rows, limitMB = 100, 30000, 200
+	e := postgresEngine()
+	dsn, conn := e.scratchDB(t, "ss_manytables")
+	for i := 0; i < tables; i++ {
+		execSQL(t, conn, fmt.Sprintf("CREATE TABLE flat%03d (id BIGINT PRIMARY KEY, name VARCHAR(60) NOT NULL, email VARCHAR(80), amount NUMERIC(10,2))", i))
+	}
+	schemaPath := filepath.Join(t.TempDir(), "schema.yaml")
+	runBin(t, "introspect", "--db", e.name, "--dsn", dsn, "--out", schemaPath)
+	peak := runBinPeakRSS(t, "seed", "--db", e.name, "--dsn", dsn, "--schema", schemaPath, "--rows", fmt.Sprint(rows), "--workers", "8")
+	t.Logf("%d tables × %d rows peaked at %dMB", tables, rows, peak)
+	if peak > limitMB {
+		t.Errorf("seeding %d tables × %d rows peaked at %dMB, limit %dMB", tables, rows, peak, limitMB)
+	}
+	if n := countRows(t, conn, "flat099"); n != rows {
+		t.Fatalf("flat099 has %d rows, want %d", n, rows)
+	}
+}

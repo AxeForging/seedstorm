@@ -334,19 +334,19 @@
         ? `<span class="badge drift" title="Missing on target: ${esc((row.missingColumns || []).join(", ") || "none")}\nExtra on target: ${esc((row.extraColumns || []).join(", ") || "none")}">columns ≠</span>`
         : "";
       return `
-        <li class="cmp-gauge status-${row.status}" style="--i:${Math.min(i, 30)}">
+        <li class="cmp-gauge status-${row.status}" data-testid="cmp-gauge" style="--i:${Math.min(i, 30)}">
           <span class="cmp-g-check"><input type="checkbox" data-table="${esc(row.table)}" ${checked ? "checked" : ""} ${mirrorable ? "" : "disabled"} aria-label="Include ${esc(row.table)} in the mirror"></span>
           <span class="cmp-g-name">
-            <code title="${esc(row.table)}">${esc(row.table)}</code>
+            <code title="${esc(row.table)}" data-testid="cmp-gauge-table">${esc(row.table)}</code>
             <span class="cmp-g-status">${statusText}</span>${driftBadge}
           </span>
           <span class="cmp-g-src">
-            <span class="cmp-g-num" title="${src == null ? "" : statTitle(row.source)}">${src == null ? "—" : countText(row.source)}</span>
+            <span class="cmp-g-num" data-testid="cmp-gauge-source-rows" title="${src == null ? "" : statTitle(row.source)}">${src == null ? "—" : countText(row.source)}</span>
             <span class="cmp-bar src"><i style="width:${width(src)}%"></i></span>
           </span>
           <span class="cmp-g-tgt">
             <span class="cmp-bar tgt"><i style="width:${width(tgt)}%"></i></span>
-            <span class="cmp-g-num" title="${tgt == null ? "" : statTitle(row.target)}">${tgt == null ? "—" : countText(row.target)}</span>
+            <span class="cmp-g-num" data-testid="cmp-gauge-target-rows" title="${tgt == null ? "" : statTitle(row.target)}">${tgt == null ? "—" : countText(row.target)}</span>
           </span>
           <span class="cmp-g-delta ${delta < 0 ? "neg" : delta > 0 ? "pos" : ""}">${signed(delta)}</span>
         </li>`;
@@ -434,10 +434,10 @@
     const issues = ((result.issues || []).length
       ? `<div class="cmp-callout"><strong>Profile notes</strong><span>${result.issues.map((i) => esc(`${i.path}: ${i.message}`)).join("<br>")}</span></div>`
       : "") + (result.sameDatabaseUnchecked
-      ? `<div class="cmp-callout"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
+      ? `<div class="cmp-callout" data-testid="cmp-plan-imported-source"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
       : "");
     const rows = plan.entries.map((e, i) => `
-      <tr>
+      <tr data-testid="cmp-plan-row">
         <td class="num">${i + 1}</td>
         <td><code>${esc(e.table)}</code></td>
         <td class="num">${fmt(e.sourceRows)}</td>

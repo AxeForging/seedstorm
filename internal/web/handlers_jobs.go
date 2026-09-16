@@ -129,18 +129,18 @@ func writeSSE(w http.ResponseWriter, event, data string) {
 }
 
 func jobView(j *Job) map[string]any {
+	st := j.State()
+	errText := ""
+	if st.Err != nil {
+		errText = st.Err.Error()
+	}
 	return map[string]any{
 		"id":     j.ID,
 		"name":   j.Name,
-		"status": j.Status,
+		"status": st.Status,
 		"start":  j.StartedAt,
-		"end":    j.EndedAt,
-		"error": func() string {
-			if j.Err != nil {
-				return j.Err.Error()
-			}
-			return ""
-		}(),
-		"result": j.Result,
+		"end":    st.EndedAt,
+		"error":  errText,
+		"result": st.Result,
 	}
 }

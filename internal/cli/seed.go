@@ -16,7 +16,6 @@ import (
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
-	"github.com/brianvoe/gofakeit/v6"
 	"github.com/urfave/cli/v3"
 )
 
@@ -100,6 +99,7 @@ Use --dry-run to print SQL statements without executing them.`,
 				Usage:   "Launch interactive TUI to select tables and configure seeding",
 			},
 			workersFlag(),
+			genWorkersFlag(),
 			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -122,7 +122,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			seed := cmd.Int("seed")
 
 			if seed != 0 {
-				gofakeit.Seed(int64(seed))
+				faker.SeedRandom(int64(seed))
 				log.Info().Int("seed", seed).Msg("Using fixed random seed")
 			}
 
@@ -214,6 +214,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allTables, sortedTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
 				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
+				GenWorkers: cmd.Int("gen-workers"), Reproducible: cmd.Int("seed") != 0,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,

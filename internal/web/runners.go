@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"time"
 
@@ -55,6 +56,8 @@ type SeedRequest struct {
 	ProfileID    string         `json:"profileId,omitempty"`
 	// Workers is how many connections write at once (0: seeder.DefaultWorkers).
 	Workers int `json:"workers,omitempty"`
+	// GenWorkers is how many tables generate at once (0 or 1: one).
+	GenWorkers int `json:"genWorkers,omitempty"`
 }
 
 type CloneSchemaRequest struct {
@@ -318,10 +321,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	dryRunSQL := &cappedSQL{limit: webOutputLimit}
 	// allSorted is preloaded so target tables can FK-reference already-populated
 	// parents; targetTables alone is what gets generated.
-	onProgress, onTable := runProgress(jc, log)
+	onProgress, onTable, finishProgress := runProgress(jc, log)
 	res, err := seeder.Seed(ctx, connArg, sess.DBType, sc, allSorted, targetTables, seeder.SeedOptions{
 		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: tableRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
-		Workers: workers, OnProgress: onProgress, OnTable: onTable,
+		Workers: workers, GenWorkers: requestGenWorkers(req.GenWorkers), OnProgress: onProgress, OnTable: onTable,
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
@@ -338,6 +341,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	if err != nil {
 		return nil, err
 	}
+	finishProgress()
 	totalRows := res.Total
 	tableCounts := res.Counts
 	elapsed := time.Since(start).Round(time.Millisecond)
@@ -383,6 +387,7 @@ type GapsRequest struct {
 	TableRows    map[string]int `json:"tableRows,omitempty"`
 	ProfileID    string         `json:"profileId,omitempty"`
 	Workers      int            `json:"workers,omitempty"`
+	GenWorkers   int            `json:"genWorkers,omitempty"`
 }
 
 func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
@@ -473,10 +478,10 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 	if !req.DryRun {
 		defer syncSequencesLogged(ctx, conn, sess.DBType, gapTables, log)
 	}
-	onProgress, onTable := runProgress(jc, log)
+	onProgress, onTable, finishProgress := runProgress(jc, log)
 	res, err := seeder.Seed(ctx, conn, sess.DBType, sc, allSorted, gapTables, seeder.SeedOptions{
 		Rows: req.Rows, EnumRows: req.EnumRows, TableRows: profile.tableRows, BatchSize: req.BatchSize, DryRun: req.DryRun,
-		Workers: workers, OnProgress: onProgress, OnTable: onTable,
+		Workers: workers, GenWorkers: requestGenWorkers(req.GenWorkers), OnProgress: onProgress, OnTable: onTable,
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    profile.overrides,
@@ -487,6 +492,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 	if err != nil {
 		return nil, err
 	}
+	finishProgress()
 	totalRows := res.Total
 	result["filled"] = totalRows
 	if len(warnings) > 0 {
@@ -658,22 +664,33 @@ var progressEvery = 300 * time.Millisecond
 // runProgress streams a run's rows to the job: a progress event (rows written
 // of rows planned, with rate and ETA in its label) at most every progressEvery,
 // and a log line per finished table, which also drives the graph highlight.
-func runProgress(jc JobControl, log zerolog.Logger) (onProgress, onTable func(seeder.Progress)) {
+// finish sends the last observed tick if throttling held it back, so a run
+// always ends on its true total; call it once the run succeeds.
+func runProgress(jc JobControl, log zerolog.Logger) (onProgress, onTable func(seeder.Progress), finish func()) {
 	meter := seeder.NewMeter(time.Now())
 	var last time.Time
+	var pending *seeder.Progress
+	var pendingEst seeder.Estimate
 	onProgress = func(p seeder.Progress) {
 		now := time.Now()
 		est := meter.Observe(now, p.RowsDone, p.RowsTotal)
-		if now.Sub(last) < progressEvery && est.Done < est.Total {
+		if now.Sub(last) < progressEvery {
+			pending, pendingEst = &p, est
 			return
 		}
-		last = now
+		last, pending = now, nil
 		jc.Progress(int(est.Done), int(est.Total), progressLabel(p, est))
 	}
 	onTable = func(p seeder.Progress) {
 		log.Info().Str("table", p.Table).Int64("rows", p.Inserted).Msg("Table written")
 	}
-	return onProgress, onTable
+	finish = func() {
+		if pending != nil {
+			jc.Progress(int(pendingEst.Done), int(pendingEst.Total), progressLabel(*pending, pendingEst))
+			pending = nil
+		}
+	}
+	return onProgress, onTable, finish
 }
 
 // progressLabel reads "booking 120.0k/1.5M · 4200 rows/s · ETA 5m40s".
@@ -701,6 +718,11 @@ func requestWorkers(n int) int {
 
 // maxWorkers caps connections one web run may open against a database.
 const maxWorkers = 32
+
+// requestGenWorkers bounds a requested generator count to the machine's cores.
+func requestGenWorkers(n int) int {
+	return max(1, min(n, runtime.NumCPU()))
+}
 
 func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any {
 	out := make([]map[string]any, 0, len(warnings))

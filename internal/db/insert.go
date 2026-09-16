@@ -119,6 +119,18 @@ func SplitBatches(rows []map[string]interface{}, maxRows int) [][]map[string]int
 	return out
 }
 
+// RowsMemory estimates the memory held by generated rows: each row's values
+// plus the map and interface overhead around them. It sizes chunks and write
+// queues, so it errs high rather than low.
+func RowsMemory(rows []map[string]interface{}) int {
+	const perRow, perValue = 64, 48
+	n := 0
+	for _, row := range rows {
+		n += perRow + len(row)*perValue + rowBytes(row)
+	}
+	return n
+}
+
 // rowBytes estimates the wire size of a row's values: the data plus a small
 // per-value overhead for the protocol's type and length framing.
 func rowBytes(row map[string]interface{}) int {

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/brianvoe/gofakeit/v6"
 	"github.com/goccy/go-yaml"
 	"github.com/urfave/cli/v3"
 
@@ -67,7 +66,7 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 				return fmt.Errorf("unknown format %q (use table or json)", format)
 			}
 			if seed := cmd.Int("seed"); seed != 0 {
-				gofakeit.Seed(int64(seed))
+				faker.SeedRandom(int64(seed))
 			}
 			var profile *rules.RuleSet
 			if ref := cmd.String("profile"); ref != "" {

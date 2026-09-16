@@ -1,6 +1,6 @@
 {{define "scripts"}}<link rel="stylesheet" href="/static/profiles.css"><script src="/static/profiles.js" defer></script>{{end}}
 {{define "content"}}
-<section class="pf-shell" id="profiles-app">
+<section class="pf-shell" id="profiles-app" data-testid="pf-app">
   <header class="pf-head">
     <div class="pf-title">
       <span class="eyebrow">seed profiles</span>
@@ -15,22 +15,22 @@
       <button class="btn-ghost" id="pf-new" type="button">New</button>
       <button class="btn-ghost" id="pf-duplicate" type="button">Duplicate</button>
       <button class="btn-ghost" id="pf-import" type="button">Import YAML</button>
-      <button class="btn-ghost" id="pf-export" type="button">Export YAML</button>
+      <button class="btn-ghost" id="pf-export" data-testid="pf-export" type="button">Export YAML</button>
       <button class="btn-ghost pf-delete" id="pf-delete" type="button">Delete</button>
-      <button class="btn-primary" id="pf-save" type="button">Save profile</button>
+      <button class="btn-primary" id="pf-save" data-testid="pf-save" type="button">Save profile</button>
     </div>
   </header>
 
   <section class="pf-meta">
     <label class="field">
       <span class="field-label">Name <span class="muted">· used by <code>--profile</code></span></span>
-      <input id="pf-name" type="text" placeholder="loadtest" maxlength="80" autocomplete="off" spellcheck="false">
+      <input id="pf-name" data-testid="pf-name" type="text" placeholder="loadtest" maxlength="80" autocomplete="off" spellcheck="false">
     </label>
     <label class="field pf-desc">
       <span class="field-label">What is this data for?</span>
       <input id="pf-description" type="text" placeholder="Stress test for checkout; every row tagged for cleanup" maxlength="200" autocomplete="off">
     </label>
-    <p class="pf-status small" id="pf-status" role="status"></p>
+    <p class="pf-status small" id="pf-status" data-testid="pf-status" role="status"></p>
   </section>
 
   <div class="pf-grid">
@@ -74,9 +74,9 @@
         </header>
         <form class="pf-ignore-add" id="pf-ignore-form" autocomplete="off">
           <label class="sr-only" for="pf-ignore-input">Table or glob to ignore</label>
-          <input id="pf-ignore-input" type="text" placeholder="table name or glob" list="pf-ignore-tables" spellcheck="false">
+          <input id="pf-ignore-input" data-testid="pf-ignore-input" type="text" placeholder="table name or glob" list="pf-ignore-tables" spellcheck="false">
           <datalist id="pf-ignore-tables"></datalist>
-          <button class="btn-ghost" type="submit">Ignore</button>
+          <button class="btn-ghost" type="submit" data-testid="pf-ignore-add">Ignore</button>
         </form>
         <ul class="pf-ignore-list" id="pf-ignore-list"></ul>
         <p class="pf-empty muted small" id="pf-ignore-empty">No ignored tables: every table can be written.</p>
@@ -155,7 +155,7 @@
       <footer>
         <button class="btn-ghost" value="cancel" type="submit">Close</button>
         <button class="btn-ghost" id="pf-yaml-copy" type="button">Copy</button>
-        <a class="btn-primary" id="pf-yaml-download" download>Download</a>
+        <a class="btn-primary" id="pf-yaml-download" data-testid="pf-yaml-download" download>Download</a>
         <button class="btn-primary" id="pf-yaml-load" type="button">Load into builder</button>
       </footer>
     </form>

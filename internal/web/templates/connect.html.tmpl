@@ -4,7 +4,7 @@
       <input type="hidden" name="id" value="{{.Form.ID}}">
       <label class="field">
         <span class="field-label">Driver</span>
-        <select name="dbType" id="conn-dbtype" required>
+        <select name="dbType" id="conn-dbtype" data-testid="conn-driver" required>
           <option value="postgres" {{if ne .Form.DBType "mysql"}}selected{{end}}>PostgreSQL</option>
           <option value="mysql" {{if eq .Form.DBType "mysql"}}selected{{end}}>MySQL</option>
         </select>
@@ -28,26 +28,26 @@
 
       <label class="field">
         <span class="field-label">Host</span>
-        <input name="host" value="{{.Form.Host}}" required>
+        <input name="host" data-testid="conn-host" value="{{.Form.Host}}" required>
       </label>
       <label class="field">
         <span class="field-label">Port</span>
-        <input name="port" type="number" value="{{.Form.Port}}" required>
+        <input name="port" type="number" data-testid="conn-port" value="{{.Form.Port}}" required>
       </label>
 
       <label class="field">
         <span class="field-label">Database</span>
-        <input name="dbName" value="{{.Form.DBName}}" required placeholder="testdb">
+        <input name="dbName" data-testid="conn-database" value="{{.Form.DBName}}" required placeholder="testdb">
       </label>
       <label class="field">
         <span class="field-label">User</span>
-        <input name="user" value="{{.Form.User}}" required placeholder="seedstorm">
+        <input name="user" data-testid="conn-user" value="{{.Form.User}}" required placeholder="seedstorm">
       </label>
 
       <label class="field span-2">
         <span class="field-label">Password</span>
         <span class="input-eye">
-          <input name="password" id="conn-password" type="password" autocomplete="off"
+          <input name="password" id="conn-password" data-testid="conn-password" type="password" autocomplete="off"
                  {{if .Form.NeedsPassword}}placeholder="not stored — enter it to connect"{{end}}>
           <button type="button" id="toggle-password" class="eye-btn" aria-label="Reveal password" data-revealed="false">
             <svg class="eye-icon eye-icon-open" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -102,7 +102,7 @@
       </div>
 
       <div class="connect-actions span-2">
-        <button class="btn-primary btn-connect" type="submit" name="action" value="connect" id="submit-connect">
+        <button class="btn-primary btn-connect" type="submit" name="action" value="connect" id="submit-connect" data-testid="conn-connect">
           <span>Connect</span>
           <span class="btn-arrow" aria-hidden="true">→</span>
         </button>

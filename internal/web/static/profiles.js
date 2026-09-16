@@ -215,11 +215,11 @@
     $("pf-ignore-list").innerHTML = globs.map((glob, i) => {
       const tables = matches.get(glob) || [];
       const hits = state.explain
-        ? (tables.length ? tables.slice(0, 8).map((t) => `<code>${esc(t)}</code>`).join(" ") + (tables.length > 8 ? ` +${tables.length - 8}` : "") : '<span class="pf-warn-text">matches no table on this connection</span>')
+        ? (tables.length ? tables.slice(0, 8).map((t) => `<code data-testid="pf-ignore-hit">${esc(t)}</code>`).join(" ") + (tables.length > 8 ? ` +${tables.length - 8}` : "") : '<span class="pf-warn-text">matches no table on this connection</span>')
         : '<span class="muted">…</span>';
-      return `<li class="pf-ignore-item">
-        <code class="pf-ignore-glob">${esc(glob)}</code>
-        <span class="pf-ignore-hits small">${hits}</span>
+      return `<li class="pf-ignore-item" data-testid="pf-ignore-item">
+        <code class="pf-ignore-glob" data-testid="pf-ignore-glob">${esc(glob)}</code>
+        <span class="pf-ignore-hits small" data-testid="pf-ignore-hits">${hits}</span>
         <button type="button" class="btn-ghost pf-ignore-remove" data-ignore-index="${i}" aria-label="Stop ignoring ${esc(glob)}">×</button>
       </li>`;
     }).join("");

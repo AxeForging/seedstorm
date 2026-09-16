@@ -23,15 +23,24 @@ func Build(s *schema.Schema) *Graph {
 		inDegree: make(map[string]int),
 	}
 
+	// Tables and columns are walked in sorted order: the topological order
+	// decides which table generates first, so it must not follow Go's random
+	// map iteration if --seed is to reproduce a run.
 	for tableName := range s.Tables {
 		g.nodes = append(g.nodes, tableName)
-		if _, exists := g.inDegree[tableName]; !exists {
-			g.inDegree[tableName] = 0
-		}
+		g.inDegree[tableName] = 0
 	}
+	sort.Strings(g.nodes)
 
-	for tableName, table := range s.Tables {
-		for _, col := range table.Columns {
+	for _, tableName := range g.nodes {
+		table := s.Tables[tableName]
+		colNames := make([]string, 0, len(table.Columns))
+		for colName := range table.Columns {
+			colNames = append(colNames, colName)
+		}
+		sort.Strings(colNames)
+		for _, colName := range colNames {
+			col := table.Columns[colName]
 			if col.FK == "" {
 				continue
 			}

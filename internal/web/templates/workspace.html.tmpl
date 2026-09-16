@@ -1,6 +1,6 @@
 {{define "content"}}
 <section class="workspace">
-  <aside class="ws-rail">
+  <aside class="ws-rail" data-testid="ws-rail">
     <header class="ws-rail-head">
       <h2>Workspace</h2>
       <p class="muted small">Select tables from the graph. Required parents are added automatically.</p>
@@ -16,18 +16,18 @@
         <span class="ws-stat-label">empty</span>
       </div>
       <div>
-        <span class="ws-stat-value" id="ws-stat-populated">0</span>
+        <span class="ws-stat-value" id="ws-stat-populated" data-testid="ws-stat-populated">0</span>
         <span class="ws-stat-label">with rows</span>
       </div>
     </div>
 
-    <div class="ws-access" id="ws-access" hidden></div>
+    <div class="ws-access" id="ws-access" data-testid="ws-access" hidden></div>
 
     <div class="ws-toolbar">
       <label class="ws-search">
         <span class="sr-only">Find table</span>
-        <input id="ws-search" type="search" placeholder="Find table" aria-describedby="ws-search-count">
-        <span class="ws-search-count muted" id="ws-search-count" aria-live="polite"></span>
+        <input id="ws-search" data-testid="ws-search" type="search" placeholder="Find table" aria-describedby="ws-search-count">
+        <span class="ws-search-count muted" id="ws-search-count" data-testid="ws-search-count" aria-live="polite"></span>
         <kbd>/</kbd>
       </label>
       <button class="btn-ghost" data-act="all">Select all</button>
@@ -38,19 +38,19 @@
     </div>
 
     <div class="ws-tabs">
-      <button class="ws-tab active" data-tab="selected">Selected</button>
+      <button class="ws-tab active" data-tab="selected" data-testid="ws-tab-selected">Selected</button>
       <button class="ws-tab" data-tab="detail">Table</button>
-      <button class="ws-tab" data-tab="ignored" id="ws-tab-ignored" hidden>Ignored <b id="ws-ignored-count">0</b></button>
+      <button class="ws-tab" data-tab="ignored" id="ws-tab-ignored" data-testid="ws-tab-ignored" hidden>Ignored <b id="ws-ignored-count">0</b></button>
       <button class="ws-tab" data-tab="logs">Logs</button>
     </div>
 
     <div class="ws-tab-body" data-tab="selected">
       <div class="ws-counter">
         <span id="ws-count-selected">0</span> selected ·
-        <span id="ws-count-auto">0</span> auto-locked ·
-        <span id="ws-count-total">0</span> total
+        <span id="ws-count-auto" data-testid="ws-count-auto">0</span> auto-locked ·
+        <span id="ws-count-total" data-testid="ws-count-total">0</span> total
       </div>
-      <div class="ws-scope" id="ws-scope">Run scope: all tables</div>
+      <div class="ws-scope" id="ws-scope" data-testid="ws-scope">Run scope: all tables</div>
       <p class="muted small ws-tip">Use <strong>Peek</strong> for inline rows, or <strong>Open</strong> for the full paginated table.</p>
       <ol class="ws-selected-list" id="ws-selected-list"></ol>
       <p class="muted small empty-hint" id="ws-selected-empty">No explicit selection. Run applies to every table; click nodes or choose <kbd>Empty</kbd> to narrow the scope.</p>
@@ -74,7 +74,7 @@
     <div class="ws-tab-body" data-tab="logs" hidden>
       <div class="row spread">
         <div class="row">
-          <span class="status-pill" id="job-status">idle</span>
+          <span class="status-pill" id="job-status" data-testid="job-status">idle</span>
           <span class="muted small" id="job-elapsed"></span>
         </div>
         <div class="row">
@@ -84,7 +84,7 @@
       </div>
       <div class="job-progress-wrap" id="job-progress-wrap" hidden>
         <div class="job-progress-head">
-          <strong id="job-progress-count"></strong>
+          <strong id="job-progress-count" data-testid="job-progress-count"></strong>
           <span class="muted small" id="job-progress-pct"></span>
         </div>
         <progress class="job-progress" id="job-progress" max="100" value="0"></progress>
@@ -95,7 +95,7 @@
     </div>
   </aside>
 
-  <div class="ws-canvas-wrap">
+  <div class="ws-canvas-wrap" data-testid="ws-canvas-wrap">
     <div class="ws-canvas-tools" aria-label="Graph controls">
       <div class="ws-route-toggle" aria-label="Edge routing">
         <button class="btn-ghost active" data-route="straight" type="button" title="Straight relationships">Straight</button>
@@ -104,24 +104,24 @@
       </div>
       <div class="ws-view-toggle" aria-label="Navigation">
         <button class="btn-ghost" id="ws-autozoom" type="button" aria-pressed="true" title="Zoom to search matches as you type">Zoom to matches</button>
-        <button class="btn-ghost" id="ws-navigator" type="button" aria-pressed="false" title="Keep labels readable and navigate a large graph with a minimap">Navigator</button>
+        <button class="btn-ghost" id="ws-navigator" data-testid="ws-navigator" type="button" aria-pressed="false" title="Keep labels readable and navigate a large graph with a minimap">Navigator</button>
       </div>
       <button class="btn-ghost" id="ws-fit" type="button" title="Fit graph (F)">Fit</button>
       <button class="btn-ghost" id="ws-zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
       <button class="btn-ghost" id="ws-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">−</button>
     </div>
-    <div id="cy" class="ws-canvas"></div>
-    <div class="ws-match-bar" id="ws-match-bar" hidden role="toolbar" aria-label="Search matches">
-      <span class="ws-match-label" id="ws-match-label" aria-live="polite"></span>
-      <button class="btn-ghost" id="ws-match-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">‹</button>
-      <button class="btn-ghost" id="ws-match-next" type="button" aria-label="Next match" title="Next match (Enter)">›</button>
-      <button class="btn-ghost" id="ws-match-only" type="button" aria-pressed="false" title="Show only the matches and the tables they link to">Only matches</button>
+    <div id="cy" class="ws-canvas" data-testid="ws-canvas"></div>
+    <div class="ws-match-bar" id="ws-match-bar" data-testid="ws-match-bar" hidden role="toolbar" aria-label="Search matches">
+      <span class="ws-match-label" id="ws-match-label" data-testid="ws-match-label" aria-live="polite"></span>
+      <button class="btn-ghost" id="ws-match-prev" data-testid="ws-match-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">‹</button>
+      <button class="btn-ghost" id="ws-match-next" data-testid="ws-match-next" type="button" aria-label="Next match" title="Next match (Enter)">›</button>
+      <button class="btn-ghost" id="ws-match-only" data-testid="ws-match-only" type="button" aria-pressed="false" title="Show only the matches and the tables they link to">Only matches</button>
     </div>
     <div class="ws-minimap" id="ws-minimap" hidden>
-      <canvas id="ws-minimap-canvas" width="220" height="150" aria-label="Minimap: click or drag to move the view"></canvas>
-      <span class="ws-minimap-zoom muted" id="ws-minimap-zoom"></span>
+      <canvas id="ws-minimap-canvas" data-testid="ws-minimap-canvas" width="220" height="150" aria-label="Minimap: click or drag to move the view"></canvas>
+      <span class="ws-minimap-zoom muted" id="ws-minimap-zoom" data-testid="ws-minimap-zoom"></span>
     </div>
-    <div class="ws-graph-loading" id="ws-graph-loading">
+    <div class="ws-graph-loading" id="ws-graph-loading" data-testid="ws-graph-loading">
       <span class="ws-loading-spinner" aria-hidden="true"></span>
       <div>
         <strong class="ws-loading-title">Loading schema</strong>
@@ -140,27 +140,27 @@
     </div>
   </div>
 
-  <footer class="ws-actionbar">
+  <footer class="ws-actionbar" data-testid="ws-actionbar">
     <div class="ws-run-group ws-run-modes">
       <span class="ws-run-label">Mode</span>
       <div class="ws-mode" role="tablist" aria-label="Run mode">
-        <button class="ws-mode-pill active" data-mode="seed" type="button">
-          <i class="ws-mode-warn" data-warn="seed" hidden>!</i>
+        <button class="ws-mode-pill active" data-mode="seed" data-testid="ws-mode-seed" type="button">
+          <i class="ws-mode-warn" data-warn="seed" data-testid="ws-mode-warn-seed" hidden>!</i>
           <strong>Seed</strong>
           <span>write rows</span>
         </button>
-        <button class="ws-mode-pill" data-mode="gaps" type="button">
-          <i class="ws-mode-warn" data-warn="gaps" hidden>!</i>
+        <button class="ws-mode-pill" data-mode="gaps" data-testid="ws-mode-gaps" type="button">
+          <i class="ws-mode-warn" data-warn="gaps" data-testid="ws-mode-warn-gaps" hidden>!</i>
           <strong>Fill empty</strong>
           <span>only gaps</span>
         </button>
-        <button class="ws-mode-pill" data-mode="generate" type="button">
-          <i class="ws-mode-warn" data-warn="generate" hidden>!</i>
+        <button class="ws-mode-pill" data-mode="generate" data-testid="ws-mode-generate" type="button">
+          <i class="ws-mode-warn" data-warn="generate" data-testid="ws-mode-warn-generate" hidden>!</i>
           <strong>Generate</strong>
           <span>no DB write</span>
         </button>
-        <button class="ws-mode-pill" data-mode="clone" type="button" title="Clone schema to another database">
-          <i class="ws-mode-warn" data-warn="clone" hidden>!</i>
+        <button class="ws-mode-pill" data-mode="clone" data-testid="ws-mode-clone" type="button" title="Clone schema to another database">
+          <i class="ws-mode-warn" data-warn="clone" data-testid="ws-mode-warn-clone" hidden>!</i>
           <strong>Clone schema</strong>
           <span>to another DB</span>
         </button>
@@ -170,14 +170,18 @@
       <span class="ws-run-label">Volume</span>
       <label class="field-tight">
         <span>Rows / table</span>
-        <input id="cfg-rows" type="number" value="20" min="0">
+        <input id="cfg-rows" data-testid="ws-rows" type="number" value="20" min="0">
       </label>
       <details class="ws-tuning">
-        <summary class="btn-ghost" title="Batch size, enum rows, self-reference depth and parallel writers">Tuning <span class="muted" id="ws-tuning-summary">4 writers</span></summary>
+        <summary class="btn-ghost" data-testid="ws-tuning-toggle" title="Batch size, enum rows, self-reference depth and parallel writers">Tuning <span class="muted" id="ws-tuning-summary" data-testid="ws-tuning-summary">4 writers</span></summary>
         <div class="ws-tuning-panel">
           <label class="field-tight">
             <span>Writers</span>
-            <input id="cfg-workers" type="number" value="4" min="1" max="32" title="Connections writing at once. Tables still write after the tables they reference.">
+            <input id="cfg-workers" data-testid="ws-workers" type="number" value="4" min="1" max="32" title="Connections writing at once. Tables still write after the tables they reference.">
+          </label>
+          <label class="field-tight">
+            <span>Generators</span>
+            <input id="cfg-gen-workers" data-testid="ws-gen-workers" type="number" value="1" min="1" max="64" title="Tables generated at once on separate cores. Needs Writers above 1.">
           </label>
           <label class="field-tight">
             <span>Batch</span>
@@ -191,7 +195,7 @@
             <span>Self-ref</span>
             <input id="cfg-selfref-depth" type="number" value="2" min="0">
           </label>
-          <p class="muted small">More writers finish sooner on a server with headroom. Use 1 for a strictly sequential run.</p>
+          <p class="muted small">More writers finish sooner on a server with headroom; more generators help once the database keeps up. Use 1 and 1 for a strictly sequential run.</p>
         </div>
       </details>
     </div>
@@ -208,14 +212,14 @@
       </label>
       <label class="field-tight" title="Seed profile: value rules applied to seed, fill-empty and generate">
         <span>Profile <a class="ws-profile-link" href="/profiles">edit</a></span>
-        <select id="cfg-profile"><option value="">none (automatic)</option></select>
+        <select id="cfg-profile" data-testid="ws-profile"><option value="">none (automatic)</option></select>
       </label>
     </div>
     <div class="ws-run-group ws-clone" id="ws-clone-config" hidden>
       <span class="ws-run-label">Clone target</span>
       <label class="field-tight">
         <span>Target</span>
-        <select id="cfg-clone-target"></select>
+        <select id="cfg-clone-target" data-testid="ws-clone-target"></select>
       </label>
       <label class="field-tight inline">
         <input id="cfg-clone-drop" type="checkbox"> drop existing
@@ -226,14 +230,14 @@
       <fieldset class="ws-clone-objects">
         <legend class="sr-only">Also clone</legend>
         <span class="ws-clone-objects-label">Also</span>
-        <label class="field-tight inline" title="Views and materialized views"><input id="cfg-clone-views" type="checkbox"> views</label>
-        <label class="field-tight inline" title="Functions and stored procedures"><input id="cfg-clone-routines" type="checkbox"> routines</label>
-        <label class="field-tight inline"><input id="cfg-clone-triggers" type="checkbox"> triggers</label>
+        <label class="field-tight inline" title="Views and materialized views"><input id="cfg-clone-views" data-testid="ws-clone-views" type="checkbox"> views</label>
+        <label class="field-tight inline" title="Functions and stored procedures"><input id="cfg-clone-routines" data-testid="ws-clone-routines" type="checkbox"> routines</label>
+        <label class="field-tight inline"><input id="cfg-clone-triggers" data-testid="ws-clone-triggers" type="checkbox"> triggers</label>
       </fieldset>
     </div>
     <div class="ws-run-wrap">
-      <button class="btn-primary" id="ws-run">Run all tables</button>
-      <p class="ws-run-note" id="ws-run-note" hidden></p>
+      <button class="btn-primary" id="ws-run" data-testid="ws-run">Run all tables</button>
+      <p class="ws-run-note" id="ws-run-note" data-testid="ws-run-note" hidden></p>
     </div>
   </footer>
 

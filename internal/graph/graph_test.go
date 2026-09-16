@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -415,4 +416,33 @@ func posOf(sorted []string) map[string]int {
 		m[n] = i
 	}
 	return m
+}
+
+// The seed order decides which table generates first, so --seed can only
+// reproduce a run if the order never depends on map iteration.
+func TestTopologicalSort_OrderIsIdenticalOnEveryBuild(t *testing.T) {
+	s := &schema.Schema{Tables: map[string]schema.Table{}}
+	for i := 0; i < 40; i++ {
+		cols := map[string]schema.Column{"id": {PK: true}}
+		if i > 0 {
+			cols["parent_id"] = schema.Column{FK: fmt.Sprintf("t%02d.id", i/3)}
+		}
+		if i > 5 {
+			cols["other_id"] = schema.Column{FK: fmt.Sprintf("t%02d.id", i/5)}
+		}
+		s.Tables[fmt.Sprintf("t%02d", i)] = schema.Table{Columns: cols}
+	}
+	want, err := Build(s).TopologicalSort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		got, err := Build(s).TopologicalSort()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("build %d ordered tables differently:\n%v\n%v", i, got, want)
+		}
+	}
 }

@@ -17,6 +17,10 @@ import (
 // once. The engine itself defaults to one (strictly sequential) when unset.
 const DefaultWorkers = 4
 
+// approxRowMemory converts a row cap into a memory budget when chunks are not
+// bounded by bytes.
+const approxRowMemory = 1 << 10
+
 // maxTransientRetries bounds retries of a statement the database refused only
 // because of a lock conflict between concurrent writers.
 const maxTransientRetries = 3
@@ -34,7 +38,7 @@ const maxTransientRetries = 3
 //
 // Tables wait in their own dispatcher goroutine, never inside a worker, so a
 // child waiting for a parent cannot starve the workers the parent needs.
-// Memory stays bounded: submit blocks while too many rows are queued.
+// Memory stays bounded: submit blocks while too much row memory is queued.
 type writer struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
@@ -54,12 +58,12 @@ type writer struct {
 	onDone    func(table string)
 }
 
-func newWriter(ctx context.Context, conn *sql.DB, dbType string, batch, workers, maxQueuedRows int) *writer {
+func newWriter(ctx context.Context, conn *sql.DB, dbType string, batch, workers, maxQueuedBytes int) *writer {
 	wctx, cancel := context.WithCancelCause(ctx)
 	w := &writer{
 		ctx: wctx, cancel: cancel, conn: conn, dbType: dbType, batch: batch, workers: workers,
 		work:   make(chan func()),
-		budget: newRowBudget(maxQueuedRows),
+		budget: newRowBudget(maxQueuedBytes),
 	}
 	for i := 0; i < workers; i++ {
 		w.running.Add(1)
@@ -73,6 +77,12 @@ func newWriter(ctx context.Context, conn *sql.DB, dbType string, batch, workers,
 	return w
 }
 
+// queued is a piece of a chunk waiting for a worker, with the memory it holds.
+type queued struct {
+	rows []map[string]interface{}
+	size int
+}
+
 // tableWriter queues one table's chunks.
 type tableWriter struct {
 	w       *writer
@@ -81,7 +91,7 @@ type tableWriter struct {
 	ordered bool
 
 	mu     sync.Mutex
-	queue  [][]map[string]interface{}
+	queue  []queued
 	closed bool
 	wake   chan struct{}
 	done   chan struct{}
@@ -100,11 +110,12 @@ func (w *writer) open(name string, parents []*tableWriter, ordered bool) *tableW
 // queued rows. It fails once the run has failed or been cancelled.
 func (tw *tableWriter) submit(rows []map[string]interface{}) error {
 	for _, piece := range tw.pieces(rows) {
-		if err := tw.w.budget.acquire(tw.w.ctx, len(piece)); err != nil {
+		size := db.RowsMemory(piece)
+		if err := tw.w.budget.acquire(tw.w.ctx, size); err != nil {
 			return context.Cause(tw.w.ctx)
 		}
 		tw.mu.Lock()
-		tw.queue = append(tw.queue, piece)
+		tw.queue = append(tw.queue, queued{rows: piece, size: size})
 		tw.mu.Unlock()
 		tw.signal()
 	}
@@ -158,7 +169,7 @@ func (tw *tableWriter) dispatch() {
 	}
 	var pending sync.WaitGroup
 	for {
-		rows, ok := tw.next()
+		item, ok := tw.next()
 		if !ok {
 			break
 		}
@@ -167,13 +178,13 @@ func (tw *tableWriter) dispatch() {
 		task := func() {
 			defer pending.Done()
 			defer close(finished)
-			tw.write(rows)
+			tw.write(item)
 		}
 		select {
 		case w.work <- task:
 		case <-w.ctx.Done():
 			pending.Done()
-			w.budget.release(len(rows))
+			w.budget.release(item.size)
 			continue
 		}
 		if tw.ordered {
@@ -192,26 +203,26 @@ func (tw *tableWriter) dispatch() {
 
 // next waits for the next queued chunk. It reports false once the table is
 // closed and drained, or the run was cancelled (queued rows are dropped).
-func (tw *tableWriter) next() ([]map[string]interface{}, bool) {
+func (tw *tableWriter) next() (queued, bool) {
 	for {
 		tw.mu.Lock()
 		if len(tw.queue) > 0 {
-			rows := tw.queue[0]
-			tw.queue[0] = nil
+			item := tw.queue[0]
+			tw.queue[0] = queued{}
 			tw.queue = tw.queue[1:]
 			tw.mu.Unlock()
-			return rows, true
+			return item, true
 		}
 		closed := tw.closed
 		tw.mu.Unlock()
 		if closed {
-			return nil, false
+			return queued{}, false
 		}
 		select {
 		case <-tw.wake:
 		case <-tw.w.ctx.Done():
 			tw.discard()
-			return nil, false
+			return queued{}, false
 		}
 	}
 }
@@ -219,17 +230,18 @@ func (tw *tableWriter) next() ([]map[string]interface{}, bool) {
 // discard drops queued rows after a failure, returning their budget.
 func (tw *tableWriter) discard() {
 	tw.mu.Lock()
-	queued := tw.queue
+	pending := tw.queue
 	tw.queue = nil
 	tw.mu.Unlock()
-	for _, rows := range queued {
-		tw.w.budget.release(len(rows))
+	for _, item := range pending {
+		tw.w.budget.release(item.size)
 	}
 }
 
-func (tw *tableWriter) write(rows []map[string]interface{}) {
+func (tw *tableWriter) write(item queued) {
 	w := tw.w
-	defer w.budget.release(len(rows))
+	rows := item.rows
+	defer w.budget.release(item.size)
 	if w.ctx.Err() != nil {
 		return
 	}
@@ -264,7 +276,7 @@ func (w *writer) wait() error {
 	return err
 }
 
-// rowBudget bounds how many generated rows wait to be written.
+// rowBudget bounds the memory of generated rows waiting to be written.
 type rowBudget struct {
 	mu      sync.Mutex
 	used    int

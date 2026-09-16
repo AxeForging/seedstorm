@@ -782,7 +782,9 @@
       summary.forEach((item) => {
         const card = document.createElement("div");
         card.className = "result-stat";
+        card.dataset.testid = "result-stat-" + item.label;
         const value = document.createElement("strong");
+        value.dataset.testid = "result-stat-value";
         value.textContent = item.value;
         const label = document.createElement("span");
         label.textContent = item.label;
@@ -1181,6 +1183,7 @@
     });
     document.getElementById("cfg-rows")?.addEventListener("input", () => refreshSelectionUI());
     document.getElementById("cfg-workers")?.addEventListener("input", syncTuningSummary);
+    document.getElementById("cfg-gen-workers")?.addEventListener("input", syncTuningSummary);
     document.getElementById("cfg-truncate")?.addEventListener("change", updateAccessWarnings);
     document.getElementById("cfg-profile")?.addEventListener("change", (ev) => loadProfileInsights(ev.target.value));
     document.getElementById("cfg-clone-target")?.addEventListener("change", loadCloneTargetAccess);
@@ -1221,8 +1224,9 @@
 
   function syncTuningSummary() {
     const n = Number(document.getElementById("cfg-workers")?.value || 0);
+    const g = Number(document.getElementById("cfg-gen-workers")?.value || 0);
     const el = document.getElementById("ws-tuning-summary");
-    if (el) el.textContent = n > 1 ? `${n} writers` : "sequential";
+    if (el) el.textContent = n > 1 ? `${n} writers${g > 1 ? ` · ${g} gen` : ""}` : "sequential";
   }
 
   // Seed profiles apply to seed, fill-empty and generate runs from the workspace.
@@ -1801,11 +1805,13 @@
     for (const item of ordered) {
       const li = document.createElement("li");
       li.className = "ws-sel-item " + item.kind;
+      li.dataset.testid = "ws-selected-item";
       if (ws.peek.has(item.id)) li.classList.add("open");
       const main = document.createElement("div");
       main.className = "ws-sel-main";
       const name = document.createElement("span");
       name.className = "ws-sel-name";
+      name.dataset.testid = "ws-selected-name";
       name.textContent = item.id;
       const volume = document.createElement("label");
       volume.className = "ws-sel-rows";
@@ -1833,6 +1839,7 @@
       actions.className = "ws-sel-actions";
       const tag = document.createElement("span");
       tag.className = "ws-sel-tag";
+      tag.dataset.testid = "ws-selected-tag";
       tag.textContent = item.kind === "sel" ? "selected" : "auto";
       if (ws.ignored.has(item.id)) {
         tag.textContent = "ignored";
@@ -2052,7 +2059,9 @@
     if (!bar) return;
     bar.hidden = !ws.search || count < 2;
     const label = document.getElementById("ws-match-label");
-    if (label) label.textContent = `${count} matches`;
+    // Keep the position once the user has stepped through matches, like the
+    // search box does.
+    if (label) label.textContent = ws.searchIndex >= 0 ? `${ws.searchIndex + 1} of ${count} matches` : `${count} matches`;
     const only = document.getElementById("ws-match-only");
     if (only) {
       only.setAttribute("aria-pressed", String(!!ws.onlyMatches));
@@ -2452,7 +2461,7 @@
     list.innerHTML = [...ws.ignored.entries()].map(([table, pattern]) => {
       const node = ws.nodes.find((n) => n.id === table);
       const rows = node && node.counted ? formatCount(node.count) : "?";
-      return `<tr><td><code>${escapeHTML(table)}</code></td><td><code class="muted">${escapeHTML(pattern)}</code></td><td class="num">${rows}</td></tr>`;
+      return `<tr data-testid="ws-ignored-row"><td data-testid="ws-ignored-table"><code>${escapeHTML(table)}</code></td><td data-testid="ws-ignored-pattern"><code class="muted">${escapeHTML(pattern)}</code></td><td class="num">${rows}</td></tr>`;
     }).join("");
   }
 
@@ -2696,7 +2705,7 @@
       const cells = visibleColumns.map((c) => `<td title="${escapeHTML(row[c] || "")}">${formatPreviewCell(row[c])}</td>`).join("");
       return `<tr>${cells}</tr>`;
     }).join("");
-    box.innerHTML = `<table class="preview-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    box.innerHTML = `<table class="preview-table" data-testid="preview-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   }
 
   function formatPreviewCell(value) {
@@ -2730,6 +2739,7 @@
       dryRun: document.getElementById("cfg-dryrun").checked,
       disableFK: document.getElementById("cfg-disablefk").checked,
       workers: Number(document.getElementById("cfg-workers")?.value || 0),
+      genWorkers: Number(document.getElementById("cfg-gen-workers")?.value || 0),
       tables,
       tableRows: tableRowPayload(),
     };

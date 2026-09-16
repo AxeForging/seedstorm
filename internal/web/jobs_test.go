@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -233,5 +234,38 @@ func TestJobWriter_ConcurrentLogLinesStayWhole(t *testing.T) {
 		if !strings.HasPrefix(l.Text, "INFO Table written") || !strings.Contains(l.Text, "table=t_writer_table_name") {
 			t.Fatalf("mangled log line %q", l.Text)
 		}
+	}
+}
+
+// Browsers open and close a job's stream while it runs, and poll its status.
+// Subscribers were ranged over outside the lock (a concurrent map write is a
+// fatal, unrecoverable crash) and jobView read fields the job goroutine writes.
+func TestJob_StreamsAndStatusPollsDuringARunAreRaceFree(t *testing.T) {
+	m := NewManager()
+	release := make(chan struct{})
+	job := m.Start(context.Background(), "busy", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		for i := 0; i < 2000; i++ {
+			jc.Progress(i, 2000, "tick")
+		}
+		<-release
+		return map[string]any{"ok": true}, nil
+	})
+	var wg sync.WaitGroup
+	for v := 0; v < 8; v++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				ch, _ := job.Subscribe()
+				job.Unsubscribe(ch)
+				_ = jobView(job)
+			}
+		}()
+	}
+	wg.Wait()
+	close(release)
+	<-job.Done()
+	if v := jobView(job); v["status"] != JobDone {
+		t.Fatalf("status = %v, want done", v["status"])
 	}
 }

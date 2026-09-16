@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sync"
 
+	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
@@ -29,6 +31,10 @@ type Stream struct {
 	sinceDraw map[string]int
 	// offset is how many rows value rules have already numbered, per table.
 	offset map[string]int
+	// gen draws random values; a fork may switch to its own (UseOwnRandom).
+	gen generator
+	// mu guards the maps above while forks are taken and merged (ForkTable).
+	mu sync.Mutex
 }
 
 // NewStream reads existing PKs of allTables and the stored keys of
@@ -38,10 +44,11 @@ func NewStream(s *schema.Schema, allTables, targetTables []string, conn *sql.DB,
 	g := &Stream{
 		sc: s, pks: make(map[string][]interface{}), cursor: make(map[string]int),
 		conn: conn, dbType: dbType, sampled: make(map[string]bool), sinceDraw: make(map[string]int), offset: make(map[string]int),
+		gen: defaultGen,
 	}
 	preloaded := make(map[string]bool, len(targetTables))
 	if conn != nil {
-		if err := queryExistingPKs(conn, allTables, s.Tables, g.pks, dbType, g.sampled); err != nil {
+		if err := g.gen.queryExistingPKs(conn, allTables, s.Tables, g.pks, dbType, g.sampled); err != nil {
 			return nil, err
 		}
 		for _, t := range allTables {
@@ -105,6 +112,15 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 	trackKeys := keys != nil && pkColumnCount(table) > 0
 	var buf []map[string]interface{}
 	preloaded := len(g.pks[tableName])
+	// limit is the row count of the chunk being built. With ChunkBytes the
+	// first chunk holds at most firstChunkRows; rows are measured once final
+	// (value rules can make them much wider than generated) and later chunks
+	// are sized from that. Tables no larger than firstChunkRows chunk exactly
+	// as without ChunkBytes.
+	limit, rowMemory := chunk, 0
+	if opts.ChunkBytes > 0 {
+		limit = min(chunk, firstChunkRows)
+	}
 
 	flush := func() error {
 		if len(buf) == 0 {
@@ -114,6 +130,10 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 		buf = nil
 		if err != nil {
 			return err
+		}
+		if opts.ChunkBytes > 0 && len(out) > 0 {
+			sample := out[:min(len(out), chunkSampleRows)]
+			rowMemory = max(1, db.RowsMemory(sample)/len(sample))
 		}
 		if err := emit(out); err != nil {
 			return err
@@ -133,8 +153,11 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 					return err
 				}
 				preloaded = len(g.pks[tableName])
+				if rowMemory > 0 {
+					limit = chunkLimit(chunk, opts.ChunkBytes, rowMemory)
+				}
 			}
-			k := min(n, chunk-len(buf))
+			k := min(n, limit-len(buf))
 			piece := map[string][]map[string]interface{}{tableName: nil}
 			if err := gen(piece, k); err != nil {
 				return fmt.Errorf("table %s: %w", tableName, err)
@@ -150,7 +173,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 			}
 			buf = append(buf, got...)
 			n -= len(got)
-			if len(buf) >= chunk {
+			if len(buf) >= limit {
 				if err := flush(); err != nil {
 					return err
 				}
@@ -167,7 +190,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 	enumView := withoutColumns(table, opts.Overrides[tableName])
 	enumCol, enumVals := findEnumColumn(enumView)
 	var scratch map[string][]map[string]interface{}
-	_, _, composite, err := enumerateCompositeFKPKRows(scratch, g.pks, table, tableName, 0, keys, g.cursor[tableName])
+	_, _, composite, err := g.gen.enumerateCompositeFKPKRows(scratch, g.pks, table, tableName, 0, keys, g.cursor[tableName])
 	switch {
 	case err != nil:
 		return fmt.Errorf("table %s: %w", tableName, err)
@@ -175,7 +198,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 		for _, v := range enumVals {
 			vals := []string{v}
 			err := add(enumRows, func(piece map[string][]map[string]interface{}, k int) error {
-				return generateEnumRows(piece, g.pks, table, tableName, enumCol, vals, k, keys)
+				return g.gen.generateEnumRows(piece, g.pks, table, tableName, enumCol, vals, k, keys)
 			}, nil)
 			if err != nil {
 				return err
@@ -184,7 +207,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 	case composite:
 		generated := 0
 		err := add(rows, func(piece map[string][]map[string]interface{}, k int) error {
-			n, next, _, err := enumerateCompositeFKPKRows(piece, g.pks, table, tableName, k, keys, g.cursor[tableName])
+			n, next, _, err := g.gen.enumerateCompositeFKPKRows(piece, g.pks, table, tableName, k, keys, g.cursor[tableName])
 			g.cursor[tableName] = next
 			generated += n
 			return err
@@ -207,7 +230,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 			}
 		}
 		err := add(rows, func(piece map[string][]map[string]interface{}, k int) error {
-			return generateStandardRows(piece, g.pks, table, tableName, k, keys)
+			return g.gen.generateStandardRows(piece, g.pks, table, tableName, k, keys)
 		}, count)
 		if err != nil {
 			return err
@@ -217,7 +240,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 			err := enumTopUp(enumCols, rows, counts, func(col, val string, n int) error {
 				vals := []string{val}
 				return add(n, func(piece map[string][]map[string]interface{}, k int) error {
-					return generateEnumRows(piece, g.pks, table, tableName, col, vals, k, keys)
+					return g.gen.generateEnumRows(piece, g.pks, table, tableName, col, vals, k, keys)
 				}, count)
 			})
 			if err != nil {
@@ -243,7 +266,7 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 	// Multi-column UNIQUE groups are checked once values are final (rules
 	// included); dropped rows leave the PK pool before children or
 	// self-references can point at them.
-	if kept, dropped := enforceUniqueGroups(rows, table, opts.Overrides[tableName], existing.uniqueFor(tableName)); len(dropped) > 0 {
+	if kept, dropped := g.gen.enforceUniqueGroups(rows, table, opts.Overrides[tableName], existing.uniqueFor(tableName)); len(dropped) > 0 {
 		requested := len(rows)
 		rows = kept
 		rebuildPKPool(g.pks, tableName, table, preloaded, kept)
@@ -256,7 +279,7 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 	}
 	existing.record(table, tableName, rows)
 	g.sinceDraw[tableName] += len(rows)
-	g.pks[tableName] = capPool(g.pks[tableName], poolLimit)
+	g.pks[tableName] = capPool(g.pks[tableName], poolLimit, g.gen.rnd)
 	return rows, nil
 }
 
@@ -277,11 +300,30 @@ func (g *Stream) redrawParents(tableName string, table schema.Table) error {
 		}
 		drawn[parent] = true
 		g.pks[parent] = nil
-		if err := queryExistingPKs(g.conn, []string{parent}, g.sc.Tables, g.pks, g.dbType, nil); err != nil {
+		if err := g.gen.queryExistingPKs(g.conn, []string{parent}, g.sc.Tables, g.pks, g.dbType, nil); err != nil {
 			return fmt.Errorf("table %s: redraw %s keys: %w", tableName, parent, err)
 		}
 	}
 	return nil
+}
+
+// firstChunkRows caps the first chunk of a table when chunks are bounded by
+// memory: its rows are measured to size the chunks after it.
+const firstChunkRows = 2048
+
+// chunkSampleRows is how many rows of a chunk are measured.
+const chunkSampleRows = 256
+
+// minChunkRows keeps very wide rows from degrading to one statement per row.
+const minChunkRows = 32
+
+// chunkLimit returns how many rows a chunk holds: chunk, or fewer when rows of
+// rowMemory bytes would exceed chunkBytes, but never under minChunkRows.
+func chunkLimit(chunk, chunkBytes, rowMemory int) int {
+	if chunkBytes <= 0 || rowMemory <= 0 {
+		return chunk
+	}
+	return max(min(chunk, chunkBytes/rowMemory), min(chunk, minChunkRows))
 }
 
 // keyIsAllForeign reports whether every primary-key column is a foreign key,
@@ -294,4 +336,73 @@ func keyIsAllForeign(table schema.Table) bool {
 		}
 	}
 	return len(pkCols) > 0
+}
+
+// ForkTable returns a stream that generates tableName on its own goroutine:
+// it shares what nothing else writes during generation (schema, stored keys and
+// UNIQUE tuples, which are kept per table) and copies the rest for this table
+// and the tables it references, whose pools must be final by then. Generate the
+// table only on the fork, then MergeTable it back. Tables generated on forks at
+// the same time must not reference each other.
+func (g *Stream) ForkTable(tableName string) *Stream {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	child := &Stream{
+		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, sampled: g.sampled, gen: g.gen,
+		pks:       make(map[string][]interface{}),
+		cursor:    map[string]int{tableName: g.cursor[tableName]},
+		sinceDraw: map[string]int{tableName: g.sinceDraw[tableName]},
+		offset:    map[string]int{tableName: g.offset[tableName]},
+	}
+	if pool, ok := g.pks[tableName]; ok {
+		child.pks[tableName] = pool
+	}
+	for _, colName := range sortedColumnNames(g.sc.Tables[tableName]) {
+		parent, _ := splitFK(g.sc.Tables[tableName].Columns[colName].FK)
+		if pool, ok := g.pks[parent]; ok && parent != "" {
+			child.pks[parent] = pool
+		}
+	}
+	return child
+}
+
+// UseOwnRandom gives the stream a private random source, so a fork generating
+// on its own goroutine never waits on the global source's lock. Output is then
+// not reproducible by seed, which is why only concurrent generation uses it.
+func (g *Stream) UseOwnRandom() {
+	g.gen = privateGenerator()
+}
+
+// MergeTable records what a fork generated for tableName (its key pool, junction
+// cursor, sequence and rule offsets) so later tables see it.
+func (g *Stream) MergeTable(child *Stream, tableName string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if pool, ok := child.pks[tableName]; ok {
+		g.pks[tableName] = pool
+	}
+	g.cursor[tableName] = child.cursor[tableName]
+	g.sinceDraw[tableName] = child.sinceDraw[tableName]
+	g.offset[tableName] = child.offset[tableName]
+}
+
+// ReleaseTable drops a table's key pool once nothing left in the run can read
+// it: the table is generated and every table referencing it is too. Pools hold
+// up to poolLimit keys per table, so a run over many tables otherwise keeps
+// every table's keys until it ends.
+func (g *Stream) ReleaseTable(tableName string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.pks, tableName)
+}
+
+// Schema returns the schema the stream generates for.
+func (g *Stream) Schema() *schema.Schema { return g.sc }
+
+// KeyPoolLen reports how many keys the stream holds for a table (0 once
+// released), for tests and diagnostics.
+func (g *Stream) KeyPoolLen(tableName string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.pks[tableName])
 }

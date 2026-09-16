@@ -83,7 +83,7 @@ var wideNouns = []string{"account", "invoice", "shipment", "product", "region", 
 func TestSeed_WideSchemaWithCrossReferences(t *testing.T) {
 	for _, e := range engines() {
 		t.Run(e.name, func(t *testing.T) {
-			dsn, conn := e.scratchDB(t, "ss_wide")
+			dsn, conn := e.scratchDB(t, "ss_wide150")
 			for _, stmt := range wideSchemaDDL(150, e.driver) {
 				execSQL(t, conn, stmt)
 			}
