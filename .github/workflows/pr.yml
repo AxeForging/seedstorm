@@ -13,6 +13,7 @@ permissions:
 jobs:
   pr-title:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: AxeForging/reusable-workflows/actions/pr-title-lint@291855e85ec985d1d318df82b8f9dce969b76933
         with:
@@ -21,6 +22,7 @@ jobs:
 
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: AxeForging/reviewforge@main
@@ -38,6 +40,7 @@ jobs:
 
   gauntlet:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +68,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +86,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -134,10 +139,11 @@ jobs:
         run: go mod download
 
       - name: Run integration tests
-        run: cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
+        run: cd integration && go test -race -v -tags integration -count=1 ./... -timeout 1500s
 
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     name: e2e (playwright)
     services:
       postgres:

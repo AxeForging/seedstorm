@@ -127,6 +127,11 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 		queue = chunk * approxRowMemory
 	}
 	w := newWriter(ctx, conn, dbType, opts.BatchSize, opts.Workers, queue)
+	// A queued row costs at least half an average row of a full chunk, so
+	// narrow rows queue at most about two chunks of rows: 300k narrow rows with
+	// 4 writers peaked at 157MB on the byte budget alone, 117MB with this, at
+	// the same speed (one chunk saved 10MB more but ran 7% slower).
+	w.minRowCharge = queue / max(2*chunk*generators, 1)
 	w.onWritten = tally.written
 	w.onDone = tally.done
 

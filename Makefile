@@ -62,7 +62,7 @@ test-integration: dev-up
 		fi; \
 		sleep 1; \
 	done
-	cd integration && go test -v -tags integration -count=1 ./... -timeout 900s
+	cd integration && go test -race -v -tags integration -count=1 ./... -timeout 1500s
 
 .PHONY: test-e2e
 # Playwright journeys against a freshly built `seedstorm serve` and the compose

@@ -5,11 +5,13 @@ package integration_test
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
+	"time"
 )
 
 // scaleDDL is a parent with a UNIQUE column and a child with a foreign key.
@@ -27,21 +29,66 @@ func scaleDDL(e engine) []string {
 }
 
 // runBinPeakRSS runs the binary like runBin and returns its peak resident
-// memory in megabytes.
+// memory in megabytes. It reads the process's own high-water mark (VmHWM, reset
+// at exec) while it runs: rusage's maxrss also counts the test process's memory
+// at fork, which made every run under -race report the test binary's 212MB.
 func runBinPeakRSS(t *testing.T, args ...string) int64 {
 	t.Helper()
 	cmd := exec.Command(seedstormBin(t), append([]string{"--no-color"}, args...)...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	cmd.Stdin = strings.NewReader("")
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	statusPath := fmt.Sprintf("/proc/%d/status", cmd.Process.Pid)
+	var peakKB int64
+	stop := make(chan struct{})
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if kb := readHighWaterKB(statusPath); kb > peakKB {
+				peakKB = kb // VmHWM only grows: the last read before exit holds the peak
+			}
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	err := cmd.Wait()
+	close(stop)
+	<-polled
+	if err != nil {
 		t.Fatalf("seedstorm %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
-	usage, ok := cmd.ProcessState.SysUsage().(*syscall.Rusage)
-	if !ok {
-		t.Skip("peak memory is not reported on this platform")
+	if peakKB == 0 {
+		t.Skip("process memory is only readable from /proc on Linux")
 	}
-	return usage.Maxrss / 1024 // kilobytes on Linux
+	return peakKB / 1024
+}
+
+// readHighWaterKB returns VmHWM from a /proc status file, 0 when unreadable
+// (the process already exited).
+func readHighWaterKB(path string) int64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "VmHWM:"); ok {
+			fields := strings.Fields(rest)
+			if len(fields) > 0 {
+				kb, _ := strconv.ParseInt(fields[0], 10, 64)
+				return kb
+			}
+		}
+	}
+	return 0
 }
 
 // Seeding 300k rows used to hold every generated row in memory at once (about

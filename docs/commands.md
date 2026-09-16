@@ -155,14 +155,17 @@ The interactive TUI includes a **Volumes** step after global config. Each select
 | `--truncate` | false | Truncate all tables before seeding (prompts for confirmation) |
 | `--yes` / `-y` | false | Skip confirmation prompt (use with `--truncate`) |
 | `--batch-size` | `1000` | Most rows per INSERT statement; smaller batches are sent to stay under 65,535 parameters and ~1MB (Postgres uses COPY) |
-| `--seed` | `0` | Random seed for reproducible generation (0 = random) |
+| `--seed` | `0` | Random seed: the same seed writes byte-identical data (table order, values, dates end at 2026-01-01); 0 = random |
 | `--workers` | `4` | Connections writing at once. A table writes only after every table it references; self-referencing tables write in order (`1` = one at a time) |
+| `--gen-workers` | `1` | Tables generated at once on separate cores. Only helps when the database takes rows faster than one core generates them (hundreds of thousands per second, see [benchmarks](benchmarks.md)); ignored with `--seed` so runs stay reproducible |
 | `--interactive` / `-i` | false | Launch interactive TUI |
 | `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name; its `ignore:` tables are never written |
 
 Any `--rows` is safe: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat (600k rows on Postgres: 7s, under 100MB). A dry run prints the SQL the same way.
 
-Generation runs on one core and is rarely the bottleneck; writes are. `--workers` writes unrelated tables (and pieces of one large table) on several connections while generation continues, and a log line reports progress every 2 seconds:
+Memory is bounded by bytes, not rows: chunks are sized from the measured width of finished rows (about 32MB each) and each table's key pool is freed once no remaining table references it, so wide rows and many tables stay flat too.
+
+Generation is rarely the bottleneck; writes are. `--workers` writes unrelated tables (and pieces of one large table) on several connections while generation continues, and a log line reports progress every 2 seconds:
 
 ```
 info   Progress 120.0k/1.5M rows (7.8%) · 42.1k rows/s · ETA 33s table=booking table_rows=120.0k/1.5M
@@ -242,6 +245,7 @@ Gap Analysis
 | `--yes` / `-y` | false | Skip confirmation prompt |
 | `--batch-size` | `1000` | Most rows per INSERT statement; smaller batches are sent to stay under 65,535 parameters and ~1MB (Postgres uses COPY) |
 | `--workers` | `4` | Connections writing at once. A table writes only after every table it references; self-referencing tables write in order (`1` = one at a time) |
+| `--gen-workers` | `1` | Tables generated at once on separate cores. Only helps when the database takes rows faster than one core generates them (hundreds of thousands per second, see [benchmarks](benchmarks.md)); ignored with `--seed` so runs stay reproducible |
 | `--interactive` / `-i` | false | Launch interactive TUI |
 | `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name; its `ignore:` tables are never filled |
 
@@ -571,7 +575,7 @@ SEEDSTORM_ADDR=127.0.0.1:9000 seedstorm serve
 
 What the UI gives you:
 
-- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. **Tuning** holds batch size, enum rows, self-reference depth and **Writers** (connections writing at once, default 4). Runs stream rows written / planned, rate and ETA, and each table lights up while it writes.
+- **Workspace** — Cytoscape DAG of every table; click to select, non-nullable parents auto-lock as a dependency closure (mirrors the TUI). The selected-table panel lets you override row counts per table for **Seed**, **Fill empty**, and workspace **Generate** runs while `Rows` remains the default. **Tuning** holds batch size, enum rows, self-reference depth, **Writers** (connections writing at once, default 4) and **Generators** (tables generated at once, default 1). Runs stream rows written / planned, rate and ETA, and each table lights up while it writes.
 - **Graph layout** — tables flow left to right by dependency level, and each level is packed (wrapped into columns when it holds many tables) to fit the canvas, so a 150-table schema opens at a usable zoom instead of a thin unreadable column.
 - **Graph navigation** — search highlights and counts matches and zooms to them as you type (**Zoom to matches**, on by default). When matches are spread too far apart to read at once, the view goes to the best match at a readable zoom and a match bar steps through the rest (`‹` `›`, or `Enter` / `Shift+Enter`); **Only matches** lays out just the matches and the tables they link to, and **Show full graph** restores the full layout. **Navigator** (opt-in, remembered) keeps labels readable by clamping the zoom and adds a minimap: click or drag it to move around a large schema.
 - **Privileges** — the connection pill shows the connected user's access (`full access`, `limited`, `read-only`), read from `has_table_privilege` on Postgres and `SHOW GRANTS` on MySQL (TRUNCATE there needs DROP). The workspace lists what is missing, marks tables without INSERT in the graph, and flags a run mode (or the clone target) the user cannot perform before you start it. Granted privileges only: row-level security, triggers and constraints can still refuse a write.

@@ -51,6 +51,9 @@ type writer struct {
 	running sync.WaitGroup
 	tables  sync.WaitGroup
 	budget  *rowBudget
+	// minRowCharge is the least a queued row costs against the budget, so
+	// narrow rows cannot fill it with several chunks' worth of rows.
+	minRowCharge int
 
 	// hooks run one at a time, so callers need no locking of their own.
 	hookMu    sync.Mutex
@@ -110,7 +113,7 @@ func (w *writer) open(name string, parents []*tableWriter, ordered bool) *tableW
 // queued rows. It fails once the run has failed or been cancelled.
 func (tw *tableWriter) submit(rows []map[string]interface{}) error {
 	for _, piece := range tw.pieces(rows) {
-		size := db.RowsMemory(piece)
+		size := max(db.RowsMemory(piece), len(piece)*tw.w.minRowCharge)
 		if err := tw.w.budget.acquire(tw.w.ctx, size); err != nil {
 			return context.Cause(tw.w.ctx)
 		}

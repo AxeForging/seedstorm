@@ -165,7 +165,8 @@ live example values and sample rows. See [docs/profiles.md](docs/profiles.md).
 - **Compare two databases** — `compare` reports per-table rows, size, delta and column drift between any two connections, across engines
 - **Mirror volumes** — `mirror` seeds a target to a source's row counts at any scale (top-up or reset), with a reviewable plan, sample rows, FK-aware parents, and resilient inserts that report what could not be filled
 - **Seed profiles** — value rules (templates with `{{auto}}`/`{{seq}}`/`{{run}}`, fixed values, lists, NULL) applied by column pattern or per column; saved from the web UI and reused with `--profile` in the CLI and TUI
-- **Parallel writes with live progress** — unrelated tables (and pieces of a large table) write on `--workers` connections while generation streams in chunks; runs report rows written, rate and ETA (174k rows into MySQL: 41s → 14.5s)
+- **Parallel writes with live progress** — unrelated tables (and pieces of a large table) write on `--workers` connections while generation streams in memory-bounded chunks; runs report rows written, rate and ETA (174k rows into MySQL: 41s → 14.5s). `--gen-workers` generates tables on several cores (1.79M rows/s on 8) for databases that can keep up — see [benchmarks](docs/benchmarks.md)
+- **Reproducible** — `--seed` writes byte-identical data on every run
 - **Counts snapshots** — `snapshot` saves row counts to JSON/YAML; `compare` and `mirror` accept `--source-snapshot`, and the web UI exports and imports the same files
 - **Ignored tables** — a profile's `ignore:` globs keep tables out of every seed, fill, generate and mirror run
 - **Re-seed safely** — seeding a populated table appends: ids, UNIQUE sequences and composite keys continue past existing rows
@@ -183,5 +184,6 @@ live example values and sample rows. See [docs/profiles.md](docs/profiles.md).
 | [Command Reference](docs/commands.md) | All flags, examples, and sample output for every command |
 | [Schema YAML Format](docs/schema.md) | Schema file format, column fields, faker hints reference |
 | [Seed Profiles](docs/profiles.md) | Value rules: actions, template tokens, resolution, validation |
+| [Benchmarks](docs/benchmarks.md) | Measured throughput, memory and graph-layout numbers behind the defaults |
 | [Development & Testing](docs/development.md) | Local setup, unit + integration tests, CI, env vars, Makefile |
 | [Examples](EXAMPLES.md) | End-to-end walkthroughs with GIF demos |
