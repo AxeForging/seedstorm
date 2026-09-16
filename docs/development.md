@@ -126,6 +126,8 @@ cd integration && go test -race -v -tags integration -count=1 ./... -timeout 150
 
 The web UI has Playwright journeys in `e2e/` (pnpm). They build the binary, create `ss_e2e_*` scratch databases on the compose Postgres and MySQL (honouring `SEEDSTORM_PG_PORT` / `SEEDSTORM_MYSQL_PORT`), start `seedstorm serve` on a free port with its config in a temp dir, and tear everything down afterwards.
 
+Versions are pinned: Node in `e2e/.nvmrc`, pnpm in `packageManager`, Playwright and the rest exact in `package.json` + `pnpm-lock.yaml`. `e2e/.npmrc` retries registry downloads quickly; CI caches the Chromium build per Playwright version.
+
 ```bash
 make dev-up
 make test-e2e                          # all journeys
