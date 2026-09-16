@@ -100,6 +100,12 @@ scratch databases they create and drop, so they test exactly what a user runs:
 | `TestSequences_*` | The application's own inserts succeed after `seed`, `gaps --fill`, `mirror` top-up and reset (Postgres sequences advanced) |
 | `TestCompareEstimates_*` | `--counts estimate` never reports unknown or stale-zero counts |
 | `TestWebCompareMirrorAndProfiles_realDatabases` | Web API: profiles, explain samples, compare and mirror jobs, saved-connection targets |
+| `TestSeed_ConcurrentWritersMatchSequentialAndKeepForeignKeys` | `--workers 8` writes the 36-table schema with the same volumes as `--workers 1`, every FK enforced by the database (caught parallel MySQL `TRUNCATE` breaking FK checks) |
+| `TestSeed_WideSchemaWithCrossReferences` | A generated 150-table schema (FK fan-out, junctions, self-references, near-cycles) seeds and re-seeds with 8 writers; `wideSchemaDDL` is also the fixture for reviewing the workspace graph at scale |
+| `TestSeed_ProfileIgnoreListIsHonoured` | Ignored tables stay empty; an ignored populated parent is referenced; an ignored empty required parent refuses the run before writing |
+| `TestAccess_Postgres` / `TestAccess_MySQL` | Privilege reports for limited users, group roles and MySQL roles match what the server enforces, including Postgres 13's `CREATE` on `public` through `PUBLIC` |
+| `TestSnapshot_BinaryEndToEnd` / `TestSnapshot_CrossEngine` | `snapshot` files (YAML, JSON, hand-written) as compare/mirror sources, readable errors for malformed files |
+| `TestCloneSchema_Objects` | `clone-schema --objects all`: view on view, function, procedure and trigger work on the clone; nothing extra without the flags |
 
 Scratch databases on MySQL are created as `root` (`SEEDSTORM_MYSQL_ROOT_PASSWORD`, default `root`).
 
@@ -150,11 +156,16 @@ The integration job in CI uses `--timeout 900s` across the database-version matr
 | 15-alpine | 8.0 | default |
 | 17-alpine | 8.4 | |
 
-Override locally:
+To run another pair locally, start throwaway containers on spare ports and point the tests at them. Do **not** switch `POSTGRES_VERSION` / `MYSQL_VERSION` on the existing `docker compose` containers: they reuse the data volumes, an older server refuses (Postgres) or damages (MySQL 5.7 over an 8.0 data directory) them.
 
 ```bash
-POSTGRES_VERSION=17-alpine MYSQL_VERSION=8.4 make dev-up
+docker run -d --name ss-pg13 -e POSTGRES_USER=seedstorm -e POSTGRES_PASSWORD=seedstorm -e POSTGRES_DB=testdb -p 5413:5432 postgres:13-alpine
+docker run -d --name ss-my57 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_USER=seedstorm -e MYSQL_PASSWORD=seedstorm -e MYSQL_DATABASE=testdb -p 3357:3306 mysql:5.7
+cd integration && SEEDSTORM_PG_PORT=5413 SEEDSTORM_MYSQL_PORT=3357 go test -tags integration -count=1 ./... -timeout 900s
+docker rm -f ss-pg13 ss-my57
 ```
+
+The engine-specific suites (`TestMySQLIntegration`, `TestMySQLGaps`, `TestMySQLSchemaCloneDDL` and their Postgres twins) still connect to the default ports; CI runs them against every pair.
 
 ---
 

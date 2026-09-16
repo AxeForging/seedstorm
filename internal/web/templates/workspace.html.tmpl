@@ -111,6 +111,12 @@
       <button class="btn-ghost" id="ws-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">−</button>
     </div>
     <div id="cy" class="ws-canvas"></div>
+    <div class="ws-match-bar" id="ws-match-bar" hidden role="toolbar" aria-label="Search matches">
+      <span class="ws-match-label" id="ws-match-label" aria-live="polite"></span>
+      <button class="btn-ghost" id="ws-match-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)">‹</button>
+      <button class="btn-ghost" id="ws-match-next" type="button" aria-label="Next match" title="Next match (Enter)">›</button>
+      <button class="btn-ghost" id="ws-match-only" type="button" aria-pressed="false" title="Show only the matches and the tables they link to">Only matches</button>
+    </div>
     <div class="ws-minimap" id="ws-minimap" hidden>
       <canvas id="ws-minimap-canvas" width="220" height="150" aria-label="Minimap: click or drag to move the view"></canvas>
       <span class="ws-minimap-zoom muted" id="ws-minimap-zoom"></span>

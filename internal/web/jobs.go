@@ -235,12 +235,17 @@ func (j *Job) appendEvent(ev Event) {
 
 // jobWriter implements JobControl. Each Write call appends one or more log
 // events split on newlines so structured zerolog output stays one-line-per-event.
+// Runners log from several goroutines at once (concurrent seed writers), so
+// the partial-line buffer is guarded.
 type jobWriter struct {
 	job *Job
+	mu  sync.Mutex
 	buf []byte
 }
 
 func (w *jobWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.buf = append(w.buf, p...)
 	for {
 		i := indexByte(w.buf, '\n')

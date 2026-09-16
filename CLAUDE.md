@@ -76,7 +76,8 @@ seedstorm/
 ├── integration/
 │   ├── integration_test.go     # Integration tests (build tag: integration)
 │   ├── binary_test.go          # Builds the binary; scratch DB helpers per engine
-│   ├── *_test.go               # Scenario evals: reseed, mirror, seeder, keycloak, compare_web
+│   ├── *_test.go               # Scenario evals: reseed, mirror, seeder, keycloak, compare_web, parallel_seed,
+│   │                           # wide_schema (150 generated tables), access, snapshot, clone_objects
 │   ├── fixtures/               # Keycloak schema dumps (real-world 87-table stress schema)
 │   ├── schema_postgres.sql     # 28-table schema for Postgres integration tests
 │   └── schema_mysql.sql        # 28-table schema for MySQL integration tests
@@ -154,6 +155,8 @@ CLI, TUI and web never re-implement logic: value rules compile in `internal/rule
 
 Generation stays single-threaded (the `faker.Stream` is stateful and cheap); only writes are concurrent. `seeder.writer` gates each table on every FK parent in the run (nullable included) finishing its writes, keeps a self-referencing table's chunks sequential and in order, and splits other chunks across workers. Tables wait in their own dispatcher goroutine, never in a worker, and a row budget blocks the generator so memory stays flat. `Workers <= 1` keeps the old strictly sequential path. Progress (`OnProgress`) fires per written piece with run totals; `seeder.Meter` turns it into rate/ETA.
 
+Hooks that log from the writer (`OnTable`, `OnProgress`) run on writer goroutines while the generator logs too: anything a runner shares between them must be safe for concurrent use (the web `jobWriter` locks its line buffer; an unguarded one panicked mid-run).
+
 Do not parallelise MySQL `TRUNCATE`: concurrent truncates of FK-linked tables (FK checks off) made later inserts fail FK checks against rows that existed. `db.TruncateConcurrently` keeps MySQL on one pinned connection.
 
 ### Mirror and resilient inserts
@@ -228,3 +231,7 @@ The integration job in CI uses `-timeout 900s` (the suite takes ~5 minutes with 
 9. **Memory must not grow with table size** — `faker.Stream` holds everything generation needs between chunks, and every structure is bounded: PK pools are reservoir samples of `poolLimit` values with the largest id kept last (`nextSequentialPK` reads it), re-drawn every `poolLimit` child rows so children spread over the whole parent; key sets (`keySet`) switch from a map to a scalable Bloom filter past `DefaultExactKeys` (a false positive only skips a free value, never lets a duplicate through). Junction enumeration resumes from `Stream.cursor`. `Stream.GenerateChunks` is the only generation loop: one-shot `Generate` is a single unbounded chunk, and enum coverage counts across chunks. Inserts go through `db.SplitBatches` (row count, 65,535 placeholders, ~1MB). Do not reintroduce per-chunk database re-reads, unbounded maps, or code that collects a whole table before writing it.
 
 10. **SQL text uses literals** — SQL that is printed or saved (generate, export, dry runs) goes through `db.RenderInsert`, which escapes per engine (MySQL treats backslash as an escape, Postgres does not). `db.BuildInsert`/`BuildBatchInsert` return placeholders for bound execution only; printing their query drops the values.
+
+11. **Version differences in tests** — Postgres before 15 grants `CREATE` on schema `public` to `PUBLIC`; MySQL 5.7 has no enforced CHECK constraints and no roles. Tests that assert privileges or constraints must set the state they expect (e.g. `REVOKE CREATE ON SCHEMA public FROM PUBLIC`) instead of relying on a server default. Run other engine versions in throwaway containers on spare ports (docs/development.md), never by changing the image of the compose containers, whose data volumes an older server cannot open.
+
+12. **Graph layout at scale** — `runBestLayout` (app.js) packs each dagre dependency level into rows sized to the canvas; dagre alone spreads a 30-table level over thousands of pixels. Check layout changes against the 150-table `wideSchemaDDL` fixture as well as a small schema.

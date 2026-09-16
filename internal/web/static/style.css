@@ -1777,7 +1777,9 @@ textarea { font-family: var(--mono); font-size: 12px; }
   .btn-connect { width: 100%; }
 
   .workspace {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): a wide preview table in the rail must scroll inside it,
+       not stretch the only column past the screen. */
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(420px, 1fr) auto;
     height: auto;
     min-height: calc(100vh - 72px);
@@ -1785,6 +1787,11 @@ textarea { font-family: var(--mono); font-size: 12px; }
   .ws-rail,
   .ws-canvas-wrap,
   .ws-actionbar { grid-column: 1; }
+  /* Desktop places rail and canvas side by side in row 1; stacked, each needs
+     its own row or the canvas covers the rail. */
+  .ws-rail { grid-row: 1; }
+  .ws-canvas-wrap { grid-row: 2; }
+  .ws-actionbar { grid-row: 3; }
   .ws-canvas-wrap { min-height: 420px; }
   .ws-actionbar {
     grid-template-columns: 1fr;
@@ -2350,3 +2357,28 @@ textarea { font-family: var(--mono); font-size: 12px; }
   /* The topbar and main padding take ~82px; the workspace fills the rest. */
   .workspace { height: calc(100dvh - 82px); }
 }
+
+/* ── Workspace: search match bar ───────────────────────────────────────── */
+.ws-match-bar {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  background: rgba(15,17,21,0.88);
+  border: 1px solid rgba(255,204,102,0.35);
+  border-radius: 8px;
+  backdrop-filter: blur(3px);
+}
+.ws-match-label { color: #ffcc66; font-family: var(--mono); font-size: 12px; margin-right: 4px; white-space: nowrap; }
+.ws-match-bar .btn-ghost { padding: 4px 9px; font-size: 12px; }
+.ws-match-bar .btn-ghost[aria-pressed="true"] { color: #ffcc66; border-color: rgba(255,204,102,0.5); }
+@media (max-width: 900px) {
+  .ws-match-bar { top: auto; bottom: 12px; right: 12px; left: auto; }
+}
+
+.ws-rail, .ws-tab-body, #ws-detail { min-width: 0; }
+.preview-table-wrap { max-width: 100%; overflow-x: auto; }

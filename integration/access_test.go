@@ -81,6 +81,10 @@ func TestAccess_Postgres(t *testing.T) {
 		GRANT INSERT ON ss_acc_orders TO %[1]s;
 		GRANT UPDATE ON ss_acc_audit TO %[2]s;
 		GRANT %[2]s TO %[1]s`, user, group, accessDB))
+	// Before PostgreSQL 15 every role may CREATE in schema public through
+	// PUBLIC. Remove it so the limited role is limited on every version; the
+	// subtest below puts it back and checks the report follows.
+	execSQL(t, owner, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
 
 	limitedDSN := strings.Replace(e.dsnFor(accessDB), "seedstorm:seedstorm@", user+":ss_acc_pw@", 1)
 	limited := openDB(t, e.driver, limitedDSN)
@@ -114,6 +118,18 @@ func TestAccess_Postgres(t *testing.T) {
 		if _, err := limited.ExecContext(ctx, `CREATE TABLE ss_acc_new (id INTEGER)`); err == nil {
 			t.Fatal("create table should be denied")
 		}
+	})
+
+	t.Run("create through PUBLIC (the pre-15 default) is reported", func(t *testing.T) {
+		execSQL(t, owner, `GRANT CREATE ON SCHEMA public TO PUBLIC`)
+		defer execSQL(t, owner, `REVOKE CREATE ON SCHEMA public FROM PUBLIC`)
+		if acc := inspect(t, limited, e.driver); !acc.CreateTables || acc.Superuser {
+			t.Fatalf("with CREATE granted to PUBLIC: %+v, want createTables", acc)
+		}
+		if _, err := limited.ExecContext(ctx, `CREATE TABLE ss_acc_public_new (id INTEGER)`); err != nil {
+			t.Fatalf("server refused a create the report allows: %v", err)
+		}
+		execSQL(t, owner, `DROP TABLE ss_acc_public_new`)
 	})
 
 	t.Run("without schema usage no table privilege is usable", func(t *testing.T) {

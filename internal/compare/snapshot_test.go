@@ -201,54 +201,50 @@ tables:
 }
 
 func TestParseSnapshot_RejectsWithReadableErrors(t *testing.T) {
-	cases := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"empty", "", "snapshot is empty"},
-		{"whitespace", "  \n\t", "snapshot is empty"},
-		{"not yaml", "{not json", "not valid JSON or YAML"},
-		{"top-level list", "[1, 2]", "expected an object with kind, version and tables, got a list"},
-		{"top-level scalar", "hello", `got "hello"`},
-		{"wrong kind", "kind: seedstorm.profile\nversion: 1\ntables: {a: 1}", `kind is "seedstorm.profile", want "seedstorm.table-counts"`},
-		{"missing version", "kind: seedstorm.table-counts\ntables: {a: 1}", "snapshot has no version (supported: 1)"},
-		{"unsupported version", "kind: seedstorm.table-counts\nversion: 2\ntables: {a: 1}", "unsupported snapshot version 2 (supported: 1)"},
-		{"version without kind", "version: 1\ntables: {a: 1}", "add kind: seedstorm.table-counts"},
-		{"no tables", "kind: seedstorm.table-counts\nversion: 1\nlabel: x", "snapshot has no tables"},
-		{"empty tables", "tables: {}", "snapshot has no tables"},
-		{"tables is a list", "tables: [users, orders]", "snapshot tables must map table names to row counts, got a list"},
-		{"negative rows minimal", "tables:\n  users: -5\n", `table "users": row count -5 is negative (use -1 for unknown)`},
-		{"negative rows full", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: -2}\n", `table "users": row count -2 is negative`},
-		{"negative bytes", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, bytes: -9}\n", `table "users": size -9 is negative`},
-		{"fractional rows", "tables:\n  users: 1.5\n", `table "users": expected a whole-number row count, got the number 1.5`},
-		{"quoted rows", "tables:\n  users: \"12\"\n", `table "users": expected a whole-number row count, got "12"`},
-		{"beyond int64", "tables:\n  users: 99999999999999999999\n", `table "users": expected a whole-number row count`},
-		{"exact duplicate table yaml", "tables:\n  users: 1\n  users: 2\n", `snapshot lists the same name twice: [3:3] mapping key "users" already defined`},
-		{"exact duplicate table json", `{"tables": {"users": 1, "users": 2}}`, `snapshot lists the same name twice`},
-		{"seed profile", "name: eval\nrules:\n  - column: email\ntables:\n  users:\n    rows: 13\n", "looks like a seed profile"},
-		{"schema yaml in minimal form", "tables:\n  users:\n    columns:\n      id: {type: integer}\n", `table "users": expected a row count like ` + "`users: 1200`"},
-		{"compare report json", `{"source": {}, "target": {}, "rows": [], "totals": {}}`, `unexpected field(s) "rows", "source", "target", "totals"`},
-		{"random json", `{"hello": "world"}`, `unexpected field(s) "hello"`},
-		{"unknown table field", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, size: 3}\n", `table "users": unexpected field "size"`},
-		{"missing rows", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {bytes: 3}\n", `table "users": missing rows`},
-		{"bad estimated", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, estimated: maybe}\n", "estimated must be true or false"},
-		{"bad columns", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, columns: id}\n", "columns must be a list of names"},
-		{"bad db type", "dbType: oracle\ntables: {a: 1}", `dbType "oracle" is not supported`},
-		{"bad count mode", "countMode: fast\ntables: {a: 1}", `unknown count mode "fast"`},
-		{"bad timestamp", "takenAt: yesterday\ntables: {a: 1}", `takenAt "yesterday" is not an RFC 3339 timestamp`},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, err := ParseSnapshot([]byte(c.input))
+	// rejects parses input and expects an error containing want.
+	rejects := func(name, input, want string) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseSnapshot([]byte(input))
 			if err == nil {
-				t.Fatalf("expected an error containing %q", c.want)
+				t.Fatalf("expected an error containing %q", want)
 			}
-			if !strings.Contains(err.Error(), c.want) {
-				t.Fatalf("error = %q\nwant it to contain %q", err, c.want)
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %q\nwant it to contain %q", err, want)
 			}
 		})
 	}
+	rejects("empty", "", "snapshot is empty")
+	rejects("bad timestamp", "takenAt: yesterday\ntables: {a: 1}", `takenAt "yesterday" is not an RFC 3339 timestamp`)
+	rejects("whitespace", "  \n\t", "snapshot is empty")
+	rejects("bad count mode", "countMode: fast\ntables: {a: 1}", `unknown count mode "fast"`)
+	rejects("not yaml", "{not json", "not valid JSON or YAML")
+	rejects("bad db type", "dbType: oracle\ntables: {a: 1}", `dbType "oracle" is not supported`)
+	rejects("top-level list", "[1, 2]", "expected an object with kind, version and tables, got a list")
+	rejects("bad columns", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, columns: id}\n", "columns must be a list of names")
+	rejects("top-level scalar", "hello", `got "hello"`)
+	rejects("bad estimated", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, estimated: maybe}\n", "estimated must be true or false")
+	rejects("wrong kind", "kind: seedstorm.profile\nversion: 1\ntables: {a: 1}", `kind is "seedstorm.profile", want "seedstorm.table-counts"`)
+	rejects("missing rows", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {bytes: 3}\n", `table "users": missing rows`)
+	rejects("missing version", "kind: seedstorm.table-counts\ntables: {a: 1}", "snapshot has no version (supported: 1)")
+	rejects("unknown table field", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, size: 3}\n", `table "users": unexpected field "size"`)
+	rejects("unsupported version", "kind: seedstorm.table-counts\nversion: 2\ntables: {a: 1}", "unsupported snapshot version 2 (supported: 1)")
+	rejects("random json", `{"hello": "world"}`, `unexpected field(s) "hello"`)
+	rejects("version without kind", "version: 1\ntables: {a: 1}", "add kind: seedstorm.table-counts")
+	rejects("compare report json", `{"source": {}, "target": {}, "rows": [], "totals": {}}`, `unexpected field(s) "rows", "source", "target", "totals"`)
+	rejects("no tables", "kind: seedstorm.table-counts\nversion: 1\nlabel: x", "snapshot has no tables")
+	rejects("schema yaml in minimal form", "tables:\n  users:\n    columns:\n      id: {type: integer}\n", `table "users": expected a row count like `+"`users: 1200`")
+	rejects("empty tables", "tables: {}", "snapshot has no tables")
+	rejects("seed profile", "name: eval\nrules:\n  - column: email\ntables:\n  users:\n    rows: 13\n", "looks like a seed profile")
+	rejects("tables is a list", "tables: [users, orders]", "snapshot tables must map table names to row counts, got a list")
+	rejects("exact duplicate table json", `{"tables": {"users": 1, "users": 2}}`, `snapshot lists the same name twice`)
+	rejects("negative rows minimal", "tables:\n  users: -5\n", `table "users": row count -5 is negative (use -1 for unknown)`)
+	rejects("exact duplicate table yaml", "tables:\n  users: 1\n  users: 2\n", `snapshot lists the same name twice: [3:3] mapping key "users" already defined`)
+	rejects("negative rows full", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: -2}\n", `table "users": row count -2 is negative`)
+	rejects("beyond int64", "tables:\n  users: 99999999999999999999\n", `table "users": expected a whole-number row count`)
+	rejects("negative bytes", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, bytes: -9}\n", `table "users": size -9 is negative`)
+	rejects("quoted rows", "tables:\n  users: \"12\"\n", `table "users": expected a whole-number row count, got "12"`)
+	rejects("fractional rows", "tables:\n  users: 1.5\n", `table "users": expected a whole-number row count, got the number 1.5`)
 }
 
 func TestParseSnapshot_DiffsLikeATakenSnapshot(t *testing.T) {

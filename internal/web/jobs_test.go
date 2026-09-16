@@ -196,3 +196,42 @@ func TestManager_SubscribeReceivesPhaseAndProgressLive(t *testing.T) {
 	}
 	<-job.Done()
 }
+
+// Concurrent seed writers log from several goroutines at once (a table
+// finishing while the generator starts the next one). Log lines must arrive
+// whole and the writer must not corrupt its buffer; this panicked in serve.
+func TestJobWriter_ConcurrentLogLinesStayWhole(t *testing.T) {
+	m := NewManager()
+	const writers, lines = 8, 400
+	job := m.Start(context.Background(), "concurrent", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		log := jobLogger(jc)
+		done := make(chan struct{})
+		for w := 0; w < writers; w++ {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				for i := 0; i < lines; i++ {
+					log.Info().Str("table", "t_writer_table_name").Int("rows", i).Msg("Table written")
+					jc.Progress(i, lines, "label")
+				}
+			}()
+		}
+		for w := 0; w < writers; w++ {
+			<-done
+		}
+		return nil, nil
+	})
+	select {
+	case <-job.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("job did not complete")
+	}
+	got := job.Lines()
+	if len(got) != writers*lines {
+		t.Fatalf("log lines = %d, want %d", len(got), writers*lines)
+	}
+	for _, l := range got {
+		if !strings.HasPrefix(l.Text, "INFO Table written") || !strings.Contains(l.Text, "table=t_writer_table_name") {
+			t.Fatalf("mangled log line %q", l.Text)
+		}
+	}
+}

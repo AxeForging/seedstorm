@@ -1186,6 +1186,11 @@
     document.getElementById("cfg-clone-target")?.addEventListener("change", loadCloneTargetAccess);
     document.getElementById("ws-autozoom")?.addEventListener("click", () => setGraphView({ autoZoom: !ws.view.autoZoom }));
     document.getElementById("ws-navigator")?.addEventListener("click", () => setGraphView({ navigator: !ws.view.navigator }));
+    document.getElementById("ws-match-prev")?.addEventListener("click", () => focusNextSearchHit(-1));
+    document.getElementById("ws-match-next")?.addEventListener("click", () => focusNextSearchHit(1));
+    document.getElementById("ws-match-only")?.addEventListener("click", () => {
+      if (ws.onlyMatches) { exitOnlyMatches(); fitGraph(); } else enterOnlyMatches();
+    });
     setupMinimap();
     syncTuningSummary();
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
@@ -1393,15 +1398,14 @@
     document.getElementById("ws-count-total").textContent = String(ws.nodes.length);
     applyEdgeRoute();
     setGraphLoading("Laying out graph", "Positioning tables by dependency level.");
-    const layout = ws.cy.layout(dagreLayout());
-    layout.on("layoutstop", () => {
-      applyGraphView();
-      fitGraph();
-      clearGraphLoading();
-      drawMinimap();
-    });
     ws.cy.on("viewport render", scheduleMinimap);
-    layout.run();
+    // Layout runs synchronously (no animation), so the next lines see final
+    // positions.
+    runBestLayout(ws.cy.elements());
+    applyGraphView();
+    fitGraph();
+    clearGraphLoading();
+    drawMinimap();
     updateStats();
     refreshSelectionUI();
     applyAccessToGraph();
@@ -1432,8 +1436,58 @@
     return String(n);
   }
 
-  function dagreLayout() {
-    return { name: "dagre", rankDir: "LR", nodeSep: 22, rankSep: 70, edgeSep: 12 };
+  function dagreLayout(rankDir) {
+    return { name: "dagre", rankDir: rankDir || "LR", nodeSep: 22, rankSep: 70, edgeSep: 12, animate: false, fit: false };
+  }
+
+  // runBestLayout lays tables out left to right by dependency level (dagre),
+  // then packs each level into evenly spaced rows, wrapping levels that hold
+  // many tables into several columns. A schema
+  // with dozens of tables per level otherwise becomes one very tall column
+  // that fits the canvas only at an unreadable zoom (150 tables: 0.16 → 0.40).
+  // The row count is the one that lets the whole graph fit largest; levels
+  // keep their order and dagre's vertical order within each level.
+  function runBestLayout(eles) {
+    eles.layout(dagreLayout("LR")).run();
+    const nodes = eles.nodes();
+    if (nodes.length < 24) return;
+    const byLevel = new Map();
+    nodes.forEach((n) => {
+      const key = Math.round(n.position("x"));
+      if (!byLevel.has(key)) byLevel.set(key, []);
+      byLevel.get(key).push(n);
+    });
+    const levels = [...byLevel.entries()].sort((a, b) => a[0] - b[0])
+      .map(([, list]) => list.sort((a, b) => a.position("y") - b.position("y")));
+    const rowH = Math.max(...nodes.map((n) => n.outerHeight())) + 14;
+    const colWs = levels.map((list) => Math.max(...list.map((n) => n.outerWidth())) + 24);
+    const gap = 60;
+    const W = Math.max(ws.cy.width() - 60, 200), H = Math.max(ws.cy.height() - 60, 200);
+    const tallest = Math.max(...levels.map((l) => l.length));
+    const fitFor = (rows) => {
+      const width = levels.reduce((sum, l, i) => sum + Math.ceil(l.length / rows) * colWs[i], 0) + gap * (levels.length - 1);
+      return Math.min(W / width, H / (Math.min(rows, tallest) * rowH));
+    };
+    let best = tallest;
+    for (let rows = Math.min(4, tallest); rows < tallest; rows++) {
+      if (fitFor(rows) > fitFor(best)) best = rows;
+    }
+    const bb = eles.boundingBox();
+    // dagre spaces a level out to straighten edges, so packing it (wrapped or
+    // not) is usually far more compact; keep dagre's layout when it is not.
+    if (fitFor(best) <= Math.min(W / bb.w, H / bb.h) * 1.15) return;
+    let cursor = 0;
+    ws.cy.batch(() => {
+      levels.forEach((level, i) => {
+        const cols = Math.ceil(level.length / best);
+        level.forEach((n, j) => {
+          const col = Math.floor(j / best);
+          const inCol = Math.min(best, level.length - col * best);
+          n.position({ x: cursor + col * colWs[i] + colWs[i] / 2, y: ((j % best) - (inCol - 1) / 2) * rowH });
+        });
+        cursor += cols * colWs[i] + gap;
+      });
+    });
   }
 
   function cyStyle() {
@@ -1535,6 +1589,14 @@
           "border-width": 3,
           "background-color": "#352f1d",
         },
+      },
+      {
+        selector: "node.search-current",
+        style: { "border-color": "#ffe29a", "border-width": 4, "underlay-color": "#ffcc66", "underlay-opacity": 0.18, "underlay-padding": 8 },
+      },
+      {
+        selector: ".match-hidden",
+        style: { "display": "none" },
       },
       {
         selector: "node.search-dim",
@@ -1960,13 +2022,77 @@
     const count = document.getElementById("ws-search-count");
     if (count) count.textContent = ws.search ? (hits.length ? `${hits.length} match${hits.length === 1 ? "" : "es"}` : "no match") : "";
     scheduleMinimap();
+    if (ws.onlyMatches) exitOnlyMatches();
+    renderMatchBar(hits.length);
     if (!ws.view.autoZoom) return;
     clearTimeout(searchZoomTimer);
     // Wait for typing to settle so the camera does not jump on every key.
     searchZoomTimer = setTimeout(() => {
-      if (!ws.search) fitGraph();
-      else if (hits.length) fitElements(hits, 1.6);
+      if (!ws.search) { fitGraph(); return; }
+      if (!hits.length) return;
+      // Matches close together fit on screen; spread ones would shrink to
+      // unreadable, so show the best match at a readable zoom instead and let
+      // the match bar step through the rest or gather them.
+      if (fitZoomFor(hits) >= READABLE_ZOOM) fitElements(hits, 1.6);
+      else focusNextSearchHit(1);
     }, 260);
+  }
+
+  // Below this zoom a 12px label renders under 9px.
+  const READABLE_ZOOM = 0.72;
+
+  function fitZoomFor(eles) {
+    const bb = eles.boundingBox();
+    const pad = 60;
+    return Math.min((ws.cy.width() - pad * 2) / Math.max(bb.w, 1), (ws.cy.height() - pad * 2) / Math.max(bb.h, 1));
+  }
+
+  function renderMatchBar(count) {
+    const bar = document.getElementById("ws-match-bar");
+    if (!bar) return;
+    bar.hidden = !ws.search || count < 2;
+    const label = document.getElementById("ws-match-label");
+    if (label) label.textContent = `${count} matches`;
+    const only = document.getElementById("ws-match-only");
+    if (only) {
+      only.setAttribute("aria-pressed", String(!!ws.onlyMatches));
+      only.textContent = ws.onlyMatches ? "Show full graph" : "Only matches";
+    }
+  }
+
+  // Only matches: hide everything but the matches and the tables they link to
+  // directly, lay that subgraph out on its own and fit it. Positions of the
+  // full graph are kept and restored when the view is left.
+  function enterOnlyMatches() {
+    if (!ws.cy || !ws.search) return;
+    const hits = ws.cy.nodes(".search-hit");
+    if (!hits.length) return;
+    ws.savedPositions = {};
+    ws.cy.nodes().forEach((n) => { ws.savedPositions[n.id()] = { ...n.position() }; });
+    const keep = hits.union(hits.connectedEdges()).union(hits.neighborhood("node"));
+    ws.cy.batch(() => {
+      ws.cy.elements().not(keep).addClass("match-hidden");
+    });
+    runBestLayout(keep);
+    ws.onlyMatches = true;
+    renderMatchBar(hits.length);
+    fitElements(keep, 1.4);
+    scheduleMinimap();
+  }
+
+  function exitOnlyMatches() {
+    if (!ws.cy || !ws.onlyMatches) return;
+    ws.cy.batch(() => {
+      ws.cy.elements(".match-hidden").removeClass("match-hidden");
+      ws.cy.nodes().forEach((n) => {
+        const p = ws.savedPositions?.[n.id()];
+        if (p) n.position(p);
+      });
+    });
+    ws.onlyMatches = false;
+    ws.savedPositions = null;
+    renderMatchBar(ws.searchHits.length);
+    scheduleMinimap();
   }
 
   function searchRank(id) {
@@ -1985,8 +2111,12 @@
     const id = ws.searchHits[ws.searchIndex];
     const node = ws.cy.getElementById(id);
     ws.cy.animate({ center: { eles: node }, zoom: Math.max(ws.cy.zoom(), 1.1) }, { duration: 220 });
+    ws.cy.nodes(".search-current").removeClass("search-current");
+    node.addClass("search-current");
     const count = document.getElementById("ws-search-count");
     if (count && n > 1) count.textContent = `${ws.searchIndex + 1} of ${n}`;
+    const label = document.getElementById("ws-match-label");
+    if (label && n > 1) label.textContent = `${ws.searchIndex + 1} of ${n} matches`;
     showDetail(id);
   }
 
@@ -2020,7 +2150,9 @@
       fitElements(focus.length ? focus : ws.cy.elements(), 1.2);
       return;
     }
-    ws.cy.animate({ fit: { eles: ws.cy.elements(), padding: 42 } }, { duration: 220 });
+    // A handful of tables would otherwise fill the screen at several times
+    // their natural size.
+    fitElements(ws.cy.elements(), 1.5);
   }
 
   function zoomGraph(factor) {
@@ -2078,8 +2210,13 @@
   }
 
   // minimapTransform maps model coordinates onto the minimap canvas.
+  // The map frames the graph and the current view together, so the viewport
+  // rectangle stays visible when zoomed out past the graph or panned away.
   function minimapTransform(canvas) {
-    const bb = ws.cy.elements().boundingBox();
+    const g = ws.cy.elements().boundingBox();
+    const e = ws.cy.extent();
+    const x1 = Math.min(g.x1, e.x1), y1 = Math.min(g.y1, e.y1);
+    const bb = { x1, y1, w: Math.max(g.x2, e.x2) - x1, h: Math.max(g.y2, e.y2) - y1 };
     const pad = 8;
     const scale = Math.min((canvas.width - pad * 2) / Math.max(bb.w, 1), (canvas.height - pad * 2) / Math.max(bb.h, 1));
     const ox = pad + (canvas.width - pad * 2 - bb.w * scale) / 2 - bb.x1 * scale;
@@ -2816,6 +2953,7 @@
       refreshSelectionUI();
     },
     setGraphView,
+    relayout: () => { runBestLayout(ws.cy.elements()); fitGraph(); },
     run: runMode,
   };
 })();
