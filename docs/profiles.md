@@ -42,7 +42,60 @@ tables:                      # explicit settings per table
     columns:
       role: { value: guest }
       phone: { setNull: true }
+relationships:               # children per parent for a foreign key (version 2)
+  orders.user_id:
+    min: 1
+    avg: 5.2
+    max: 34
+    zeroShare: 0.19          # share of parents with no children
+    nullShare: 0             # share of NULL keys (nullable columns)
+    histogram:               # optional: parents per degree range
+      - {min: 1, max: 1, parents: 187}
+      - {min: 2, max: 3, parents: 340}
+      - {min: 4, max: 7, parents: 310}
+      - {min: 8, max: 34, parents: 133}
 ```
+
+### Relationships
+
+`relationships:` makes foreign keys look like real data instead of an even
+spread: most users with a few orders, some with many, some with none. Each key
+is `table.column` (matched to the database ignoring case). Seed, fill empty,
+generate and mirror deal parents so that:
+
+- no parent gets more than `max` children, and each parent with children gets at least `min`;
+- the share of parents without children is `zeroShare`, and exactly `nullShare` of the rows have a NULL key;
+- degrees follow the `histogram` when given (bucket by its parent weight, then a value inside it), otherwise they spread around `avg`.
+
+Every foreign key of a table can be shaped at once; the keys are dealt
+independently, so they are not correlated (the users with many orders are not
+necessarily the ones with many reviews).
+
+When the planned rows cannot fit the shape, seedstorm adjusts in one bounded
+pass and warns instead of retrying: `max raised`, `share of parents without
+children lowered`, or fewer parents with children. More rows than planned
+(enum coverage) pick parents evenly and are reported. After a run that writes,
+the achieved shape is measured and logged next to the target.
+
+Not shaped (validation warns with the reason): self-references, junction
+tables whose key is made of foreign keys, key columns. Parents above 500,000
+rows are shaped over the sample of parents seedstorm keeps, so the shape is
+approximate for them.
+
+Where shapes come from:
+
+- **Analyze relationships** in the workspace, `seedstorm snapshot --relationships`
+  or `introspect --relationships` measure them from a database; **Import from a
+  counts file** on the Profiles page turns such a file into `relationships:`.
+- `seed --shape-rows` derives the row count of each shaped child table from its
+  parents (parents × (1 − zeroShare) × avg ÷ (1 − nullShare)); `--table-rows`
+  still wins.
+- `mirror --shape-like-source` (or **Shape relationships like the source** on
+  Compare) uses the source's shapes directly, without a profile.
+
+A profile with relationships is written as `version: 2`; older seedstorm
+versions refuse it rather than seeding it unshaped. Without relationships a
+profile stays `version: 1`.
 
 ### Ignored tables
 
@@ -109,7 +162,8 @@ Validation (web UI issues panel, `seedstorm profile validate --dsn …`) reports
 | Level | Examples |
 |-------|----------|
 | error | no action / two actions, unknown generator or token, bad glob, explicit rule on a key, `setNull` on `NOT NULL`, a value that cannot fit the column type |
-| warning | table or column not in this database (profiles stay portable), a rule that matches nothing or is shadowed by an earlier rule, a UNIQUE column (or a column inside a multi-column UNIQUE) given a fixed value or short list, a UNIQUE template relying on `{{seq}}` alone |
+| warning | table or column not in this database (profiles stay portable), a rule that matches nothing or is shadowed by an earlier rule, a UNIQUE column (or a column inside a multi-column UNIQUE) given a fixed value or short list, a UNIQUE template relying on `{{seq}}` alone, a relationship on a key that cannot be shaped |
+| error (relationships) | a key not written as `table.column`, max below min, avg outside min … max, shares outside 0 … 1, a bucket with min above max |
 
 ## CLI
 

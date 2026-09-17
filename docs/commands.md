@@ -13,10 +13,15 @@ Every seedstorm command, with all flags and examples.
 - [`clone-schema`](#clone-schema) — copy schema structure into another DB
 - [`compare`](#compare) — row counts, sizes and column drift between two DBs
 - [`mirror`](#mirror) — seed a target so its volumes follow a source
-- [`snapshot`](#snapshot) — save row counts to a file for compare/mirror
+- [`snapshot`](#snapshot) — save row counts (and relationship shapes) to a file for compare/mirror
+- [`tune`](#tune) — recommend writers and generators for a database
 - [`profile`](#profile) — manage seed profiles (value rules)
 - [`serve`](#serve) — local web UI for every feature
 - [`version`](#version) / [`completion`](#completion)
+
+**Exit codes:** `0` success · `1` the command failed (the message names the side, phase and table, e.g. `error: target · write · orders: …`, and a partial run lists what was written) · `70` internal error (a panic, reported with an id; the stack is in `--log-level debug`) · `130` interrupted with Ctrl+C (running queries are cancelled on the server first).
+
+**Unreachable databases** fail within 10 seconds naming the database (`app@db:5432 did not answer`), instead of waiting for the operating system's TCP timeout.
 
 ---
 
@@ -46,6 +51,11 @@ SEEDSTORM_DB=postgres SEEDSTORM_DSN="postgres://..." seedstorm introspect
 | `--db` / `$SEEDSTORM_DB` | `postgres` | Database type: `postgres` or `mysql` |
 | `--dsn` / `$SEEDSTORM_DSN` | — | Connection string (required) |
 | `--out` / `-o` | `schema.yaml` | Output file path |
+| `--relationships` | — | Also measure every foreign key's shape (read-only, exact) and write it with estimated table counts to this [snapshot](#snapshot) file |
+| `--scan-unindexed` | false | With `--relationships`: also scan keys that lead no index (full table scans); otherwise those are estimated |
+| `--read-timeout` | `60s` | With `--relationships`: server-side time limit per foreign key; a slower one is reported as `timed out` and the rest continue |
+
+Introspection logs a line per table on large schemas, so a slow catalog shows progress.
 
 ---
 
@@ -159,7 +169,21 @@ The interactive TUI includes a **Volumes** step after global config. Each select
 | `--workers` | `4` | Connections writing at once. A table writes only after every table it references; self-referencing tables write in order (`1` = one at a time) |
 | `--gen-workers` | `1` | Tables generated at once on separate cores. Only helps when the database takes rows faster than one core generates them (hundreds of thousands per second, see [benchmarks](benchmarks.md)); ignored with `--seed` so runs stay reproducible |
 | `--interactive` / `-i` | false | Launch interactive TUI |
-| `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name; its `ignore:` tables are never written |
+| `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name; its `ignore:` tables are never written and its `relationships:` shape foreign keys |
+| `--shape-rows` | false | Derive the row count of each shaped child table from its parents (parents × share with children × avg); `--table-rows` still wins |
+| `--production` / `$SEEDSTORM_PRODUCTION` | false | The database is production: writes are refused unless `--allow-production` is also given (dry runs still work) |
+| `--allow-production` | false | Confirm a write to a database marked `--production` |
+
+`--workers auto` picks writers from the database's free connections (see [`tune`](#tune)). Whatever you ask for, a run never opens more connections than the server has free: it lowers the writers and says so (`Using 3 writers instead of 8: the server has 95 of 100 connections in use`).
+
+With a profile that has `relationships:`, foreign keys follow those shapes instead of picking parents evenly: each parent gets a number of children drawn from the histogram, no parent exceeds `max`, the share of parents without children and of NULL keys is kept, and the run logs the achieved shape next to the target afterwards:
+
+```
+info   Rows derived from relationship shapes rows=14000 table=orders
+info   Relationship shape (target → table now) avg="4.00 → 4.00" max="25 → 25" relationship=orders.account_id without_children="30% → 30%"
+```
+
+Shapes that cannot fit the planned rows are adjusted with a warning instead of looping (`14000 rows over 500 parents do not fit max 25: max raised to 28`). Self-references and junction keys are not shaped (reported). Parent tables above 500,000 rows are shaped over the sampled parents, so the shape is approximate there.
 
 Any `--rows` is safe: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat (600k rows on Postgres: 7s, under 100MB). A dry run prints the SQL the same way.
 
@@ -248,6 +272,7 @@ Gap Analysis
 | `--gen-workers` | `1` | Tables generated at once on separate cores. Only helps when the database takes rows faster than one core generates them (hundreds of thousands per second, see [benchmarks](benchmarks.md)); ignored with `--seed` so runs stay reproducible |
 | `--interactive` / `-i` | false | Launch interactive TUI |
 | `--profile` / `-p` / `$SEEDSTORM_PROFILE` | — | [Seed profile](profiles.md): rules file or saved profile name; its `ignore:` tables are never filled |
+| `--production` / `--allow-production` | false | As for [`seed`](#seed) |
 
 ---
 
@@ -354,6 +379,7 @@ By default only tables, foreign keys, indexes and comments are cloned. `--views`
 | `--objects` | — | Comma-separated kinds to clone: `views`, `routines`, `triggers`, or `all` |
 | `--dry-run` / `-n` | false | Print generated DDL, do not execute |
 | `--interactive` / `-i` | false | Confirm the clone in the terminal UI |
+| `--production` / `--allow-production` | false | As for [`seed`](#seed): marks the target as production |
 
 Boundaries: `clone-schema` is same-engine only. It does not attempt cross-engine translation, and it does not clone partial/expression indexes, grants, ownership, events, or non-public/non-current schemas.
 
@@ -376,6 +402,9 @@ seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --format json
 
 # Source from a counts file instead of a connection (see snapshot)
 seedstorm compare --source-snapshot prod-counts.yaml --target-dsn "$STAGE"
+
+# Also compare children per parent for every foreign key
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --relationships
 ```
 
 Sample output:
@@ -392,6 +421,18 @@ employees             160          80           -80    72.0 KB      64.0 KB     
 rows 3856 → 1888 · size 1.7 MB → 1.3 MB
 ```
 
+With `--relationships`:
+
+```
+Relationships (children per parent: avg / p95 / max · parents without children)
+RELATIONSHIP               SOURCE                TARGET               STATUS
+orders.user_id → users     5.15 / 15 / 34 · 19%  2.00 / 2 / 2 · 0%    differs
+reviews.order_id → orders  ~1.00 / ? / ? · 70%   0.00 / 0 / 0 · 100%  differs
+2 relationships · same 0 · differs 2 · source only 0 · target only 0 · unknown 0
+```
+
+`~` marks estimates (planner statistics). A relationship that timed out, was locked or failed shows its outcome instead of numbers and counts as `unknown`.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--source-db` / `$SEEDSTORM_SOURCE_DB` | `postgres` | Source database type |
@@ -401,7 +442,12 @@ rows 3856 → 1888 · size 1.7 MB → 1.3 MB
 | `--target-dsn` / `$SEEDSTORM_TARGET_DSN` | — | Target connection string (required) |
 | `--counts` | `exact` | `exact` (COUNT(*)) or `estimate` (Postgres `reltuples`, MySQL `TABLE_ROWS`); tables with no or zero statistics are counted exactly and estimated counts are marked `~` |
 | `--format` / `-f` | `table` | `table` or `json` |
-| `--only-diff` | false | Hide tables whose counts and columns match |
+| `--only-diff` | false | Hide tables (and relationships) that match |
+| `--relationships` | false | Also compare every foreign key's shape on both sides (a `--source-snapshot` must include relationships) |
+| `--scan-unindexed` | false | With `--relationships`: also scan keys that lead no index |
+| `--read-timeout` | `60s` | With `--relationships`: server-side time limit per foreign key |
+
+All reads are safe on a busy database: each runs in a read-only transaction, waits at most 2 seconds for a lock (a table locked by DDL is reported `locked`, not waited on), and is cancelled on the server when you press Ctrl+C. A count that could not be read is `unknown` (`?`), never 0. Both sides are read at the same time; a side that fails is named (`target · count: …`).
 
 Statuses: `same`, `differs`, `source_only`, `target_only`. MySQL sizes come from cached statistics and are approximate.
 
@@ -432,6 +478,10 @@ seedstorm mirror --source-db mysql --source-dsn "$MYSQL_PROD" \
 
 # Review, preview samples and confirm in the terminal UI
 seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --interactive
+
+# Give the target production's children per parent, not an even spread
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --shape-like-source
+seedstorm mirror --source-snapshot prod-with-relationships.yaml --target-dsn "$STAGE" --shape-like-source
 ```
 
 Sample dry run:
@@ -460,6 +510,8 @@ How the plan is built:
 - Tables missing on the target, or whose source count is unknown, are skipped with a reason. Per-table `rows` in a profile do not apply: volumes come from the source.
 - The run refuses when source and target are the same database, however the DSNs are spelled. With `--source-snapshot` that check cannot run, and seedstorm warns about it: double-check `--target-dsn`.
 - Tables a profile lists under `ignore:` are skipped (`ignored by profile`) and never truncated; a table that needs an ignored, empty parent is skipped with the reason.
+- A target that is a read-only replica is refused before anything is planned. When source and target are databases on the same server, the plan says so: reading one and writing the other share its CPU, memory and disk.
+- `--shape-like-source` shapes the target's foreign keys like the source's (see [`seed`](#seed)); the shapes come from the snapshot file's relationships, or are measured read-only on the source first.
 
 Large volumes are safe to run: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat whatever the table size (a 7.2M-row mirror peaks around 150MB). Existing keys are read once per table; tables with more than 500,000 parents reference a rotating sample of them, so children still spread over the whole parent table. After the run, Postgres sequences behind SERIAL/IDENTITY columns are moved past the inserted ids, so the application's own inserts keep working (`advanced orders.id sequence 0 → 2000000`).
 
@@ -496,6 +548,11 @@ inserted 384 rows · missing 6
 | `--yes` / `-y` | false | Skip the `reset` confirmation |
 | `--seed` | `0` | Random seed for reproducible generation |
 | `--interactive` / `-i` | false | Review, preview and confirm in the TUI |
+| `--shape-like-source` | false | Shape target foreign keys like the source's |
+| `--scan-unindexed` / `--read-timeout` | false / `60s` | With `--shape-like-source` on a live source, as for `compare --relationships` |
+| `--production` / `--allow-production` | false | As for [`seed`](#seed): marks the target as production |
+
+`--workers auto` is accepted as for `seed`.
 
 ---
 
@@ -508,6 +565,9 @@ seedstorm snapshot --db postgres --dsn "$PROD_DSN" --out prod-counts.yaml
 seedstorm snapshot --db mysql --dsn "$DSN" --counts estimate --format json > counts.json
 seedstorm compare --source-snapshot prod-counts.yaml --target-dsn "$STAGE_DSN"
 seedstorm mirror  --source-snapshot prod-counts.yaml --target-dsn "$STAGE_DSN" --scale 0.1
+
+# Counts plus every foreign key's shape (writes version 2)
+seedstorm snapshot --dsn "$PROD_DSN" --relationships --out prod-with-relationships.yaml
 ```
 
 ```yaml
@@ -535,6 +595,8 @@ tables:
   orders: 5000
 ```
 
+With `--relationships` the file is `version: 2` and adds a `relationships:` list: per foreign key the parent and child counts, NULL keys, share of parents without children, min / avg / p50 / p95 / max children per parent and a histogram (exact buckets 1–16, then powers of two). Relationship scans run read-only with a 60-second limit per key, two at a time, cheapest tables first; keys that lead no index are estimated unless `--scan-unindexed` is given, and a key that times out is recorded as `timed out` while the others continue. A file without relationships stays `version: 1`, readable by older seedstorm versions.
+
 Tables match the target case-insensitively, so a Postgres snapshot works against MySQL. `-1` means unknown, and mirror skips that table. The web UI's **Compare** page exports either side of a comparison in the same format and imports files or pasted text as a source.
 
 | Flag | Default | Description |
@@ -544,6 +606,43 @@ Tables match the target case-insensitively, so a Postgres snapshot works against
 | `--counts` | `exact` | `exact` (COUNT(*)) or `estimate` (planner statistics) |
 | `--format` / `-f` | `yaml` | `yaml` or `json` |
 | `--out` / `-o` | stdout | File to write |
+| `--relationships` | false | Also measure every foreign key's shape (read-only; exact or estimate per `--counts`) |
+| `--scan-unindexed` | false | With `--relationships`: also scan keys that lead no index |
+| `--read-timeout` | `60s` | With `--relationships`: server-side time limit per foreign key |
+
+---
+
+## `tune`
+
+Recommends `--workers` and `--gen-workers` for one database from what it reports (free connections, buffers, used space; read-only) and what SQL cannot tell (vCPU, memory, disk), and checks that the rows fit on the disk.
+
+```bash
+seedstorm tune --dsn "$DSN" --vcpu 1 --memory-mb 629 --storage network-ssd --storage-gb 10 --rows 2000000 --avg-row-bytes 300
+```
+
+```
+Host         16 CPUs, 31188MB memory (this machine or container, running seedstorm)
+Database     postgres 15.18, 6/100 connections in use
+Writers      2   (--workers)
+Generators   1   (--gen-workers)
+
+Why:
+  - writers 2: 1 vCPU on the database, 2 writers each
+  - generators 1: one generator keeps up with this database
+
+Disk: About 1.3GB of the 10.0GB free will be used.
+```
+
+The recommendation is an estimate from benchmarks on one machine: watch the rate during the first minute and adjust. Production, shared or high-availability databases get fewer writers. The web UI's **Recommend** dialog (workspace → Tuning) runs the same rules.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db` / `--dsn` | — | As for `seed` |
+| `--vcpu` / `--memory-mb` | — | The database's CPU and memory |
+| `--storage` | — | `local-ssd`, `network-ssd` or `hdd` |
+| `--storage-gb` / `--iops` | — | Disk size and provisioned IOPS of a network disk |
+| `--rows` / `--avg-row-bytes` | — / `256` | Rows the run will write, for the disk check |
+| `--shared` / `--ha` / `--production` | false | Other workloads use it / synchronous replica / production: stay conservative |
 
 ---
 
@@ -588,6 +687,13 @@ What the UI gives you:
 - **Multi-session** — hold several DBs open at once and switch from the topbar dropdown; a saved connection that is already live offers **Switch to** instead of a second connect. The workspace can clone schema from the active connection into another matching connected database.
 - **Compare & mirror** — `/compare` puts any two connections (live or saved, engines may differ) side by side: per-table mirrored gauges of source and target rows, size, delta and column drift, filterable. The mirror panel plans a top-up or reset at any scale for the ticked tables, shows the plan, truncate list, skipped tables and sample rows in a review dialog, and runs only after you confirm (reset needs an extra acknowledgement). Counts refresh when the run ends. The last comparison of each pair is kept in the browser and restored when you come back, marked with its age. **Export counts** downloads or copies either side as a [`snapshot`](#snapshot) file (JSON or YAML); **Import counts** takes a file, a drop or pasted text and uses it as the source for compare and mirror.
 - **Seed profiles** — `/profiles` builds [value rules](profiles.md) with a generator palette (click or drag tokens into a template), ordered column patterns with live example values and match counts, and a table explorer that shows what every column will get plus sample rows from the active connection. Profiles save to disk, import (file, drop or paste) and export (download or copy) as YAML, and are selectable in the workspace action bar and on Compare. **Ignored tables** lists globs never written, with the tables each one matches; the workspace greys those tables out and lists them in an **Ignored** tab.
+- **Runs you can leave** — every page shows a run strip with the phase, progress, elapsed time and whether the server is still answering (`running`, `quiet`, `reconnecting`, `lost`). Leave a page while a seed, compare or mirror runs and come back: the run is reattached with live progress, or its result is shown if it finished. A failure names the side, phase and table and lists what completed; if `serve` restarted, the page says the run was lost instead of spinning.
+- **Remembered settings** — rows, tuning, profile and compare options are kept per connection in the browser. Truncate, disable-FK and drop options are never remembered.
+- **Fast return to the workspace** — the graph draws from the cached schema first; row counts fill in afterwards (cached per connection, **↻** recounts) and a table that cannot be counted says so.
+- **Production connections** — tick *Production database* on a saved connection: writes to it (seed, fill empty, mirror, clone into it) need its label typed back, and relationship scans read planner estimates, one query at a time, unless you confirm an exact scan.
+- **Recommend** — the Tuning panel's dialog takes vCPU, memory, storage type and size, and recommends writers and generators with the reasons (`tune` on the command line).
+- **Snapshot counts** — saves the active connection's row counts (optionally with its relationships) to YAML or JSON, or hands them to Compare as an imported source; **Calibrate from a file** opens Compare with this connection as target.
+- **Analyze relationships** — measures children per parent for every foreign key in the background (exact or estimate, unindexed keys opt-in); each arrow in the graph gets an `avg · max` badge as its key finishes, and the table panel shows the details. On Compare, **Compare relationships** shows the same per key for both sides, the export can include them, and **Shape relationships like the source** makes a mirror follow them.
 - **Standalone tools** — `/generate`, `/enrich`, `/export` mirror the CLI commands as forms.
 - **Bounded resources** — text a job returns to the browser is capped at 20MB: a dry run's SQL stops there with a note of the rows left out, while generate and export refuse and point at the CLI `--out` flags, since a cut document would be broken. Job requests are limited to 21MB, and a connection's pooled database connections close after two idle minutes (the next query reopens one).
 

@@ -145,6 +145,80 @@ jobs:
       - name: Run integration tests
         run: cd integration && go test -race -v -tags integration -count=1 ./... -timeout 1500s
 
+  loadsim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    name: loadsim (cloud sql profiles)
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: seedstorm
+          POSTGRES_PASSWORD: seedstorm
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_USER: seedstorm
+          MYSQL_PASSWORD: seedstorm
+          MYSQL_DATABASE: testdb
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -u root -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # Runner size is not assumed: tests skip profiles that do not fit and say so.
+      - name: Probe runner
+        run: |
+          {
+            echo "### Runner"
+            echo '```'
+            echo "cpus: $(nproc)"
+            free -m
+            df -h / /var/lib/docker 2>/dev/null || df -h /
+            echo "cgroup: $(stat -fc %T /sys/fs/cgroup)"
+            echo "docker data: $(findmnt -no SOURCE,FSTYPE -T /var/lib/docker || true)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull database images
+        run: docker pull -q postgres:17-alpine && docker pull -q mysql:8.4 && docker pull -q alpine
+
+      - name: Run resource-limited evals
+        shell: bash # pipefail: tee must not hide a failure
+        run: cd integration && go test -v -tags "integration loadsim" -count=1 -run TestLoadsim ./... -timeout 1800s 2>&1 | tee loadsim.log
+
+      - name: Summarize skips
+        if: always()
+        run: |
+          {
+            echo "### Loadsim results"
+            echo '```'
+            grep -E -- "^(--- (PASS|FAIL|SKIP)|\s+[a-z_]+_test.go:[0-9]+: (only|skip))" integration/loadsim.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 25

@@ -111,6 +111,15 @@ scratch databases they create and drop, so they test exactly what a user runs:
 | `TestSeed_ManyTablesDoNotKeepEveryKeyPool` | 100 tables × 30k rows peak 82MB; keeping every key pool peaked at 262MB |
 | `TestWebJobs_SeedProgressIsTruthful` / `…CancelIsPromptAndLeavesAUsableServer` / `…GapsFillAndMirrorReportProgress` / `…ConcurrentSeedJobs` | In-process server on real DBs: progress is monotonic and ends at done == total == `COUNT(*)`, one `Table written` per table, cancel ends within 15s with no queries left, concurrent jobs with viewers joining and leaving stay correct. Run with `-race` (found two job-manager races) |
 | `TestCloneSchema_Objects` | `clone-schema --objects all`: view on view, function, procedure and trigger work on the clone; nothing extra without the flags |
+| `TestReadScope_*` | Reads run in a read-only transaction the server enforces, time out server-side, stop waiting behind a DDL lock, and a cancelled MySQL query is killed on the server (it keeps running with the driver alone) |
+| `TestProduction_CLIRefusesWritesUnlessAllowed` | `--production` refuses seed/gaps/mirror/clone writes without `--allow-production`; nothing is written; dry runs work |
+| `TestCLI_ExitCodesSayWhatKindOfFailureItWas` / `TestCLI_InterruptExitsWith130` / `TestServe_PanicInOneJobLeavesTheServerAndOtherJobsRunning` | Built with `-tags faultinject`: a panic exits 70 with the phase and table, an error exits 1, Ctrl+C exits 130; in `serve` a panicking job fails alone while another job completes and the server keeps answering |
+| `TestFaultInjection_AbsentFromTheDefaultBinary` | The release binary contains no fault-injection code |
+| `TestIntrospect_PostgresConstraintsArePairedAndVisibleToReadOnlyRoles` / `TestSeed_ForeignKeysToNonKeyColumnsInsertValidReferences` | FK columns paired from `pg_constraint` (composite and cross-schema), and FKs to a non-key UNIQUE column reference real values |
+| `TestPartitionedTables_*` | Postgres partitioned tables are counted once and seeded inside their partition bounds; an expression partition key is refused before writing |
+| `TestDetectServer_ReadsCapacityOnBothEngines` / `TestTune_CLIRecommendsAndSeedUsesAuto` / `TestServers_TwoDatabasesOnOneServerAreShared` | Server capacity reads, `tune` output and `--workers auto`, shared-server detection |
+| `TestRelationships_*` | Hand-computed shapes on both engines, the unindexed-key gate, a timed-out key while the others finish, cancel keeping finished keys, `snapshot`/`introspect`/`compare --relationships` through the binary |
+| `TestShapedSeed_*` | A shaped profile seeds with no parent above max and the target average and zero share; `mirror --shape-like-source` copies a skewed source; shaped seeding keeps the memory bound (325k rows, ~124MB) |
 
 Scratch databases on MySQL are created as `root` (`SEEDSTORM_MYSQL_ROOT_PASSWORD`, default `root`).
 
@@ -145,6 +154,11 @@ SEEDSTORM_E2E_KEEP=1 make test-e2e     # keep the scratch databases for debuggin
 | `access` | SELECT-only MySQL user: read-only badge, banner, warning chips |
 | `profiles` | Ignore glob with live matches, saved to disk, Ignored tab in the workspace, exported YAML |
 | `mobile` | 390 and 320 wide with search and a wide preview open: no overlap, no sideways scroll |
+| `memory` | Workspace and compare settings survive leaving the page (truncate is never kept); a run started before leaving is reattached |
+| `production` | Seeding a connection marked production asks for its label first |
+| `tuning` | Recommend dialog for a small managed database applies its writers |
+| `snapshot` | Snapshot counts from the workspace, download, compare another database against the file, calibrate from a file |
+| `relationships` | Analyze relationships (estimate, then exact), include them in a counts file, compare drift, export with relationships, mirror plan shaped like the source, import into a profile |
 
 Specs find elements only through `data-testid` names kept in `e2e/support/selectors.ts`: when you change markup a journey uses, keep or move the test id and update that file. Each journey checks what the user sees and, when it writes, the database via SQL. Static assets are embedded in the binary, so the suite always runs against a fresh build.
 
@@ -169,17 +183,41 @@ All tests run automatically on every PR via GitHub Actions (`.github/workflows/p
 
 | Job | What it checks |
 |-----|---------------|
-| `title` | Conventional Commits format |
+| `pr-title` | Conventional Commits format |
 | `review` | AI code review via reviewforge (Gemini) |
-| `validate` | Directory/file structure via structlint |
-| `test` | `go test ./...` + `make build` |
+| `gauntlet` | structlint, dupehound, and unit tests with `-race` (its `gotest` gate) |
 | `lint` | `golangci-lint` |
 | `integration` | Full 29-table suite, scenario evals and schema-clone tests with `-race` on each Postgres/MySQL pair |
+| `loadsim` | Resource-limited evals in Cloud SQL-shaped containers (below); the job summary prints the runner's size and every skip |
 | `e2e` | Playwright journeys against a built binary (Postgres 15, MySQL 8.0) |
+
+`loadsim-measure.yml` measures throughput per profile and writer count when started by hand (`workflow_dispatch`); it never gates a PR.
 
 The integration job in CI uses `-race -timeout 1500s` across the database-version matrix. Use the same timeout locally when running both engines back-to-back.
 
 Throughput and memory numbers, and how to reproduce them, are in [benchmarks.md](benchmarks.md).
+
+### Resource-limited evals (loadsim)
+
+`integration/loadsim_*_test.go` (build tags `integration loadsim`) start throwaway database containers shaped like managed instances and run the binary against them, some of it inside a container with its own CPU and memory limits:
+
+| Profile | Database container | Settings from |
+|---------|-------------------|---------------|
+| `cloudsql-micro` | 1 vCPU, 629MB, 300 write IOPS | Cloud SQL docs (Postgres); `SHOW VARIABLES` of a MySQL 8.4 1 vCPU / 628.74MB instance |
+| `cloudsql-2vcpu` | 2 vCPU, 7.5GB, 3000 write IOPS | Cloud SQL docs; MySQL values estimated from the micro reference |
+
+They assert outcomes, never speed: seedstorm sees a container's CPU and memory limits (not the host's), few free connections lower the writers and the run completes, a full disk fails naming the table and the cause, a million rows seed under a 256MB container, and the read safeguards hold on the smallest instance. A test skips (visibly) when the machine lacks the memory for its profile or a throttle does not apply.
+
+```bash
+make dev-up
+make test-loadsim                              # needs Docker
+make test-loadsim ARGS=-run=TestLoadsim_Read   # one test
+SEEDSTORM_LOADSIM_MEASURE=/tmp/measure.json SEEDSTORM_LOADSIM_PROFILES=cloudsql-micro make test-loadsim ARGS=-run=TestLoadsim_MeasureWriters
+```
+
+### Fault injection
+
+Reliability tests build the binary with `-tags faultinject`; `SEEDSTORM_FAULT=point:table:action` then makes a point fail (`write`, `generate`, `copy`, `job`, `introspect`; action `panic`, `error` or `hang`), e.g. `SEEDSTORM_FAULT=write:orders:panic`. The default build contains none of it.
 
 ### Supported database versions
 
@@ -215,7 +253,10 @@ The engine-specific suites (`TestMySQLIntegration`, `TestMySQLGaps`, `TestMySQLS
 | `SEEDSTORM_PROFILE` | Default `--profile` for `seed`, `gaps`, `generate`, `mirror` |
 | `SEEDSTORM_PROFILES` | Path of the saved-profile store (default `~/.config/seedstorm/profiles.yaml`) |
 | `SEEDSTORM_SOURCE_DSN` / `SEEDSTORM_TARGET_DSN` | Defaults for `compare`, `mirror`, `clone-schema` |
+| `SEEDSTORM_PRODUCTION` | Same as `--production` on commands that write |
 | `SEEDSTORM_PG_HOST` / `SEEDSTORM_PG_PORT` / `SEEDSTORM_MYSQL_HOST` / `SEEDSTORM_MYSQL_PORT` | Integration tests: where the databases listen |
+| `SEEDSTORM_FAULT` | Fault-injection builds only: `point:table:panic\|error\|hang` |
+| `SEEDSTORM_LOADSIM_MEASURE` / `SEEDSTORM_LOADSIM_PROFILES` / `SEEDSTORM_LOADSIM_ENGINES` | Loadsim measure: report path, profiles and engines |
 
 ---
 
@@ -226,6 +267,8 @@ make build          Build for current platform → bin/seedstorm
 make build-all      Build for linux/darwin amd64+arm64 → dist/
 make test           Run unit tests
 make test-integration  Run integration tests (requires make dev-up)
+make test-loadsim   Run resource-limited evals (requires Docker and make dev-up)
+make test-e2e       Run Playwright journeys (requires make dev-up)
 make lint           Run golangci-lint
 make fmt            Format with gofumpt
 make tidy           go mod tidy

@@ -29,6 +29,9 @@ seedstorm/
 │   │   ├── compare.go          # compare command
 │   │   ├── mirror.go           # mirror command
 │   │   ├── snapshot.go         # snapshot command (row counts to JSON/YAML)
+│   │   ├── tune.go             # tune command, --workers auto
+│   │   ├── production.go       # --production / --allow-production write guard
+│   │   ├── relationships.go    # --relationships scan flags, --shape-rows, achieved-shape logs
 │   │   ├── progress.go         # --workers flag, progress log lines, profile ignore
 │   │   ├── profile.go          # profile command + shared --profile flag/loading
 │   │   ├── endpoints.go        # --source-*/--target-* flags and connection opening
@@ -38,7 +41,12 @@ seedstorm/
 │   │   ├── postgres.go         # PostgreSQL schema introspection + constraint parsing
 │   │   ├── mysql.go            # MySQL schema introspection + constraint parsing
 │   │   ├── truncate.go         # Truncate helper (FK-safe order)
-│   │   ├── counts.go           # GetTableRowCounts helper (used by gaps)
+│   │   ├── counts.go           # CountTables / CountTablesWithin: per-table outcomes, unknown never 0
+│   │   ├── read_scope.go       # ReadOnce: read-only tx, statement/lock timeouts, MySQL KILL QUERY on cancel
+│   │   ├── relations.go        # DegreeHistogram (CASE buckets), LeadingIndexed, EstimateDegrees
+│   │   ├── server_info.go      # DetectServer (capacity, replica, server id), ConnectionUsage
+│   │   ├── explain.go          # Explain: disk full / connection lost errors in plain words
+│   │   ├── partitions.go       # Postgres partitioned tables (bounds, leaves)
 │   │   ├── stats.go            # Table sizes, estimated counts, column lists, DB identity
 │   │   ├── copy.go             # CopyRows: Postgres COPY for a chunk of rows
 │   │   ├── sequences.go        # SyncSequences: move Postgres sequences past inserted ids
@@ -56,6 +64,9 @@ seedstorm/
 │   │   ├── stream.go           # Stream: generation state kept across chunks (NewStream, Generate)
 │   │   ├── keys.go             # keySet: exact map, then scalable Bloom filter
 │   │   ├── pools.go            # PK pool reservoir sampling and capping
+│   │   ├── shapes.go           # Relationship shapes: degree dealer (Fenwick slots), DeriveShapedRows
+│   │   ├── references.go       # Pools for FKs to non-key columns ("table.column")
+│   │   ├── partitions.go       # Partition-key generators, CheckSeedable
 │   │   └── *_test.go           # Unit tests alongside production files
 │   ├── graph/
 │   │   ├── graph.go            # Dependency graph (Build, TopologicalSort, RenderPlan)
@@ -63,14 +74,21 @@ seedstorm/
 │   │   └── graph_test.go       # Unit tests
 │   ├── rules/                  # Seed profile rules: model, templates, resolve/validate/compile
 │   ├── profiles/               # Saved profile store (profiles.yaml) + Resolve(file|name)
-│   ├── compare/                # Snapshots, Diff, PlanMirror, snapshot files (Encode/ParseSnapshot), renderers (never writes)
+│   ├── compare/                # Snapshots, Diff, PlanMirror, snapshot files v1/v2 (Encode/ParseSnapshot), DiffShapes, renderers (never writes)
+│   ├── relations/              # Relationship shapes: Scan (index gate, per-edge timeout, cancel keeps finished), Shape
+│   ├── tuning/                 # Recommend, ClampWriters, DetectHost (cgroup CPU/memory)
+│   ├── safego/                 # Run/Recover: a panic becomes an error with an id
+│   ├── runerr/                 # Located errors: side · phase · table
+│   ├── faultinject/            # SEEDSTORM_FAULT points (build tag faultinject only)
 │   ├── dataio/                 # Streaming data documents: writers (yaml/json/sql/csv), ReadTables
 │   ├── seeder/                 # Seed (strict chunked seed/gaps), Fill (resilient mirror inserts), MirrorJob, Preview,
 │   │                           # writer.go (FK-gated concurrent writes), meter.go (rate/ETA),
-│   │                           # seed.go generateTables (parallel generation) + poolReleases
+│   │                           # seed.go generateTables (parallel generation) + poolReleases + clampToServer,
+│   │                           # relationships.go (Endpoint.Shapes, CompareShapes, MeasureShapes), servers.go (RelateServers)
 │   ├── fsutil/                 # WriteFileAtomic for on-disk stores
 │   ├── tui/                    # Bubble Tea flows (seed, gaps, generate, clone, mirror)
-│   ├── web/                    # serve: handlers_*.go per area, templates/, static/ (page.js + page.css per page)
+│   ├── web/                    # serve: handlers_*.go per area, templates/, static/ (page.js + page.css per page),
+│   │                           # jobs.go (list, reattach, eviction), production.go, preflight.go, shapes.go (session shape cache)
 │   ├── ai/ai.go                # Gemini enrichment (prompt building, response parsing)
 │   ├── schema/schema.go        # Schema YAML types and loader
 │   ├── build/info.go           # Version info injected at build time
@@ -80,7 +98,9 @@ seedstorm/
 │   ├── binary_test.go          # Builds the binary; scratch DB helpers per engine
 │   ├── *_test.go               # Scenario evals: reseed, mirror, seeder, keycloak, compare_web, parallel_seed,
 │   │                           # wide_schema (150 generated tables), access, snapshot, clone_objects,
-│   │                           # web_jobs (+helpers), reproducible, seed_scale (memory bounds)
+│   │                           # web_jobs (+helpers), reproducible, seed_scale (memory bounds), read_scope, production,
+│   │                           # reliability (faultinject), relationships, shaped_seed, partitions, tune, servers
+│   ├── loadsim_*_test.go       # Resource-limited evals in Cloud SQL-shaped containers (tags: integration loadsim)
 │   ├── fixtures/               # Keycloak schema dumps (real-world 87-table stress schema)
 │   ├── schema_postgres.sql     # 28-table schema for Postgres integration tests
 │   └── schema_mysql.sql        # 28-table schema for MySQL integration tests
@@ -88,12 +108,13 @@ seedstorm/
 │   ├── playwright.config.ts    # chromium, 1 worker; global setup builds the binary and starts serve
 │   ├── support/                # global.setup/teardown, databases.fixture (ss_e2e_* DBs), wide-schema.fixture,
 │   │                           # db.helpers (SQL assertions), test.fixture, selectors.ts (every data-testid)
-│   └── tests/<area>.spec.ts    # workspace, seed, clone, compare, access, profiles, mobile
+│   └── tests/<area>.spec.ts    # workspace, seed, clone, compare, access, profiles, mobile, memory, production, tuning, snapshot, relationships
 ├── docs/benchmarks.md          # Measured throughput, memory and layout numbers behind the defaults
 ├── README.md                   # User-facing documentation (keep in sync with code)
 ├── Makefile                    # Build, test, lint, dev-up/down targets
-├── compose.yaml                # Local MySQL + PostgreSQL via Docker Compose
-└── .github/workflows/pr.yml    # CI: title, review, structlint, unit tests, lint, integration (-race), e2e
+├── docker-compose.yaml         # Local MySQL + PostgreSQL via Docker Compose
+└── .github/workflows/          # pr.yml: title, review, gauntlet (structlint, unit -race), lint, integration, loadsim, e2e;
+                                # loadsim-measure.yml: manual throughput measurement
 ```
 
 ---
@@ -205,12 +226,12 @@ After standard row generation, `topUpEnumCoverage` guarantees every enum value (
 
 | Job | What it checks |
 |-----|---------------|
-| `title` | Conventional Commits format |
+| `pr-title` | Conventional Commits format |
 | `review` | AI code review via reviewforge (Gemini) |
-| `validate` | Directory/file structure via structlint |
-| `test` | `go test ./...` + `make build` |
+| `gauntlet` | structlint, dupehound, unit tests with `-race` |
 | `lint` | `golangci-lint` |
 | `integration` | Full suite + scenario evals on Postgres 13/15/17 × MySQL 5.7/8.0/8.4, with the race detector |
+| `loadsim` | Resource-limited evals (Cloud SQL-shaped containers); outcomes only, never timings |
 | `e2e` | Playwright journeys (`e2e/`) against a built binary on Postgres 15 + MySQL 8.0 |
 
 The integration job in CI uses `-race -timeout 1500s` (the race detector roughly doubles the ~5 minute suite). Use the same locally.
@@ -278,6 +299,15 @@ The integration job in CI uses `-race -timeout 1500s` (the race detector roughly
 - Don't switch compose DB versions over existing volumes; use throwaway containers.
 - Don't rely on server defaults (PG < 15 `CREATE` on `public`, MySQL 5.7 CHECK/roles).
 - Do give scratch databases unique `ss_<area>_*` names.
+
+**Reads and failures**
+- Do route new reads through `db.ReadOnce` (read-only, lock timeout, real cancel); never report an unknown count as 0.
+- Do wrap goroutines in `safego.Run` and errors in `runerr.At`/`OnSide` so failures name side, phase and table.
+- Don't trust the MySQL driver to stop a cancelled query: it keeps running without `KILL QUERY`.
+
+**Relationship shapes**
+- Do keep the unshaped path free of extra random draws (`--seed` hashes must not change).
+- Do return dealt slots when a row is retried or dropped; never loop to fit a shape, adjust and warn.
 
 **Web UI**
 - Do check 320–1920 widths with the interaction active (search, dialogs, runs).
