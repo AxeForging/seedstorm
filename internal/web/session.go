@@ -65,6 +65,9 @@ type Session struct {
 
 	accessMu sync.Mutex
 	access   *accessView
+
+	// Relationship shapes measured on this connection (see shapes.go).
+	shapes shapeCache
 }
 
 // SessionRegistry holds active sessions keyed by their server-issued ID.
@@ -400,4 +403,5 @@ func (s *Session) InvalidateCounts() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counts, s.countsAt = nil, time.Time{}
+	s.shapes.reset()
 }

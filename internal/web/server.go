@@ -137,6 +137,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/compare", s.handleCompareRun)
 	s.mux.HandleFunc("/api/mirror", s.handleMirrorRun)
 	s.mux.HandleFunc("/api/snapshot", s.handleSnapshotRun)
+	s.mux.HandleFunc("/api/relationships", s.handleRelationships)
+	s.mux.HandleFunc("/api/compare/relationships", s.handleCompareRelationships)
 	s.mux.HandleFunc("/api/snapshots/encode", s.handleSnapshotEncode)
 	s.mux.HandleFunc("/api/snapshots/parse", s.handleSnapshotParse)
 	s.mux.HandleFunc("/api/generators", s.handleGeneratorsJSON)

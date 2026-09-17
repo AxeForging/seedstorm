@@ -1848,6 +1848,8 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .prod-dialog form { display: grid; gap: 12px; padding: 18px; }
 .prod-dialog h2 { margin: 0; font-size: 1.05rem; }
 .prod-dialog input { width: 100%; box-sizing: border-box; }
+.prod-dialog input[type="checkbox"], .prod-dialog input[type="radio"] { width: auto; }
+.badge.shape { background: rgba(125, 180, 150, 0.14); color: #b9d8c4; }
 .prod-dialog footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .pill.param { background: rgba(216,181,111,0.12); border-color: rgba(216,181,111,0.32); color: var(--accent-2); }
 
@@ -2424,5 +2426,6 @@ textarea { font-family: var(--mono); font-size: 12px; }
 .ws-recommend-btn { justify-self: start; }
 
 .ws-counts-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ws-counts-actions .btn-ghost { min-height: 30px; padding: 4px 9px; font-size: 12px; }
 .snapshot-dialog { max-width: min(640px, calc(100vw - 32px)); }
 .snapshot-preview { max-height: 40vh; overflow: auto; }

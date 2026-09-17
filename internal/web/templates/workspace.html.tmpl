@@ -21,6 +21,7 @@
       </div>
     </div>
     <p class="ws-counts-status muted small" id="ws-counts-status" data-testid="ws-counts-status" data-state="idle" role="status" aria-live="polite"></p>
+    <p class="ws-counts-status muted small" id="ws-shapes-status" data-testid="ws-shapes-status" data-state="idle" role="status" aria-live="polite" hidden></p>
 
     <div class="ws-access" id="ws-access" data-testid="ws-access" hidden></div>
 
@@ -39,6 +40,7 @@
     </div>
     <div class="ws-counts-actions">
       <button class="btn-ghost small" type="button" id="ws-snapshot" data-testid="ws-snapshot" title="Save every table's row count and size to a file (read-only)">Snapshot counts</button>
+      <button class="btn-ghost small" type="button" id="ws-relationships" data-testid="ws-relationships" title="Measure children per parent for every foreign key (read-only)">Analyze relationships</button>
       <a class="btn-ghost small" id="ws-calibrate" data-testid="ws-calibrate" href="/compare?import=1" title="Compare this database with a counts file and fill it to match">Calibrate from a file</a>
     </div>
 

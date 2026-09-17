@@ -37,5 +37,15 @@ func SnapshotFromReport(r Report, side string) (Snapshot, error) {
 	if len(snap.Tables) == 0 {
 		return snap, fmt.Errorf("the %s side of this comparison has no tables", side)
 	}
+	// Shapes travel only when relationships were compared: exporting never scans.
+	for _, d := range r.Relationships {
+		shape := d.Source
+		if side == SideTarget {
+			shape = d.Target
+		}
+		if shape != nil {
+			snap.Relationships = append(snap.Relationships, *shape)
+		}
+	}
 	return snap, nil
 }

@@ -146,6 +146,21 @@
       </aside>
     </div>
 
+    <section class="cmp-shapes" id="cmp-shapes" data-testid="cmp-shapes">
+      <header class="cmp-shapes-head">
+        <div>
+          <h2>Relationships</h2>
+          <p class="muted small" id="cmp-shapes-note">Children per parent for every foreign key, on both sides. Read-only; keys without an index are estimated unless you include them. Counts mode applies: estimate reads statistics only.</p>
+        </div>
+        <div class="cmp-shapes-actions">
+          <label class="field-check small"><input id="cmp-shapes-unindexed" data-testid="cmp-shapes-unindexed" type="checkbox"> Scan unindexed keys</label>
+          <label class="field-check small" title="Production connections read estimates only unless this is checked"><input id="cmp-shapes-exact-prod" data-testid="cmp-shapes-exact-prod" type="checkbox"> Exact on production</label>
+          <button class="btn-ghost" id="cmp-shapes-run" data-testid="cmp-shapes-run" type="button">Compare relationships</button>
+        </div>
+      </header>
+      <div class="cmp-shapes-body" id="cmp-shapes-body" data-testid="cmp-shapes-body" hidden></div>
+    </section>
+
     <details class="cmp-logs" id="cmp-logs">
       <summary>Job log <span class="status-pill" id="job-status" data-testid="job-status">idle</span> <span class="muted small" id="job-elapsed"></span></summary>
       <div class="row spread">
@@ -218,6 +233,7 @@
             <label><input type="radio" name="export-format" value="json"><span>JSON</span></label>
           </div>
         </fieldset>
+        <label class="field-check small cmp-export-shapes" title="Available after Compare relationships"><input type="checkbox" id="cmp-export-relationships" data-testid="cmp-export-relationships" disabled> Include relationships <span class="muted" id="cmp-export-relationships-note">(compare them first)</span></label>
       </div>
       <pre class="cmp-export-preview" id="cmp-export-preview" data-testid="cmp-export-preview" tabindex="0"></pre>
       <footer class="cmp-dialog-foot">

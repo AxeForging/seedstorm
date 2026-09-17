@@ -290,6 +290,7 @@
     }
     app.querySelectorAll("[data-count]").forEach((b) => { b.textContent = counts[b.dataset.count]; });
     renderGauges();
+    renderShapes();
     $("cmp-writes").innerHTML = `Writes only to <strong>${ui().escapeHTML(targetLabel())}</strong>. The source is read.`;
     $("cmp-plan").disabled = false;
   }
@@ -410,7 +411,7 @@
       const job = await runJob("/api/mirror", mirrorRequest(true));
       if (job.status !== "done") throw new Error(job.error || "plan " + job.status);
       state.plan = job.result;
-      state.report = job.result.report; // counts are fresh from the plan run
+      state.report = { ...job.result.report, relationships: state.report?.relationships }; // counts are fresh from the plan run
       state.pairKey = pairKey();
       saveReport();
       render();
@@ -619,6 +620,74 @@
     compare();
   }
 
+  // ── relationship shapes ─────────────────────────────────────────────
+  // A side's cell: avg / p95 / max children per parent and parents without any.
+  function shapeCell(sh) {
+    if (!sh) return `<span class="cell-unknown">—</span>`;
+    const measured = sh.outcome === "ok" || sh.outcome === "estimated" || sh.outcome === "skipped: unindexed";
+    if (!measured) return `<span class="cell-unknown" title="${ui().escapeHTML(sh.detail || "")}">${ui().escapeHTML(sh.outcome)}</span>`;
+    const est = sh.outcome !== "ok" ? "~" : "";
+    const n = (v) => (v == null || v < 0 ? "?" : Number(v).toLocaleString());
+    const title = `${sh.parents >= 0 ? n(sh.parents) + " parents · " : ""}${n(sh.children)} children · min ${n(sh.min)} · p50 ${n(sh.p50)}${sh.nullShare ? ` · ${Math.round(sh.nullShare * 100)}% NULL keys` : ""}${est ? " · estimated" : ""}`;
+    return `<span title="${ui().escapeHTML(title)}">${est}${Number(sh.avg || 0).toFixed(2)} / ${n(sh.p95)} / ${n(sh.max)} · ${Math.round((sh.zeroShare || 0) * 100)}%</span>`;
+  }
+
+  const shapeStatusText = { same: "same", differs: "differs", source_only: "source only", target_only: "target only", unknown: "unknown" };
+
+  function renderShapes() {
+    const body = $("cmp-shapes-body");
+    const drift = state.report?.relationships;
+    const exportBox = $("cmp-export-relationships");
+    exportBox.disabled = !drift?.length;
+    if (exportBox.disabled) exportBox.checked = false;
+    $("cmp-export-relationships-note").textContent = drift?.length ? `(${drift.length})` : "(compare them first)";
+    if (!drift) { body.hidden = true; body.innerHTML = ""; return; }
+    body.hidden = false;
+    if (!drift.length) {
+      body.innerHTML = `<p class="cmp-shapes-summary">Neither side has foreign keys to compare.</p>`;
+      return;
+    }
+    const counts = {};
+    for (const d of drift) counts[d.status] = (counts[d.status] || 0) + 1;
+    const rows = drift.map((d) => {
+      const parent = (d.source || d.target)?.parent;
+      return `<div class="cmp-shape-row" data-testid="cmp-shape-row" data-status="${d.status}">
+        <code title="${ui().escapeHTML(d.child + "." + d.column + (parent ? " → " + parent : ""))}">${ui().escapeHTML(d.child + "." + d.column)}${parent ? ` <span class="muted">→ ${ui().escapeHTML(parent)}</span>` : ""}</code>
+        <span class="cmp-shape-src">${shapeCell(d.source)}</span>
+        <span class="cmp-shape-tgt">${shapeCell(d.target)}</span>
+        <span class="cmp-shape-status ${d.status}">${shapeStatusText[d.status] || d.status}</span>
+      </div>`;
+    }).join("");
+    body.innerHTML = `<p class="cmp-shapes-summary" data-testid="cmp-shapes-summary">${drift.length} ${drift.length === 1 ? "relationship" : "relationships"} · ${counts.same || 0} same · ${counts.differs || 0} differ · ${(counts.source_only || 0) + (counts.target_only || 0)} on one side · ${counts.unknown || 0} unknown · children per parent: avg / p95 / max · parents without children · ~ = estimated</p>
+      <div class="cmp-shape-row head" aria-hidden="true"><span>relationship</span><span class="cmp-shape-src">source</span><span class="cmp-shape-tgt">target</span><span class="cmp-shape-status">status</span></div>${rows}`;
+  }
+
+  async function compareShapes() {
+    if (state.busy || !state.report) return;
+    setBusy(true);
+    const button = $("cmp-shapes-run");
+    button.disabled = true;
+    button.textContent = "Measuring…";
+    const counts = app.querySelector('input[name="counts"]:checked').value;
+    try {
+      const job = await runJob("/api/compare/relationships", {
+        source: refOf($("cmp-source")), sourceSnapshot: sourceSnapshot(), target: refOf($("cmp-target")), counts,
+        scanUnindexed: $("cmp-shapes-unindexed").checked, confirmExact: $("cmp-shapes-exact-prod").checked,
+      });
+      if (job.status !== "done") throw new Error(job.error || "relationships " + job.status);
+      state.report.relationships = job.result.relationships || [];
+      saveReport();
+      renderShapes();
+    } catch (err) {
+      showOutcome("error", "Relationships could not be compared", err.message);
+      $("cmp-logs").open = true;
+    } finally {
+      button.disabled = false;
+      button.textContent = "Compare relationships";
+      setBusy(false);
+    }
+  }
+
   // ── counts export ───────────────────────────────────────────────────
   let exportSeq = 0;
   async function renderExport() {
@@ -629,7 +698,7 @@
     $("cmp-export-status").textContent = "Rendering…";
     let out;
     try {
-      const res = await fetch("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: state.report, side, format }) });
+      const res = await fetch("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: state.report, side, format, relationships: $("cmp-export-relationships").checked }) });
       out = await res.json();
       if (!res.ok) throw new Error(out.error || res.statusText);
     } catch (err) {
@@ -641,7 +710,7 @@
     }
     if (seq !== exportSeq) return;
     $("cmp-export-preview").textContent = out.content;
-    $("cmp-export-status").textContent = `${out.tables} tables · ${out.filename}`;
+    $("cmp-export-status").textContent = `${out.tables} tables${out.relationships ? ` · ${out.relationships} relationships` : ""} · ${out.filename}`;
     const link = $("cmp-export-download");
     const type = format === "json" ? "application/json" : "text/yaml";
     if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
@@ -684,9 +753,13 @@
   // A compare or mirror started before leaving the page keeps running on the
   // server: reattach to it and show its outcome when it ends.
   function resumeRunningJob() {
-    ui().resumeRun(["compare", "mirror"], {
+    ui().resumeRun(["compare", "mirror", "compare relationships"], {
       onEnd: (job) => {
-        if (job.name === "compare" && job.status === "done" && job.result?.report) {
+        if (job.name === "compare relationships" && job.status === "done" && state.report) {
+          state.report.relationships = job.result?.relationships || [];
+          saveReport();
+          renderShapes();
+        } else if (job.name === "compare" && job.status === "done" && job.result?.report) {
           state.report = job.result.report;
           state.pairKey = pairKey();
           saveReport();
@@ -763,7 +836,8 @@
       readImportFile(ev.dataTransfer?.files?.[0]);
     });
     $("cmp-export").addEventListener("click", openExport);
-    app.querySelectorAll('input[name="export-side"], input[name="export-format"]').forEach((r) => r.addEventListener("change", renderExport));
+    app.querySelectorAll('input[name="export-side"], input[name="export-format"], #cmp-export-relationships').forEach((r) => r.addEventListener("change", renderExport));
+    $("cmp-shapes-run").addEventListener("click", compareShapes);
     $("cmp-export-copy").addEventListener("click", async () => {
       await ui().copyText($("cmp-export-preview").textContent);
       $("cmp-export-copy").textContent = "Copied";

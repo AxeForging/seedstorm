@@ -86,6 +86,39 @@
 .cmp-meter { display: block; height: 4px; border-radius: 2px; background: rgba(216,181,111,0.18); overflow: hidden; }
 .cmp-meter i { display: block; height: 100%; background: var(--tgt); transition: width 500ms var(--ease-out); }
 
+/* ── relationship shapes ── */
+.cmp-shapes {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  overflow: hidden;
+}
+.cmp-shapes-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+}
+.cmp-shapes-head h2 { margin: 0; font-size: 15px; }
+.cmp-shapes-head p { margin: 2px 0 0; max-width: 72ch; }
+.cmp-shapes-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.cmp-shapes-body { border-top: 1px solid var(--line); max-height: 52vh; overflow: auto; }
+.cmp-shapes-summary { padding: 8px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.cmp-shape-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) 96px;
+  align-items: center; gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(231,236,232,0.05);
+  font-size: 12px;
+}
+.cmp-shape-row.head { color: var(--muted); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; background: rgba(11,15,18,0.35); }
+.cmp-shape-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-shape-src { color: var(--src); text-align: right; font-variant-numeric: tabular-nums; }
+.cmp-shape-tgt { color: var(--tgt); font-variant-numeric: tabular-nums; }
+.cmp-shape-status { font-size: 11px; color: var(--muted); text-align: right; }
+.cmp-shape-status.differs { color: var(--warn); }
+.cmp-shape-row .cell-unknown { color: var(--muted); }
+.cmp-export-shapes { align-self: end; }
+
 /* ── table gauges ── */
 .cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
 .cmp-table-panel {
@@ -285,6 +318,12 @@
   .cmp-empty { flex-direction: column; align-items: flex-start; }
   .cmp-search, .cmp-search input { width: 100%; }
   .cmp-gauge-head { display: none; }
+  .cmp-shape-row.head { display: none; }
+  .cmp-shape-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name status" "src src" "tgt tgt"; row-gap: 3px; }
+  .cmp-shape-row > code { grid-area: name; }
+  .cmp-shape-src { grid-area: src; text-align: left; }
+  .cmp-shape-tgt { grid-area: tgt; }
+  .cmp-shape-status { grid-area: status; }
   .cmp-gauge {
     grid-template-columns: 24px minmax(0, 1fr) auto;
     grid-template-areas: "check name delta" "check src src" "check tgt tgt";

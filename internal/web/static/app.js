@@ -1503,6 +1503,7 @@
     syncTuningSummary();
     document.getElementById("ws-recommend")?.addEventListener("click", openRecommendDialog);
     document.getElementById("ws-snapshot")?.addEventListener("click", takeSnapshot);
+    document.getElementById("ws-relationships")?.addEventListener("click", openShapesDialog);
     fetchConnections().then((conns) => {
       const active = (conns || []).find((c) => c.active);
       const link = document.getElementById("ws-calibrate");
@@ -1681,6 +1682,112 @@
     refresh();
   }
 
+  // ── relationship shapes of the active connection ──────────────────────
+  // Shapes are measured by a job; the server keeps each one as it finishes, so
+  // the graph polls while a scan runs and draws a badge per foreign key.
+  ws.shapes = {};
+  ws.shapesProduction = false;
+  let shapesPoll = null;
+  const shapeMeasured = (sh) => sh.outcome === "ok" || sh.outcome === "estimated" || sh.outcome === "skipped: unindexed";
+  function shapeBadge(sh) {
+    if (!shapeMeasured(sh)) return sh.outcome;
+    const n = (v) => (v == null || v < 0 ? "?" : String(v));
+    return `${sh.outcome === "ok" ? "" : "~"}avg ${Number(sh.avg || 0).toFixed(1)} · max ${n(sh.max)}`;
+  }
+  function shapeTitle(sh) {
+    if (!shapeMeasured(sh)) return `${sh.child}.${sh.column}: ${sh.outcome}${sh.detail ? " — " + sh.detail : ""}`;
+    const n = (v) => (v == null || v < 0 ? "?" : Number(v).toLocaleString());
+    return `${sh.child}.${sh.column} → ${sh.parent}: children per parent min ${n(sh.min)} · avg ${Number(sh.avg || 0).toFixed(2)} · p50 ${n(sh.p50)} · p95 ${n(sh.p95)} · max ${n(sh.max)} · ${Math.round((sh.zeroShare || 0) * 100)}% of parents have none` +
+      (sh.nullShare ? ` · ${Math.round(sh.nullShare * 100)}% NULL keys` : "") + (sh.outcome === "ok" ? "" : ` · ${sh.detail || "estimated"}`);
+  }
+
+  async function loadShapes() {
+    let view;
+    try {
+      view = await fetchJSON("/api/relationships", { cache: "no-store" });
+    } catch (_) { return; }
+    ws.shapesProduction = !!view.production;
+    ws.shapes = Object.fromEntries((view.shapes || []).map((sh) => [sh.child + "." + sh.column, sh]));
+    applyShapes();
+    const status = document.getElementById("ws-shapes-status");
+    const shapes = view.shapes || [];
+    if (status) {
+      status.hidden = !shapes.length && !view.running;
+      const unknown = shapes.filter((sh) => !shapeMeasured(sh)).length;
+      const est = shapes.filter((sh) => sh.outcome !== "ok" && shapeMeasured(sh)).length;
+      status.dataset.state = view.running ? "loading" : "ready";
+      status.textContent = view.running
+        ? `Measuring relationships… ${shapes.length}${view.total ? "/" + view.total : ""}`
+        : `${shapes.length} ${shapes.length === 1 ? "relationship" : "relationships"} measured${est ? ` · ${est} estimated (~)` : ""}${unknown ? ` · ${unknown} not measured` : ""}`;
+    }
+    if (view.running && !shapesPoll) shapesPoll = setInterval(loadShapes, 1500);
+    if (!view.running && shapesPoll) { clearInterval(shapesPoll); shapesPoll = null; }
+  }
+
+  function applyShapes() {
+    if (!ws.cy) return;
+    ws.cy.batch(() => {
+      for (const e of ws.edges) {
+        const edge = ws.cy.getElementById(e.id);
+        const sh = ws.shapes[e.target + "." + e.column];
+        if (!edge || edge.empty()) continue;
+        if (sh) {
+          edge.data("shapeLabel", shapeBadge(sh));
+          edge.data("shapeTitle", shapeTitle(sh));
+          edge.toggleClass("shape-unknown", !shapeMeasured(sh));
+        } else {
+          edge.removeData("shapeLabel shapeTitle");
+          edge.removeClass("shape-unknown");
+        }
+      }
+    });
+  }
+
+  function openShapesDialog() {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prod-dialog shapes-dialog";
+    dlg.setAttribute("data-testid", "shapes-dialog");
+    const prod = ws.shapesProduction;
+    dlg.innerHTML = `
+      <form method="dialog">
+        <h2>Analyze relationships</h2>
+        <p class="muted small">For every foreign key: how many children each parent has (min, avg, p95, max) and how many parents have none. Read-only, two queries at a time, 60s limit per key; cancel keeps what finished.</p>
+        <div class="segmented" role="radiogroup">
+          <label><input type="radio" name="counts" value="exact" ${prod ? "" : "checked"}><span>Exact</span></label>
+          <label><input type="radio" name="counts" value="estimate" ${prod ? "checked" : ""}><span>Estimate</span></label>
+        </div>
+        <p class="muted small">Exact aggregates each key in the database. Estimate reads planner statistics: instant, averages only where the database keeps them.</p>
+        <label class="field-check small"><input type="checkbox" name="unindexed" data-testid="shapes-unindexed"> Also scan keys without an index (full table scans)</label>
+        ${prod ? `<label class="field-check small"><input type="checkbox" name="confirmExact" data-testid="shapes-confirm-exact"> This is a production connection: run exact scans anyway (one query at a time)</label>` : ""}
+        <footer>
+          <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+          <button class="btn-primary" type="button" data-start data-testid="shapes-start">Analyze</button>
+        </footer>
+      </form>`;
+    document.body.appendChild(dlg);
+    dlg.querySelector("[data-start]").addEventListener("click", async () => {
+      const form = dlg.querySelector("form");
+      const body = {
+        counts: form.querySelector('input[name="counts"]:checked').value,
+        scanUnindexed: form.querySelector('input[name="unindexed"]').checked,
+        confirmExact: !!form.querySelector('input[name="confirmExact"]')?.checked,
+      };
+      dlg.close();
+      let j;
+      try {
+        j = await postRun("/api/relationships", body);
+      } catch (err) {
+        appendLog("ERROR: " + (err.message || err));
+        return;
+      }
+      activateTab("logs");
+      streamJob(j.id, j.name, { onEnd: () => loadShapes() }, j.bootId);
+      setTimeout(loadShapes, 300);
+    });
+    dlg.addEventListener("close", () => dlg.remove());
+    dlg.showModal();
+  }
+
   // ── counts snapshot of the active connection ──────────────────────────
   const IMPORTED_COUNTS_KEY = "seedstorm.importedCounts.v1";
   async function takeSnapshot() {
@@ -1712,6 +1819,7 @@
           <label><input type="radio" name="format" value="yaml" checked><span>YAML</span></label>
           <label><input type="radio" name="format" value="json"><span>JSON</span></label>
         </div>
+        <label class="field-check small"><input type="checkbox" name="relationships" data-testid="snapshot-relationships" ${Object.keys(ws.shapes).length ? "" : "disabled"}> Include relationships <span class="muted">${Object.keys(ws.shapes).length ? `(${Object.keys(ws.shapes).length} measured)` : "(analyze them first)"}</span></label>
         <pre class="cmp-export-preview snapshot-preview" data-testid="snapshot-preview" tabindex="0">Rendering…</pre>
         <footer>
           <button class="btn-ghost" value="cancel" type="submit">Close</button>
@@ -1726,8 +1834,10 @@
     let content = "";
     const render = async () => {
       const format = dlg.querySelector('input[name="format"]:checked').value;
+      const withShapes = dlg.querySelector('input[name="relationships"]').checked;
+      const payload = withShapes ? { ...snapshot, relationships: Object.values(ws.shapes) } : snapshot;
       try {
-        const out = await fetchJSON("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ snapshot, format }) });
+        const out = await fetchJSON("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ snapshot: payload, format, relationships: withShapes }) });
         content = out.content;
         preview.textContent = content;
         if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
@@ -1738,7 +1848,7 @@
         preview.textContent = "Could not render: " + (err.message || err);
       }
     };
-    dlg.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListener("change", render));
+    dlg.querySelectorAll('input[name="format"], input[name="relationships"]').forEach((r) => r.addEventListener("change", render));
     dlg.querySelector("[data-copy]").addEventListener("click", () => copyText(content));
     dlg.querySelector("[data-compare]").addEventListener("click", () => {
       // Hand the snapshot to Compare as an imported source.
@@ -1792,6 +1902,7 @@
       } else {
         refreshCounts(false);
       }
+      loadShapes();
     } catch (err) {
       setGraphLoading("Graph failed", err.message || String(err), true);
     }
@@ -1921,6 +2032,8 @@
     });
 
     ws.cy.on("tap", "node", (ev) => toggleSelect(ev.target.id()));
+    // A measured relationship's numbers live on its child table's columns.
+    ws.cy.on("tap", "edge[shapeLabel]", (ev) => showDetail(ev.target.data("target")));
     ws.cy.on("cxttap", "node", (ev) => {
       ev.preventDefault?.();
       showDetail(ev.target.id());
@@ -2181,6 +2294,24 @@
           "curve-style": "bezier",
           "control-point-step-size": 42,
         },
+      },
+      {
+        selector: "edge[shapeLabel]",
+        style: {
+          "label": "data(shapeLabel)",
+          "font-size": 9,
+          "color": "#c9d4cc",
+          "text-background-color": "#11161a",
+          "text-background-opacity": 0.85,
+          "text-background-padding": "2px",
+          "text-background-shape": "roundrectangle",
+          "text-rotation": "autorotate",
+          "min-zoomed-font-size": 7,
+        },
+      },
+      {
+        selector: "edge.shape-unknown",
+        style: { "color": "#d8b56f" },
       },
       {
         selector: "edge[?nullable]",
@@ -3043,6 +3174,8 @@
         const flags = [];
         if (c.pk || c.PK) flags.push('<span class="badge pk">PK</span>');
         if (c.fk || c.FK) flags.push(`<span class="badge fk">FK -> ${escapeHTML(c.fk || c.FK)}</span>`);
+        const sh = ws.shapes[tableName + "." + col];
+        if (sh) flags.push(`<span class="badge shape" data-testid="detail-shape" title="${escapeHTML(shapeTitle(sh))}">${escapeHTML(shapeBadge(sh))}</span>`);
         if (c.nullable || c.Nullable) flags.push('<span class="badge nullable">nullable</span>');
         return `<tr><td><code>${escapeHTML(col)}</code> ${flags.join(" ")}</td><td><span class="type">${escapeHTML(c.type || c.Type || "")}</span></td></tr>`;
       }).join("");
@@ -3396,6 +3529,7 @@
     const out = document.getElementById("job-result");
     if (out) renderJobResult(out, job.result || {}, job.name || ws.mode);
     refreshCounts();
+    loadShapes();
   }
 
   // refreshCounts fills node counts without blocking the graph: the page is

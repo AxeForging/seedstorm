@@ -34,6 +34,9 @@ func (s *Server) handleSnapshotEncode(w http.ResponseWriter, r *http.Request) {
 		Side     string            `json:"side"`
 		Snapshot *compare.Snapshot `json:"snapshot"`
 		Format   string            `json:"format"`
+		// Relationships keeps the shapes the report or snapshot holds;
+		// without it the file has counts only.
+		Relationships bool `json:"relationships"`
 	}
 	if err := decodeLimited(w, r, &req, maxSnapshotBody); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -50,6 +53,9 @@ func (s *Server) handleSnapshotEncode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !req.Relationships {
+		snap.Relationships = nil
+	}
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	data, err := compare.EncodeSnapshot(snap, format)
 	if err != nil {
@@ -57,9 +63,10 @@ func (s *Server) handleSnapshotEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"content":  string(data),
-		"filename": snapshotFilename(snap.Label, req.Side, format),
-		"tables":   len(snap.Tables),
+		"content":       string(data),
+		"filename":      snapshotFilename(snap.Label, req.Side, format),
+		"tables":        len(snap.Tables),
+		"relationships": len(snap.Relationships),
 	})
 }
 
