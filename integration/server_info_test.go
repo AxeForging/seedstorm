@@ -31,8 +31,8 @@ func TestDetectServer_ReadsCapacityOnBothEngines(t *testing.T) {
 			if info.UsedBytes <= 0 || info.Version == "" || info.ServerID == "" {
 				t.Fatalf("info = %+v", info)
 			}
-			if info.Replica {
-				t.Fatal("a primary reported as a replica")
+			if info.Replica || info.WritesBlocked {
+				t.Fatalf("a primary reported as read-only: %+v", info)
 			}
 			switch e.driver {
 			case postgresDriver:

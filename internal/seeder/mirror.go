@@ -134,7 +134,7 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 		}
 	}
 	servers := RelateServers(ctx, source, target)
-	if servers.TargetReplica {
+	if servers.TargetWritesBlocked {
 		return nil, ErrTargetReplica
 	}
 	sc := target.Schema

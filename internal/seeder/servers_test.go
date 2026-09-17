@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -29,7 +30,7 @@ func TestRelateServers_SharedServerReplicasAndUnknown(t *testing.T) {
 	stubServers(t, map[*sql.DB]db.ServerInfo{
 		a: {Engine: "postgres", ServerID: "boot1/5432"},
 		b: {Engine: "postgres", ServerID: "boot1/5432"},
-		c: {Engine: "postgres", ServerID: "boot2/5432", Replica: true},
+		c: {Engine: "postgres", ServerID: "boot2/5432", Replica: true, WritesBlocked: true},
 	})
 	ctx := context.Background()
 
@@ -62,7 +63,7 @@ func TestPrepareMirror_RefusesAReplicaTarget(t *testing.T) {
 	src, tgt := &sql.DB{}, &sql.DB{}
 	stubServers(t, map[*sql.DB]db.ServerInfo{
 		src: {Engine: "postgres", ServerID: "p"},
-		tgt: {Engine: "postgres", ServerID: "r", Replica: true},
+		tgt: {Engine: "postgres", ServerID: "r", Replica: true, WritesBlocked: true},
 	})
 	prevIdentity := databaseIdentity
 	databaseIdentity = func(_ context.Context, conn *sql.DB, _ string) (string, error) {
@@ -75,5 +76,35 @@ func TestPrepareMirror_RefusesAReplicaTarget(t *testing.T) {
 	_, err := PrepareMirror(context.Background(), Endpoint{Conn: src, DBType: "pgx"}, Endpoint{Conn: tgt, DBType: "pgx"}, MirrorConfig{})
 	if !errors.Is(err, ErrTargetReplica) {
 		t.Fatalf("err = %v, want ErrTargetReplica", err)
+	}
+}
+
+// MySQL's read_only does not stop a user with SUPER, so it is a warning, not a
+// refusal; only super_read_only (or a Postgres standby) blocks every write.
+func TestRelateServers_MySQLReadOnlyWarnsButSuperReadOnlyRefuses(t *testing.T) {
+	src, readOnly, superReadOnly := &sql.DB{}, &sql.DB{}, &sql.DB{}
+	stubServers(t, map[*sql.DB]db.ServerInfo{
+		src:           {Engine: "mysql", ServerID: "a"},
+		readOnly:      {Engine: "mysql", ServerID: "b", Replica: true},
+		superReadOnly: {Engine: "mysql", ServerID: "c", Replica: true, WritesBlocked: true},
+	})
+	prevIdentity := databaseIdentity
+	databaseIdentity = func(_ context.Context, conn *sql.DB, _ string) (string, error) { return fmt.Sprintf("%p", conn), nil }
+	t.Cleanup(func() { databaseIdentity = prevIdentity })
+
+	r := RelateServers(context.Background(), Endpoint{Conn: src}, Endpoint{Conn: readOnly})
+	if r.TargetWritesBlocked {
+		t.Fatalf("read_only alone must not block: %+v", r)
+	}
+	notices := strings.Join(r.Notices(), "; ")
+	if !strings.Contains(notices, "read_only") {
+		t.Fatalf("no warning about a read_only target: %q", notices)
+	}
+	if _, err := PrepareMirror(context.Background(), Endpoint{Conn: src, DBType: "mysql"}, Endpoint{Conn: readOnly, DBType: "mysql"}, MirrorConfig{}); errors.Is(err, ErrTargetReplica) {
+		t.Fatal("a read_only MySQL target was refused; a user with SUPER can still write")
+	}
+	_, err := PrepareMirror(context.Background(), Endpoint{Conn: src, DBType: "mysql"}, Endpoint{Conn: superReadOnly, DBType: "mysql"}, MirrorConfig{})
+	if !errors.Is(err, ErrTargetReplica) {
+		t.Fatalf("super_read_only target = %v, want ErrTargetReplica", err)
 	}
 }

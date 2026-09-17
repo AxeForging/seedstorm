@@ -8,7 +8,8 @@ import (
 	"github.com/AxeForging/seedstorm/internal/db"
 )
 
-// ErrTargetReplica: the target is a read-only standby, so every write would fail.
+// ErrTargetReplica: the target refuses every write (a Postgres standby, or
+// MySQL super_read_only).
 var ErrTargetReplica = errors.New("the target is a read-only replica: point the mirror at the primary")
 
 // detectServer and databaseIdentity are the db reads, replaceable in tests.
@@ -24,6 +25,10 @@ type ServerRelation struct {
 	SharedServer  bool
 	SourceReplica bool
 	TargetReplica bool
+	// TargetWritesBlocked means no user can write there, so a mirror is refused.
+	// A MySQL target with read_only but not super_read_only only warns: a user
+	// with SUPER writes to it.
+	TargetWritesBlocked bool
 }
 
 // RelateServers reads both live endpoints' servers. Snapshot endpoints and
@@ -41,10 +46,11 @@ func RelateServers(ctx context.Context, source, target Endpoint) ServerRelation 
 		return ServerRelation{}
 	}
 	return ServerRelation{
-		Known:         true,
-		SharedServer:  src.Engine == tgt.Engine && src.ServerID != "" && src.ServerID == tgt.ServerID,
-		SourceReplica: src.Replica,
-		TargetReplica: tgt.Replica,
+		Known:               true,
+		SharedServer:        src.Engine == tgt.Engine && src.ServerID != "" && src.ServerID == tgt.ServerID,
+		SourceReplica:       src.Replica,
+		TargetReplica:       tgt.Replica,
+		TargetWritesBlocked: tgt.WritesBlocked,
 	}
 }
 
@@ -53,6 +59,9 @@ func (r ServerRelation) Notices() []string {
 	var out []string
 	if r.SharedServer {
 		out = append(out, "source and target are databases on the same server: reading the source and writing the target share its CPU, memory and disk")
+	}
+	if r.TargetReplica && !r.TargetWritesBlocked {
+		out = append(out, "the target has read_only set: only a user with SUPER can write to it, and it may be a replica")
 	}
 	if r.SourceReplica {
 		out = append(out, "the source is a read replica: reads there do not load the primary")
