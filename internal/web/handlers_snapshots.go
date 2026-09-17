@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,15 +9,17 @@ import (
 	"strings"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 )
 
 // maxSnapshotBody bounds an imported counts document (a snapshot of tens of
 // thousands of tables is still well under this).
 const maxSnapshotBody = 8 << 20
 
-// handleSnapshotEncode renders one side of a comparison as a counts file.
+// handleSnapshotEncode renders a counts file: one side of a comparison, or a
+// snapshot taken from one connection.
 //
-//	POST {report, side: source|target, format: json|yaml} -> {content, filename, tables}
+//	POST {report, side: source|target, format} | {snapshot, format} -> {content, filename, tables}
 func (s *Server) handleSnapshotEncode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -27,18 +30,25 @@ func (s *Server) handleSnapshotEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Report compare.Report `json:"report"`
-		Side   string         `json:"side"`
-		Format string         `json:"format"`
+		Report   compare.Report    `json:"report"`
+		Side     string            `json:"side"`
+		Snapshot *compare.Snapshot `json:"snapshot"`
+		Format   string            `json:"format"`
 	}
 	if err := decodeLimited(w, r, &req, maxSnapshotBody); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	snap, err := compare.SnapshotFromReport(req.Report, req.Side)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	var snap compare.Snapshot
+	if req.Snapshot != nil {
+		snap = *req.Snapshot
+		req.Side = ""
+	} else {
+		var err error
+		if snap, err = compare.SnapshotFromReport(req.Report, req.Side); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	data, err := compare.EncodeSnapshot(snap, format)
@@ -108,7 +118,47 @@ func snapshotFilename(label, side, format string) string {
 	if format == "yml" {
 		format = compare.FormatYAML
 	}
+	if side == "" {
+		return name + "-counts." + format
+	}
 	return name + "-" + side + "-counts." + format
+}
+
+// SnapshotRequest takes the active connection's counts.
+type SnapshotRequest struct {
+	Counts string `json:"counts"`
+}
+
+func (s *Server) handleSnapshotRun(w http.ResponseWriter, r *http.Request) {
+	startRun(s, w, r, "snapshot", s.runSnapshot)
+}
+
+// runSnapshot reads every table's row count, size and columns on the active
+// connection (read-only), with per-table progress.
+func (s *Server) runSnapshot(ctx context.Context, sess *Session, req SnapshotRequest, jc JobControl) (map[string]any, error) {
+	log := jobLogger(jc)
+	mode, err := compare.ParseCountMode(req.Counts)
+	if err != nil {
+		return nil, err
+	}
+	jc.Phase("count")
+	label := sessionLabel(sess)
+	log.Info().Str("database", label).Str("counts", string(mode)).Msg("Reading table counts")
+	snap, err := compare.Take(ctx, sess.Conn(), sess.DBType, label, mode, func(done, total int, table string) {
+		jc.Progress(done, total, table)
+	})
+	if err != nil {
+		return nil, runerr.At(runerr.PhaseCount, "", err)
+	}
+	unknown := 0
+	for _, st := range snap.Tables {
+		if st.Rows < 0 {
+			unknown++
+		}
+	}
+	jc.Phase("done")
+	log.Info().Int("tables", len(snap.Tables)).Int("unknown", unknown).Msg("Snapshot taken")
+	return map[string]any{"snapshot": snap, "tables": len(snap.Tables), "unknown": unknown}, nil
 }
 
 // decodeLimited decodes a JSON body of at most limit bytes.

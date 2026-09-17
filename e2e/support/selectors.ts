@@ -124,6 +124,23 @@ export const sel = {
     next: "run-strip-next",
     detail: "run-strip-detail",
   },
+  snapshot: {
+    open: "ws-snapshot",
+    calibrate: "ws-calibrate",
+    dialog: "snapshot-dialog",
+    preview: "snapshot-preview",
+    download: "snapshot-download",
+    compare: "snapshot-compare",
+  },
+  tuning: {
+    open: "ws-recommend",
+    dialog: "tune-dialog",
+    result: "tune-result",
+    writers: "tune-writers",
+    generators: "tune-generators",
+    growth: "tune-growth",
+    apply: "tune-apply",
+  },
   production: {
     checkbox: "conn-production",
     badge: "conn-production-badge",

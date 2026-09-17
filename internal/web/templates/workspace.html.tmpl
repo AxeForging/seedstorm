@@ -37,6 +37,10 @@
       <button class="btn-ghost" data-act="invert">Invert</button>
       <button class="btn-ghost" data-act="refresh" title="Refresh row counts">↻</button>
     </div>
+    <div class="ws-counts-actions">
+      <button class="btn-ghost small" type="button" id="ws-snapshot" data-testid="ws-snapshot" title="Save every table's row count and size to a file (read-only)">Snapshot counts</button>
+      <a class="btn-ghost small" id="ws-calibrate" data-testid="ws-calibrate" href="/compare?import=1" title="Compare this database with a counts file and fill it to match">Calibrate from a file</a>
+    </div>
 
     <div class="ws-tabs">
       <button class="ws-tab active" data-tab="selected" data-testid="ws-tab-selected">Selected</button>
@@ -197,6 +201,7 @@
             <input id="cfg-selfref-depth" type="number" value="2" min="0">
           </label>
           <p class="muted small">More writers finish sooner on a server with headroom; more generators help once the database keeps up. Use 1 and 1 for a strictly sequential run.</p>
+          <button type="button" class="btn-ghost ws-recommend-btn" id="ws-recommend" data-testid="ws-recommend">Recommend for this database…</button>
         </div>
       </details>
     </div>

@@ -115,9 +115,13 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 					log.Warn().Str("path", issue.Path).Msg(issue.Message)
 				}
 			}
+			workers, err := workersFromFlag(ctx, cmd, target.Conn, target.DBType)
+			if err != nil {
+				return err
+			}
 			runOpts := seeder.Options{
 				BatchSize:   cmd.Int("batch-size"),
-				Workers:     cmd.Int("workers"),
+				Workers:     workers,
 				StopOnError: cmd.Bool("stop-on-error"),
 				Generate:    faker.GenerateOptions{SelfRefDepth: cmd.Int("self-ref-depth")},
 			}

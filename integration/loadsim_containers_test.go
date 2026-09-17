@@ -77,12 +77,28 @@ func dataDevice(t *testing.T) string {
 // until it answers. The container is removed when the test ends.
 func startLoadsimDB(t *testing.T, driver string, p loadsimProfile, limitIO bool) *loadsimDB {
 	t.Helper()
+	return startLoadsimDBWith(t, driver, p, limitIO, "")
+}
+
+// startLoadsimDBWithTmpfs keeps the data directory on a tmpfs of size, so the
+// database's disk fills up at that size.
+func startLoadsimDBWithTmpfs(t *testing.T, driver string, p loadsimProfile, size string) *loadsimDB {
+	t.Helper()
+	return startLoadsimDBWith(t, driver, p, false, size)
+}
+
+func startLoadsimDBWith(t *testing.T, driver string, p loadsimProfile, limitIO bool, tmpfsSize string) *loadsimDB {
+	t.Helper()
 	port := freePort(t)
 	name := fmt.Sprintf("ss-loadsim-%s-%s-%d", strings.ReplaceAll(p.name, "cloudsql-", ""), map[string]string{postgresDriver: "pg", mysqlDriver: "my"}[driver], port)
 	args := []string{"run", "-d", "--rm", "--name", name, "--cpus", p.cpus, "--memory", p.memory, "--memory-swap", p.memory,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, map[string]int{postgresDriver: 5432, mysqlDriver: 3306}[driver])}
 	if dev := dataDevice(t); limitIO && p.writeIOPS > 0 && dev != "" {
 		args = append(args, "--device-write-iops", fmt.Sprintf("%s:%d", dev, p.writeIOPS))
+	}
+	if tmpfsSize != "" {
+		dataDir := map[string]string{postgresDriver: "/var/lib/postgresql/data", mysqlDriver: "/var/lib/mysql"}[driver]
+		args = append(args, "--mount", "type=tmpfs,destination="+dataDir+",tmpfs-size="+tmpfsSize)
 	}
 	var e engine
 	var dsn string

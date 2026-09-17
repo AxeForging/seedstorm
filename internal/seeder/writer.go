@@ -267,7 +267,7 @@ func (tw *tableWriter) write(item queued) {
 	})
 	if err != nil {
 		if w.ctx.Err() == nil {
-			w.cancel(runerr.At(runerr.PhaseWrite, tw.name, err))
+			w.cancel(runerr.At(runerr.PhaseWrite, tw.name, db.Explain(err)))
 		}
 		return
 	}

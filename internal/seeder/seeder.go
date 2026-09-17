@@ -347,7 +347,7 @@ func insertRowsConcurrently(ctx context.Context, conn *sql.DB, dbType, tableName
 				return err
 			})
 			if o.err != nil {
-				o.err = runerr.At(runerr.PhaseWrite, tableName, o.err)
+				o.err = runerr.At(runerr.PhaseWrite, tableName, db.Explain(o.err))
 			}
 		}()
 	}

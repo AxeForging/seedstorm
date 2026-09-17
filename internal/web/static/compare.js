@@ -775,7 +775,11 @@
     app.querySelectorAll("[data-close]").forEach((el) => el.addEventListener("click", closeModal));
     app.querySelectorAll(".cmp-tab").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("cmp-modal").hidden) closeModal(); });
-    loadPickers().then(() => restoreReport());
+    loadPickers().then(() => {
+      restoreReport();
+      // "Calibrate from a file" on the workspace opens the import directly.
+      if (new URLSearchParams(location.search).get("import") === "1") openImport();
+    });
     loadProfiles().then(() => restoreCompareForm(true));
     restoreCompareForm(false);
     for (const [id] of COMPARE_FORM_FIELDS) {

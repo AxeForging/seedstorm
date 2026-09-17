@@ -113,7 +113,7 @@ func seedSequential(ctx context.Context, conn *sql.DB, dbType string, stream *fa
 						return insertStrict(ctx, conn, dbType, tableName, rows, opts.BatchSize)
 					})
 					if err != nil {
-						return runerr.At(runerr.PhaseWrite, tableName, err)
+						return runerr.At(runerr.PhaseWrite, tableName, db.Explain(err))
 					}
 				}
 				tally.written(tableName, len(rows))

@@ -2410,3 +2410,19 @@ textarea { font-family: var(--mono); font-size: 12px; }
 @keyframes run-strip-pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .run-strip-dot { animation: none !important; } }
 .page-error-notice { position: fixed; right: 16px; bottom: 16px; left: 16px; max-width: 520px; margin-left: auto; display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(240,120,110,0.45); background: var(--panel, #16181c); z-index: 1000; }
+
+/* ── tuning recommendation dialog ──────────────────────────────────────── */
+.tune-dialog { max-width: min(560px, calc(100vw - 32px)); }
+.tune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 10px; }
+.tune-grid .field { min-width: 0; }
+.tune-result { min-width: 0; padding: 10px; border-radius: 10px; background: rgba(121,216,179,0.06); border: 1px solid var(--line, #2a2d33); }
+.tune-result p, .tune-result li { overflow-wrap: anywhere; }
+.tune-values { font-size: 1.05rem; margin: 0 0 6px; }
+.tune-reasons { margin: 0 0 6px; padding-left: 18px; }
+.tune-growth-warn { color: #d8b56f; }
+.tune-growth-refuse, .tune-prod { color: var(--danger, #f0786e); }
+.ws-recommend-btn { justify-self: start; }
+
+.ws-counts-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.snapshot-dialog { max-width: min(640px, calc(100vw - 32px)); }
+.snapshot-preview { max-height: 40vh; overflow: auto; }

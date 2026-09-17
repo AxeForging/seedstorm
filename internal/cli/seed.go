@@ -180,6 +180,10 @@ Use --dry-run to print SQL statements without executing them.`,
 			if err := pingWithin(ctx, dbConn); err != nil {
 				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("%s did not answer: %w", dsnLabel(dbType, dsn), err))
 			}
+			workers, err := workersFromFlag(ctx, cmd, dbConn, dbType)
+			if err != nil {
+				return err
+			}
 
 			// Every table stays in the preload so FKs can reference rows of ignored
 			// tables; only the kept ones are written.
@@ -210,7 +214,7 @@ Use --dry-run to print SQL statements without executing them.`,
 					}
 				}
 				log.Info().Int("tables", len(sortedTables)).Msg("Truncating tables")
-				if err := db.TruncateConcurrently(ctx, dbConn, dbType, sortedTables, cmd.Int("workers"), nil); err != nil {
+				if err := db.TruncateConcurrently(ctx, dbConn, dbType, sortedTables, workers, nil); err != nil {
 					return runerr.At(runerr.PhaseTruncate, "", fmt.Errorf("truncate failed: %w", err))
 				}
 				log.Info().Msg("Truncate complete")
@@ -219,14 +223,14 @@ Use --dry-run to print SQL statements without executing them.`,
 			// Rows are generated and written chunk by chunk (memory stays flat for
 			// any --rows), on --workers connections at once.
 			start := time.Now()
-			log.Info().Int("tables", len(sortedTables)).Int("rows", rows).Int("workers", cmd.Int("workers")).Msg("Seeding: generating and writing in chunks")
+			log.Info().Int("tables", len(sortedTables)).Int("rows", rows).Int("workers", workers).Msg("Seeding: generating and writing in chunks")
 			if !dryRun {
 				defer syncSequences(ctx, dbConn, dbType, sortedTables)
 			}
 			onProgress, onTable := progressLogger(time.Now)
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allTables, sortedTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
-				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
+				Workers: workers, OnProgress: onProgress, OnTable: onTable,
 				GenWorkers: genWorkers(cmd), Reproducible: cmd.Int("seed") != 0,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,

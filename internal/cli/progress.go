@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,11 +20,14 @@ import (
 // progressInterval is the most often a run logs a progress line.
 const progressInterval = 2 * time.Second
 
+// defaultWorkers is --workers when unset.
+const defaultWorkers = seeder.DefaultWorkers
+
 func workersFlag() cli.Flag {
-	return &cli.IntFlag{
+	return &cli.StringFlag{
 		Name:  "workers",
-		Usage: "Connections writing at once; tables still write after the tables they reference (1 = one at a time)",
-		Value: seeder.DefaultWorkers,
+		Usage: "Connections writing at once, or auto to pick from the database's limits; tables still write after the tables they reference (1 = one at a time)",
+		Value: strconv.Itoa(defaultWorkers),
 	}
 }
 

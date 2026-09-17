@@ -1501,6 +1501,13 @@
     setupMinimap();
     setupWorkspaceFormMemory();
     syncTuningSummary();
+    document.getElementById("ws-recommend")?.addEventListener("click", openRecommendDialog);
+    document.getElementById("ws-snapshot")?.addEventListener("click", takeSnapshot);
+    fetchConnections().then((conns) => {
+      const active = (conns || []).find((c) => c.active);
+      const link = document.getElementById("ws-calibrate");
+      if (active && link) link.href = "/compare?import=1&target=" + encodeURIComponent("id:" + active.id);
+    }).catch(() => {});
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
     document.getElementById("ws-zoom-out")?.addEventListener("click", () => zoomGraph(0.84));
@@ -1582,6 +1589,169 @@
       el.addEventListener("change", saveWorkspaceForm);
     }
     restoreWorkspaceForm(false);
+  }
+
+  // ── tuning recommendation ─────────────────────────────────────────────
+  // The dialog asks what SQL cannot see (size, disk), remembered per
+  // connection, and shows writers and generators with a reason each.
+  const SERVER_SHAPE_KEY = "seedstorm.serverShape.v1";
+  function openRecommendDialog() {
+    const shape = readStore(SERVER_SHAPE_KEY, {})[formConnKey()] || {};
+    const dlg = document.createElement("dialog");
+    dlg.className = "prod-dialog tune-dialog";
+    dlg.setAttribute("data-testid", "tune-dialog");
+    const field = (id, label, input) => `<label class="field"><span class="field-label">${label}</span>${input}</label>`;
+    dlg.innerHTML = `
+      <form method="dialog">
+        <h2>Recommend writers and generators</h2>
+        <p class="muted small">Connections, buffers and used space are read from the database. Enter what it cannot report.</p>
+        <div class="tune-grid">
+          ${field("vcpu", "Database vCPU", `<input type="number" min="0" step="0.5" name="vcpu" value="${escapeHTML(shape.vcpu ?? "")}" placeholder="unknown">`)}
+          ${field("memoryMB", "Database memory (MB)", `<input type="number" min="0" name="memoryMB" value="${escapeHTML(shape.memoryMB ?? "")}" placeholder="unknown">`)}
+          ${field("storage", "Storage", `<select name="storage">
+            <option value="">unknown</option>
+            <option value="local-ssd">local SSD / NVMe</option>
+            <option value="network-ssd">network SSD (cloud disk)</option>
+            <option value="hdd">spinning disk</option></select>`)}
+          ${field("storageGB", "Storage size (GB)", `<input type="number" min="0" name="storageGB" value="${escapeHTML(shape.storageGB ?? "")}" placeholder="unknown">`)}
+          ${field("iops", "Provisioned IOPS", `<input type="number" min="0" name="iops" value="${escapeHTML(shape.iops ?? "")}" placeholder="unknown">`)}
+        </div>
+        <label class="check-row"><input type="checkbox" name="shared" ${shape.shared ? "checked" : ""}><span>Other workloads use this database</span></label>
+        <label class="check-row"><input type="checkbox" name="ha" ${shape.ha ? "checked" : ""}><span>High availability (synchronous replica)</span></label>
+        <div class="tune-result" data-testid="tune-result" role="status" aria-live="polite"><p class="muted small">Checking the database…</p></div>
+        <footer>
+          <button class="btn-ghost" value="cancel" type="submit">Close</button>
+          <button class="btn-primary" value="apply" type="submit" data-testid="tune-apply" disabled>Apply</button>
+        </footer>
+      </form>`;
+    document.body.appendChild(dlg);
+    const form = dlg.querySelector("form");
+    if (shape.storage) form.storage.value = shape.storage;
+    let rec = null;
+    const refresh = async () => {
+      const params = new URLSearchParams();
+      const values = {};
+      for (const name of ["vcpu", "memoryMB", "storage", "storageGB", "iops"]) {
+        const v = form[name].value.trim();
+        values[name] = v;
+        if (v) params.set(name, v);
+      }
+      values.shared = form.shared.checked;
+      values.ha = form.ha.checked;
+      if (values.shared) params.set("shared", "1");
+      if (values.ha) params.set("ha", "1");
+      const all = readStore(SERVER_SHAPE_KEY, {});
+      all[formConnKey()] = values;
+      writeStore(SERVER_SHAPE_KEY, all);
+      const scope = ws.selected.size + ws.auto.size || ws.nodes.length;
+      params.set("rows", document.getElementById("cfg-rows")?.value || "0");
+      params.set("tables", String(scope));
+      const box = dlg.querySelector(".tune-result");
+      try {
+        const data = await fetchJSON("/api/tuning?" + params.toString(), { timeoutMs: 15000 });
+        rec = data.recommendation;
+        const growth = rec.growth || {};
+        box.innerHTML = `
+          <p class="tune-values"><strong data-testid="tune-writers">${rec.writers}</strong> writers ·
+            <strong data-testid="tune-generators">${rec.generators}</strong> generators</p>
+          <ul class="tune-reasons small">${(rec.reasons || []).map((r) => `<li>${escapeHTML(r)}</li>`).join("")}</ul>
+          <p class="small tune-growth tune-growth-${escapeHTML(growth.status || "unknown")}" data-testid="tune-growth">${escapeHTML(growth.message || "")}</p>
+          ${data.production ? '<p class="small tune-prod">Production database: kept conservative.</p>' : ""}
+          ${data.detectError ? `<p class="small muted">Could not read the server's limits: ${escapeHTML(data.detectError)}</p>` : `<p class="small muted">Server: ${escapeHTML(data.server.engine)} ${escapeHTML(data.server.version)} · ${data.server.usedConnections}/${data.server.maxConnections} connections${data.server.replica ? " · replica" : ""}</p>`}
+          <p class="small muted">${escapeHTML(data.caveat)}</p>`;
+        dlg.querySelector('[value="apply"]').disabled = false;
+      } catch (err) {
+        box.innerHTML = `<p class="small">Could not recommend: ${escapeHTML(err.message || String(err))}</p>`;
+      }
+    };
+    let timer;
+    form.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(refresh, 350); });
+    dlg.addEventListener("close", () => {
+      if (dlg.returnValue === "apply" && rec) {
+        const workers = document.getElementById("cfg-workers");
+        const gens = document.getElementById("cfg-gen-workers");
+        if (workers) workers.value = String(rec.writers);
+        if (gens) gens.value = String(rec.generators);
+        syncTuningSummary();
+        saveWorkspaceForm();
+      }
+      dlg.remove();
+    });
+    dlg.showModal();
+    refresh();
+  }
+
+  // ── counts snapshot of the active connection ──────────────────────────
+  const IMPORTED_COUNTS_KEY = "seedstorm.importedCounts.v1";
+  async function takeSnapshot() {
+    let j;
+    try {
+      j = await postRun("/api/snapshot", { counts: "exact" });
+    } catch (err) {
+      appendLog("ERROR: " + (err.message || err));
+      return;
+    }
+    activateTab("logs");
+    streamJob(j.id, j.name, {
+      onEnd: (job) => {
+        if (job.status === "done" && job.result?.snapshot) openSnapshotDialog(job.result.snapshot, job.result.unknown || 0);
+      },
+    }, j.bootId);
+  }
+
+  function openSnapshotDialog(snapshot, unknown) {
+    const dlg = document.createElement("dialog");
+    dlg.className = "prod-dialog snapshot-dialog";
+    dlg.setAttribute("data-testid", "snapshot-dialog");
+    const tables = Object.keys(snapshot.tables || {}).length;
+    dlg.innerHTML = `
+      <form method="dialog">
+        <h2>Row counts of ${escapeHTML(snapshot.label || "this database")}</h2>
+        <p class="muted small">${tables} tables${unknown ? ` · ${unknown} could not be counted (written as -1)` : ""}. Import it on Compare to fill another database to match, or use it with <code>seedstorm mirror --source-snapshot</code>.</p>
+        <div class="segmented" role="radiogroup">
+          <label><input type="radio" name="format" value="yaml" checked><span>YAML</span></label>
+          <label><input type="radio" name="format" value="json"><span>JSON</span></label>
+        </div>
+        <pre class="cmp-export-preview snapshot-preview" data-testid="snapshot-preview" tabindex="0">Rendering…</pre>
+        <footer>
+          <button class="btn-ghost" value="cancel" type="submit">Close</button>
+          <button class="btn-ghost" type="button" data-copy>Copy</button>
+          <a class="btn-ghost" data-download data-testid="snapshot-download" download>Download</a>
+          <button class="btn-primary" type="button" data-compare data-testid="snapshot-compare">Compare with another database</button>
+        </footer>
+      </form>`;
+    document.body.appendChild(dlg);
+    const preview = dlg.querySelector("pre");
+    const link = dlg.querySelector("[data-download]");
+    let content = "";
+    const render = async () => {
+      const format = dlg.querySelector('input[name="format"]:checked').value;
+      try {
+        const out = await fetchJSON("/api/snapshots/encode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ snapshot, format }) });
+        content = out.content;
+        preview.textContent = content;
+        if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
+        link.dataset.url = URL.createObjectURL(new Blob([content], { type: format === "json" ? "application/json" : "text/yaml" }));
+        link.href = link.dataset.url;
+        link.download = out.filename;
+      } catch (err) {
+        preview.textContent = "Could not render: " + (err.message || err);
+      }
+    };
+    dlg.querySelectorAll('input[name="format"]').forEach((r) => r.addEventListener("change", render));
+    dlg.querySelector("[data-copy]").addEventListener("click", () => copyText(content));
+    dlg.querySelector("[data-compare]").addEventListener("click", () => {
+      // Hand the snapshot to Compare as an imported source.
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const rows = Object.values(snapshot.tables || {}).reduce((n, t) => n + Math.max(0, t.rows || 0), 0);
+      const imported = readStore(IMPORTED_COUNTS_KEY, []);
+      const entry = { id, name: snapshot.label || "snapshot", importedAt: Date.now(), tables: Object.keys(snapshot.tables || {}).length, rows, snapshot };
+      writeStore(IMPORTED_COUNTS_KEY, [entry, ...imported.filter((it) => it.name !== entry.name)].slice(0, 8));
+      window.location.href = "/compare?source=" + encodeURIComponent("snap:" + id);
+    });
+    dlg.addEventListener("close", () => { if (link.dataset.url) URL.revokeObjectURL(link.dataset.url); dlg.remove(); });
+    dlg.showModal();
+    render();
   }
 
   function syncTuningSummary() {

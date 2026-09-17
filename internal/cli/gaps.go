@@ -144,6 +144,10 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			if err := pingWithin(ctx, dbConn); err != nil {
 				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("%s did not answer: %w", dsnLabel(dbType, dsn), err))
 			}
+			workers, err := workersFromFlag(ctx, cmd, dbConn, dbType)
+			if err != nil {
+				return err
+			}
 
 			// Query current row counts for all tables.
 			log.Info().Int("tables", len(allSorted)).Msg("Scanning tables")
@@ -207,7 +211,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			log.Info().
 				Int("rows", rows).
 				Int("gap_tables", len(gapTables)).
-				Int("workers", cmd.Int("workers")).
+				Int("workers", workers).
 				Msg("Filling empty tables: generating and writing in chunks")
 
 			// Generate data for gap tables only; allSorted is used internally to
@@ -218,7 +222,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			onProgress, onTable := progressLogger(time.Now)
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allSorted, gapTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
-				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
+				Workers: workers, OnProgress: onProgress, OnTable: onTable,
 				GenWorkers: genWorkers(cmd),
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
