@@ -59,8 +59,10 @@ func TestLoadsim_MeasureWriters(t *testing.T) {
 				runBin(t, "seed", "--db", engineName, "--dsn", d.dsn, "--schema", schemaPath,
 					"--rows", fmt.Sprint(rows), "--truncate", "--yes", "--workers", fmt.Sprint(writers))
 				secs := time.Since(start).Seconds()
-				m := measurement{Profile: name, Engine: engineName, Writers: writers, Rows: rows * 3, Seconds: secs,
-					RowsPerSec: float64(rows*3) / secs, OOMKilled: d.oomKilled(t)}
+				m := measurement{
+					Profile: name, Engine: engineName, Writers: writers, Rows: rows * 3, Seconds: secs,
+					RowsPerSec: float64(rows*3) / secs, OOMKilled: d.oomKilled(t),
+				}
 				t.Logf("%s %-8s writers=%d  %.1fs  %.0f rows/s  oom=%v", m.Profile, m.Engine, m.Writers, m.Seconds, m.RowsPerSec, m.OOMKilled)
 				results = append(results, m)
 			}
