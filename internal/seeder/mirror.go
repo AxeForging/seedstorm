@@ -285,7 +285,21 @@ func shapesForSchema(sc *schema.Schema, measured []relations.Shape) (map[string]
 	applied := rs.Shapes(sc)
 	var skipped []string
 	for _, key := range unmeasured {
-		skipped = append(skipped, key+": not measured on the source")
+		// A shape can be missing because the source could not measure it, or
+		// because this schema cannot follow it (a self-reference is dropped
+		// before it is ever compiled): say which.
+		reason := "not measured on the source"
+		if child, col, ok := strings.Cut(key, "."); ok {
+			// A key this schema holds but cannot shape (a self-reference is
+			// dropped before it is ever compiled) says so; one the schema does
+			// not hold keeps the measurement reason.
+			switch why := faker.ShapeSkipReason(sc, child, col); why {
+			case "", "table is not in the schema", "column is not in the table":
+			default:
+				reason = why
+			}
+		}
+		skipped = append(skipped, key+": "+reason)
 	}
 	for _, issue := range rs.Validate(sc) {
 		if key, ok := strings.CutPrefix(issue.Path, "relationships."); ok {

@@ -112,9 +112,10 @@ func TestRelateServers_MySQLReadOnlyWarnsButSuperReadOnlyRefuses(t *testing.T) {
 }
 
 // Shapes measured on a source do not all apply: junction keys and key columns
-// are not shaped in v1. The plan must say which ones were dropped and why
-// instead of quietly seeding them evenly (Keycloak: 42 of 67).
-func TestPrepareMirror_ReportsShapesItCannotApply(t *testing.T) {
+// are not shaped in v1. They come back named with a reason instead of being
+// quietly seeded evenly. The wiring into a run is covered by
+// TestShapedSeed_MirrorNamesEveryKeyItCannotShape.
+func TestShapesForSchema_ReportsWhatItCannotApply(t *testing.T) {
 	sc := &schema.Schema{Tables: map[string]schema.Table{
 		"users":  {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}}},
 		"orders": {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}, "user_id": {Type: "int", FK: "users.id"}}},
@@ -134,5 +135,65 @@ func TestPrepareMirror_ReportsShapesItCannotApply(t *testing.T) {
 	}
 	if len(skipped) != 1 || !strings.Contains(skipped[0], "user_roles.user_id") || !strings.Contains(skipped[0], "junction") {
 		t.Fatalf("skipped = %v, want user_roles.user_id with its reason", skipped)
+	}
+}
+
+// Every measured shape must come back either applied or reported: a key that
+// falls out of both lists is seeded evenly with nobody told (Keycloak: 38 of
+// 67 keys were silently dropped this way).
+func TestShapesForSchema_EveryMeasuredShapeIsAppliedOrReported(t *testing.T) {
+	sc := &schema.Schema{Tables: map[string]schema.Table{
+		"users":  {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}}},
+		"roles":  {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}}},
+		"orders": {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}, "user_id": {Type: "int", FK: "users.id"}}},
+		"folders": {Columns: map[string]schema.Column{
+			"id":        {Type: "int", PK: true},
+			"parent_id": {Type: "int", FK: "folders.id", Nullable: true},
+		}},
+		"user_roles": {Columns: map[string]schema.Column{
+			"user_id": {Type: "int", PK: true, FK: "users.id"},
+			"role_id": {Type: "int", PK: true, FK: "roles.id"},
+		}},
+		"daily": {Columns: map[string]schema.Column{
+			"user_id": {Type: "int", PK: true, FK: "users.id"},
+			"day":     {Type: "date", PK: true},
+		}},
+	}}
+	measured := []relations.Shape{
+		{Child: "orders", Column: "user_id", Parent: "users", Min: 1, Avg: 2, Max: 5, Outcome: db.OutcomeOK},
+		{Child: "folders", Column: "parent_id", Parent: "folders", Min: 1, Avg: 2, Max: 3, SelfRef: true, Outcome: db.OutcomeOK},
+		{Child: "user_roles", Column: "user_id", Parent: "users", Min: 1, Avg: 2, Max: 4, Outcome: db.OutcomeOK},
+		{Child: "daily", Column: "user_id", Parent: "users", Min: 1, Avg: 3, Max: 9, Outcome: db.OutcomeOK},
+		{Child: "gone", Column: "user_id", Parent: "users", Min: 1, Avg: 2, Max: 4, Outcome: db.OutcomeOK},
+		{Child: "orders", Column: "coupon_id", Parent: "coupons", Avg: 2, Max: -1, Outcome: relations.OutcomeEstimated},
+		{Child: "logs", Column: "user_id", Parent: "users", Outcome: db.OutcomeTimedOut},
+	}
+	applied, skipped := shapesForSchema(sc, measured)
+
+	seen := map[string]int{}
+	for key := range applied {
+		seen[strings.ToLower(key)]++
+	}
+	for _, line := range skipped {
+		key, reason, found := strings.Cut(line, ": ")
+		if !found || reason == "" {
+			t.Errorf("skipped line %q does not give a reason", line)
+		}
+		seen[strings.ToLower(key)]++
+	}
+	for _, m := range measured {
+		key := strings.ToLower(m.Child + "." + m.Column)
+		if seen[key] != 1 {
+			t.Errorf("%s appears %d times in applied+skipped, want exactly 1", key, seen[key])
+		}
+	}
+	if len(applied) != 1 || applied["orders.user_id"].Max != 5 {
+		t.Errorf("applied = %v, want only the shapeable key", applied)
+	}
+	reasons := strings.Join(skipped, "\n")
+	for _, want := range []string{"folders.parent_id: self-references", "user_roles.user_id: junction keys", "daily.user_id: key columns", "gone.user_id: gone.user_id is not in this database", "orders.coupon_id: not measured", "logs.user_id: not measured"} {
+		if !strings.Contains(reasons, want) {
+			t.Errorf("reports lack %q:\n%s", want, reasons)
+		}
 	}
 }

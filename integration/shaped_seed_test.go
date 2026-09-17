@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -146,4 +148,57 @@ func TestShapedSeed_MemoryStaysBounded(t *testing.T) {
 		t.Fatalf("achieved %+v", got)
 	}
 	t.Logf("shaped seed of %d rows peaked at %dMB", accounts+got.children, peak)
+}
+
+// Real schemas hold keys that cannot be shaped (junction keys, foreign keys
+// inside a primary key, self-references). A mirror shaped like its source must
+// account for every key it measured: the ones it shapes, and the ones it names
+// with a reason. Silently dropping them looked like shaping did nothing
+// (Keycloak: 38 of 67 keys).
+func TestShapedSeed_MirrorNamesEveryKeyItCannotShape(t *testing.T) {
+	e := postgresEngine()
+	srcDSN, src := e.scratchDB(t, "ss_shapes_report_src")
+	tgtDSN, _ := e.scratchDB(t, "ss_shapes_report_tgt")
+	e.schema(t, src)
+	schemaPath := filepath.Join(t.TempDir(), "schema.yaml")
+	runBin(t, "introspect", "--db", e.name, "--dsn", srcDSN, "--out", schemaPath)
+	runBin(t, "seed", "--db", e.name, "--dsn", srcDSN, "--schema", schemaPath, "--rows", "60")
+	runBin(t, "clone-schema", "--source-dsn", srcDSN, "--target-dsn", tgtDSN)
+
+	_, stderr, err := runBinResult(t, "mirror", "--source-dsn", srcDSN, "--target-dsn", tgtDSN,
+		"--shape-like-source", "--scan-unindexed", "--log-level", "info")
+	if err != nil {
+		t.Fatalf("mirror --shape-like-source: %v\n%s", err, stderr)
+	}
+
+	measured := countOf(t, stderr, `Relationships measured.*relationships=(\d+)`)
+	shaped := countOf(t, stderr, `Relationship shapes applied.*relationships=(\d+)`)
+	named := len(regexp.MustCompile(`Relationship not shaped: (\S+): (.+)`).FindAllString(stderr, -1))
+	if measured == 0 || shaped == 0 || named == 0 {
+		t.Fatalf("measured %d, shaped %d, named %d — this schema must exercise both paths:\n%s", measured, shaped, named, stderr)
+	}
+	if shaped+named != measured {
+		t.Fatalf("%d keys measured but %d shaped + %d named: some were dropped without a word", measured, shaped, named)
+	}
+	// The schema's own unshapeable shapes: a self-reference and a foreign key
+	// inside a composite primary key.
+	for _, want := range []string{"categories.parent_id: self-references", "metric_snapshots.source_id: key columns"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("no report for %q:\n%s", want, stderr)
+		}
+	}
+}
+
+// countOf reads the first capture of pattern in out as a number, 0 when absent.
+func countOf(t *testing.T, out, pattern string) int {
+	t.Helper()
+	m := regexp.MustCompile(pattern).FindStringSubmatch(out)
+	if len(m) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("unreadable count in %q", m[0])
+	}
+	return n
 }
