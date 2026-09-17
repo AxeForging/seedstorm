@@ -300,6 +300,15 @@ The integration job in CI uses `-race -timeout 1500s` (the race detector roughly
 - Don't rely on server defaults (PG < 15 `CREATE` on `public`, MySQL 5.7 CHECK/roles).
 - Do give scratch databases unique `ss_<area>_*` names.
 
+**Shared state a run borrows**
+- Do restore a pool setting a run changes (`SetMaxOpenConns`): the web seeds on the pool its pages query.
+- Don't judge a replica by MySQL `read_only`: a user with SUPER writes anyway, only `super_read_only` blocks.
+- Do buffer every SSE event past the subscriber's channel: a fast job drops events, the handler refills from `job.Events()`.
+
+**Database truths that break guards**
+- Do round datetime keys to the second: MySQL rounds fractional seconds on insert, so adjacent values collide.
+- Don't read Postgres row statistics right after inserting: they land asynchronously, a partial count is a valid estimate.
+
 **Reads and failures**
 - Do route new reads through `db.ReadOnce` (read-only, lock timeout, real cancel); never report an unknown count as 0.
 - Do wrap goroutines in `safego.Run` and errors in `runerr.At`/`OnSide` so failures name side, phase and table.

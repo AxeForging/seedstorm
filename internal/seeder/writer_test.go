@@ -457,3 +457,31 @@ func TestSeed_WritersClampedToTheServersFreeConnections(t *testing.T) {
 		t.Fatalf("%d inserts ran at once with 2 writers allowed", peak)
 	}
 }
+
+// The run bounds the pool it was handed, then gives it back as it was: the web
+// keeps seeding on the same pool its pages query, so a capped pool would
+// outlive the run and throttle every later query on that connection.
+func TestSeed_PoolLimitIsRestoredAfterTheRun(t *testing.T) {
+	defer func(old func(context.Context, *sql.DB, string) (int, int, error)) { connectionUsage = old }(connectionUsage)
+	connectionUsage = func(context.Context, *sql.DB, string) (int, int, error) { return 100, 1, nil }
+	order := []string{"users", "reviewers", "audit", "posts"}
+
+	for _, before := range []int{0, 12} {
+		conn, _ := openRecording(t, nil, nil)
+		conn.SetMaxOpenConns(before)
+		if _, err := Seed(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), order, order, SeedOptions{
+			Rows: 200, BatchSize: 50, Workers: 4,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := conn.Stats().MaxOpenConnections; got != before {
+			t.Errorf("after Seed the pool allows %d connections, want %d as before the run", got, before)
+		}
+		if _, err := Fill(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), []string{"users"}, map[string]int{"users": 100}, Options{BatchSize: 50, Workers: 4}); err != nil {
+			t.Fatal(err)
+		}
+		if got := conn.Stats().MaxOpenConnections; got != before {
+			t.Errorf("after Fill the pool allows %d connections, want %d as before the run", got, before)
+		}
+	}
+}

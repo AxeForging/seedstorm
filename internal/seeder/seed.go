@@ -154,7 +154,7 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 	opts.Workers = clampToServer(ctx, conn, dbType, opts.Workers, generators, opts.OnNotice)
 	// The run never holds more connections than it uses: writers, generators
 	// reading parent keys, and one for sequences.
-	conn.SetMaxOpenConns(opts.Workers + generators + 1)
+	defer boundPool(conn, opts.Workers+generators+1)()
 	w := newWriter(ctx, conn, dbType, opts.BatchSize, opts.Workers, queue)
 	// A queued row costs at least half an average row of a full chunk, so
 	// narrow rows queue at most about two chunks of rows: 300k narrow rows with
@@ -474,4 +474,13 @@ func (opts SeedOptions) rowCount(table string) (int, bool) {
 		return n, false
 	}
 	return count, overridden
+}
+
+// boundPool caps the pool for the length of a run and returns a function that
+// gives it back as it was. The web seeds on the same pool its pages query, so
+// a cap left behind would throttle every later query on that connection.
+func boundPool(conn *sql.DB, limit int) func() {
+	before := conn.Stats().MaxOpenConnections
+	conn.SetMaxOpenConns(limit)
+	return func() { conn.SetMaxOpenConns(before) }
 }

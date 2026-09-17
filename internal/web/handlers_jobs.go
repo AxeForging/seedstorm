@@ -122,6 +122,17 @@ func (s *Server) streamJob(w http.ResponseWriter, r *http.Request, job *Job) {
 				flusher.Flush()
 				return
 			}
+			// A job that writes faster than this connection drains drops
+			// events from the subscriber's buffer; the job keeps them all, so
+			// send whatever was missed before this one.
+			if ev.Seq > maxSeq+1 {
+				for _, missed := range job.Events() {
+					if missed.Seq > maxSeq && missed.Seq < ev.Seq {
+						writeEvent(w, missed)
+						maxSeq = missed.Seq
+					}
+				}
+			}
 			if ev.Seq > maxSeq {
 				writeEvent(w, ev)
 				maxSeq = ev.Seq
