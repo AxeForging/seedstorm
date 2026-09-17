@@ -59,6 +59,7 @@ A hand-written file with only row counts also works:
 				return err
 			}
 			if cmd.Bool("relationships") {
+				logScanServer(ctx, ep)
 				if snap.Relationships, err = ep.Shapes(ctx, relationshipOptions(cmd, mode, "")); err != nil {
 					return err
 				}

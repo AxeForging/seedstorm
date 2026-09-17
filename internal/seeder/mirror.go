@@ -77,7 +77,9 @@ type MirrorJob struct {
 	// SameDatabaseUnchecked is true when a side was a pre-taken snapshot, so
 	// PrepareMirror could not verify that source and target differ.
 	SameDatabaseUnchecked bool
-	target                Endpoint
+	// Servers relates the two servers (shared server, replicas).
+	Servers ServerRelation
+	target  Endpoint
 }
 
 // Snapshots reads both sides and diffs them. It is the read-only half of a
@@ -124,6 +126,10 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 			return nil, err
 		}
 	}
+	servers := RelateServers(ctx, source, target)
+	if servers.TargetReplica {
+		return nil, ErrTargetReplica
+	}
 	sc := target.Schema
 	if sc == nil {
 		tables, err := db.Introspect(target.DBType, target.DSN)
@@ -147,7 +153,7 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 	if err != nil {
 		return nil, err
 	}
-	job := &MirrorJob{Report: report, Plan: plan, Schema: sc, RunID: cfg.RunID, SameDatabaseUnchecked: unchecked, target: target}
+	job := &MirrorJob{Report: report, Plan: plan, Schema: sc, RunID: cfg.RunID, SameDatabaseUnchecked: unchecked, Servers: servers, target: target}
 	if job.RunID == "" {
 		job.RunID = rules.NewRunID()
 	}
@@ -164,11 +170,11 @@ func refuseSameDatabase(ctx context.Context, source, target Endpoint) error {
 	if source.Conn == nil || target.Conn == nil {
 		return errors.New("cannot check that source and target differ: an endpoint has no database connection")
 	}
-	srcID, err := db.Identity(ctx, source.Conn, source.DBType)
+	srcID, err := databaseIdentity(ctx, source.Conn, source.DBType)
 	if err != nil {
 		return fmt.Errorf("source: %w", err)
 	}
-	tgtID, err := db.Identity(ctx, target.Conn, target.DBType)
+	tgtID, err := databaseIdentity(ctx, target.Conn, target.DBType)
 	if err != nil {
 		return fmt.Errorf("target: %w", err)
 	}

@@ -92,6 +92,7 @@ func writeRelationshipsSnapshot(ctx context.Context, cmd *cli.Command, ep seeder
 	if err != nil {
 		return err
 	}
+	logScanServer(ctx, ep)
 	if snap.Relationships, err = ep.Shapes(ctx, relationshipOptions(cmd, compare.CountExact, "")); err != nil {
 		return err
 	}
@@ -109,4 +110,13 @@ func writeRelationshipsSnapshot(ctx context.Context, cmd *cli.Command, ep seeder
 	}
 	logging.Log.Info().Str("path", path).Int("relationships", len(snap.Relationships)).Msg("Relationships saved")
 	return nil
+}
+
+// logScanServer says whether a scan reads a replica or a primary.
+func logScanServer(ctx context.Context, eps ...seeder.Endpoint) {
+	for _, ep := range eps {
+		if notice := seeder.ScanNotice(ctx, ep); notice != "" {
+			logging.Log.Info().Msg(notice)
+		}
+	}
 }

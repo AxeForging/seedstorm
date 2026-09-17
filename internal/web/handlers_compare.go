@@ -220,6 +220,10 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		"target": tgtEP.Label,
 		// A snapshot source cannot be checked against the target.
 		"sameDatabaseUnchecked": job.SameDatabaseUnchecked,
+		"serverNotices":         job.Servers.Notices(),
+	}
+	for _, notice := range job.Servers.Notices() {
+		log.Warn().Msg(notice)
 	}
 	if job.SameDatabaseUnchecked {
 		log.Warn().Msg("Source is an imported counts file: cannot check that source and target are different databases")

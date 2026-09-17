@@ -438,6 +438,8 @@
       : "";
     const issues = ((result.issues || []).length
       ? `<div class="cmp-callout"><strong>Profile notes</strong><span>${result.issues.map((i) => esc(`${i.path}: ${i.message}`)).join("<br>")}</span></div>`
+      : "") + ((result.serverNotices || []).length
+      ? `<div class="cmp-callout" data-testid="cmp-plan-server"><strong>Servers</strong><span>${result.serverNotices.map(esc).join("<br>")}</span></div>`
       : "") + (result.sameDatabaseUnchecked
       ? `<div class="cmp-callout" data-testid="cmp-plan-imported-source"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
       : "");

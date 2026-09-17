@@ -50,6 +50,7 @@ comparison (average, p95 and max children per parent), measured read-only.`,
 			}
 			if cmd.Bool("relationships") {
 				logging.Log.Info().Msg("Comparing relationship shapes")
+				logScanServer(ctx, source, target)
 				opts := relationshipOptions(cmd, mode, "")
 				steps := map[string]func(int, int, relations.Shape){
 					"source": relationshipOptions(cmd, mode, "source").OnEdge,

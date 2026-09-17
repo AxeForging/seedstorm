@@ -107,6 +107,9 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			if err != nil {
 				return err
 			}
+			for _, notice := range job.Servers.Notices() {
+				log.Warn().Msg(notice)
+			}
 			if job.SameDatabaseUnchecked {
 				log.Warn().Str("source", source.Label).Msg("Source is a snapshot file: cannot check that source and target are different databases")
 			}

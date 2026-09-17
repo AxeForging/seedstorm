@@ -78,6 +78,9 @@ func (s *Server) runRelationships(ctx context.Context, sess *Session, req Relati
 		return nil, runerr.At(runerr.PhaseIntrospect, "", err)
 	}
 	jc.Phase("scan")
+	if notice := seeder.ScanNotice(ctx, ep); notice != "" {
+		log.Info().Msg(notice)
+	}
 	gen := sess.shapes.begin(opts.Mode == relations.Estimate)
 	defer sess.shapes.finish(gen)
 	log.Info().Str("database", ep.Label).Str("mode", string(opts.Mode)).Bool("scan_unindexed", opts.IncludeUnindexed).Msg("Measuring relationships (read-only)")
