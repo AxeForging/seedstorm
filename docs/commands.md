@@ -176,14 +176,14 @@ The interactive TUI includes a **Volumes** step after global config. Each select
 
 `--workers auto` picks writers from the database's free connections (see [`tune`](#tune)). Whatever you ask for, a run never opens more connections than the server has free: it lowers the writers and says so (`Using 3 writers instead of 8: the server has 95 of 100 connections in use`).
 
-With a profile that has `relationships:`, foreign keys follow those shapes instead of picking parents evenly: each parent gets a number of children drawn from the histogram, no parent exceeds `max`, the share of parents without children and of NULL keys is kept, and the run logs the achieved shape next to the target afterwards:
+With a profile that has `relationships:`, foreign keys follow those shapes instead of picking parents evenly: each parent gets a number of children drawn from the histogram, no parent exceeds `max` (exact while the parent table fits the 500,000-row key pool), the share of parents without children and of NULL keys is kept, and the run logs the achieved shape next to the target afterwards:
 
 ```
 info   Rows derived from relationship shapes rows=14000 table=orders
 info   Relationship shape (target → table now) avg="4.00 → 4.00" max="25 → 25" relationship=orders.account_id without_children="30% → 30%"
 ```
 
-Shapes that cannot fit the planned rows are adjusted with a warning instead of looping (`14000 rows over 500 parents do not fit max 25: max raised to 28`). Self-references and junction keys are not shaped (reported). A parent table above 500,000 rows is kept as a sample: children are dealt a round at a time over each sample (the run says so), and seeding against a live database rotates the sample so the whole table gets its share.
+Shapes that cannot fit the planned rows are adjusted with a warning instead of looping (`14000 rows over 500 parents do not fit max 25: max raised to 28`). Self-references and junction keys are not shaped (reported). A parent table above 500,000 rows is kept as a sample: children are dealt a round at a time over each sample (the run says so), and seeding against a live database rotates the sample so the whole table gets its share. The shape is then close rather than exact — measured on 600,000 parents and 1.6M children: average 3 → 3.4, max 8 → 10, parents without children 10% → 22%.
 
 Any `--rows` is safe: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat (600k rows on Postgres: 7s, under 100MB). A dry run prints the SQL the same way.
 

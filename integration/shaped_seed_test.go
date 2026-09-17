@@ -202,3 +202,55 @@ func countOf(t *testing.T, out, pattern string) int {
 	}
 	return n
 }
+
+// A parent table larger than the key pool (500k) is held as a sample that
+// rotates during the run. The shape then lands close but not exact: a parent
+// caught in two samples can pass max, and parents never sampled raise the
+// share without children. The run says the pool is smaller than the table.
+func TestShapedSeed_ParentsAboveThePoolLimitStayClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeds 2.2M rows")
+	}
+	const parents, children = 600_000, 1_620_000 // 600k × 0.9 with children × 3
+	e := postgresEngine()
+	dsn, conn := e.scratchDB(t, "ss_shaped_big")
+	execSQL(t, conn, `
+		CREATE TABLE customers (id BIGINT PRIMARY KEY, name TEXT);
+		CREATE TABLE orders (id BIGINT PRIMARY KEY, customer_id BIGINT NOT NULL REFERENCES customers (id));
+		CREATE INDEX orders_customer ON orders (customer_id)`)
+	dir := t.TempDir()
+	schemaPath, profilePath := filepath.Join(dir, "schema.yaml"), filepath.Join(dir, "profile.yaml")
+	if err := os.WriteFile(profilePath, []byte("version: 2\nname: big\nrelationships:\n  orders.customer_id: {min: 1, avg: 3, max: 8, zeroShare: 0.1}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runBin(t, "introspect", "--db", e.name, "--dsn", dsn, "--out", schemaPath)
+	_, stderr, err := runBinResult(t, "seed", "--db", e.name, "--dsn", dsn, "--schema", schemaPath, "--profile", profilePath,
+		"--table-rows", fmt.Sprintf("customers=%d,orders=%d", parents, children), "--log-level", "warn")
+	if err != nil {
+		t.Fatalf("seed: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "larger than the key pool") {
+		t.Errorf("the run never said the parent table is larger than the pool:\n%s", stderr)
+	}
+
+	var withChildren, total, maxC int64
+	if err := conn.QueryRow(`SELECT COUNT(*), COALESCE(SUM(c), 0), MAX(c) FROM (SELECT customer_id, COUNT(*) c FROM orders GROUP BY customer_id) per`).Scan(&withChildren, &total, &maxC); err != nil {
+		t.Fatal(err)
+	}
+	avg := float64(total) / float64(withChildren)
+	zeroShare := float64(parents-withChildren) / float64(parents)
+	t.Logf("600k parents: avg %.2f (target 3) max %d (target 8) without children %.0f%% (target 10%%)", avg, maxC, zeroShare*100)
+	if total != children {
+		t.Fatalf("%d children, want %d", total, children)
+	}
+	// Close, not exact: rotation is what keeps a huge parent table covered.
+	if avg < 2.5 || avg > 4 {
+		t.Errorf("average %.2f is not near the target 3", avg)
+	}
+	if maxC > 2*8 {
+		t.Errorf("max %d is more than twice the target 8: rounds are not holding the shape", maxC)
+	}
+	if zeroShare > 0.35 {
+		t.Errorf("%.0f%% of parents have no children, target 10%%: the sample is not rotating", zeroShare*100)
+	}
+}

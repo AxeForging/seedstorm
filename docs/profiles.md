@@ -63,7 +63,7 @@ spread: most users with a few orders, some with many, some with none. Each key
 is `table.column` (matched to the database ignoring case). Seed, fill empty,
 generate and mirror deal parents so that:
 
-- no parent gets more than `max` children, and each parent with children gets at least `min`;
+- no parent gets more than `max` children, and each parent with children gets at least `min` (exact while the parent table fits the key pool of 500,000 — see below);
 - the share of parents without children is `zeroShare`, and exactly `nullShare` of the rows have a NULL key;
 - degrees follow the `histogram` when given (bucket by its parent weight, then a value inside it), otherwise they spread around `avg`.
 
@@ -83,8 +83,11 @@ and foreign keys that are part of the primary key. Real schemas hit this often:
 on Keycloak's 87 tables, 29 of 67 measured keys are shaped. A parent table above 500,000 rows is held as a
 sample: children are then dealt a round at a time over each sample, and the run
 says so. Seeding against a live database rotates the sample, so the whole
-parent table gets its share; `generate` (no connection) can only reach the
-parents in the sample.
+parent table gets its share, and the shape lands close rather than exact — a
+parent caught in two samples can pass `max`, and parents never sampled raise
+the share without children (measured on 600,000 parents and 1.6M children:
+average 3 → 3.4, max 8 → 10, without children 10% → 22%). `generate` (no
+connection) can only reach the parents in the sample.
 
 Where shapes come from:
 
