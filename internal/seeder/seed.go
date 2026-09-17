@@ -480,7 +480,52 @@ func (opts SeedOptions) rowCount(table string) (int, bool) {
 // gives it back as it was. The web seeds on the same pool its pages query, so
 // a cap left behind would throttle every later query on that connection.
 func boundPool(conn *sql.DB, limit int) func() {
-	before := conn.Stats().MaxOpenConnections
-	conn.SetMaxOpenConns(limit)
-	return func() { conn.SetMaxOpenConns(before) }
+	bounds.mu.Lock()
+	b, held := bounds.byPool[conn]
+	if !held {
+		b = &poolBound{before: conn.Stats().MaxOpenConnections}
+		bounds.byPool[conn] = b
+	}
+	b.holders = append(b.holders, limit)
+	conn.SetMaxOpenConns(sum(b.holders))
+	bounds.mu.Unlock()
+
+	return func() {
+		bounds.mu.Lock()
+		defer bounds.mu.Unlock()
+		for i, held := range b.holders {
+			if held == limit {
+				b.holders = append(b.holders[:i], b.holders[i+1:]...)
+				break
+			}
+		}
+		if len(b.holders) == 0 {
+			conn.SetMaxOpenConns(b.before)
+			delete(bounds.byPool, conn)
+			return
+		}
+		conn.SetMaxOpenConns(sum(b.holders))
+	}
+}
+
+// poolBound is what one pool's runs reserved and what it allowed before them.
+type poolBound struct {
+	before  int
+	holders []int
+}
+
+// bounds tracks pools several runs share: the web can seed two tabs on one
+// connection, and the first run to finish must not take the other's
+// connections away or hand back a limit while the other still writes.
+var bounds = struct {
+	mu     sync.Mutex
+	byPool map[*sql.DB]*poolBound
+}{byPool: map[*sql.DB]*poolBound{}}
+
+func sum(ns []int) int {
+	total := 0
+	for _, n := range ns {
+		total += n
+	}
+	return total
 }

@@ -485,3 +485,25 @@ func TestSeed_PoolLimitIsRestoredAfterTheRun(t *testing.T) {
 		}
 	}
 }
+
+// Two runs can share one pool (the web seeds two tabs on one connection):
+// the first to finish must not hand back a limit that erases the other's, and
+// the last one out restores what the pool had before either started.
+func TestBoundPool_ConcurrentRunsRestoreTheOriginalLimit(t *testing.T) {
+	conn, _ := openRecording(t, nil, nil)
+	conn.SetMaxOpenConns(25)
+
+	releaseA := boundPool(conn, 5)
+	releaseB := boundPool(conn, 3)
+	if got := conn.Stats().MaxOpenConnections; got < 5 {
+		t.Fatalf("while both runs hold the pool it allows %d connections, want room for both", got)
+	}
+	releaseA()
+	if got := conn.Stats().MaxOpenConnections; got == 25 {
+		t.Fatal("the first run to finish gave the pool back while another run still holds it")
+	}
+	releaseB()
+	if got := conn.Stats().MaxOpenConnections; got != 25 {
+		t.Fatalf("after both runs the pool allows %d connections, want 25 as before", got)
+	}
+}
