@@ -5,6 +5,8 @@ package integration_test
 import (
 	"database/sql"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // loadsimDB is a throwaway database container limited like a profile.
@@ -91,8 +95,10 @@ func startLoadsimDBWith(t *testing.T, driver string, p loadsimProfile, limitIO b
 	t.Helper()
 	port := freePort(t)
 	name := fmt.Sprintf("ss-loadsim-%s-%s-%d", strings.ReplaceAll(p.name, "cloudsql-", ""), map[string]string{postgresDriver: "pg", mysqlDriver: "my"}[driver], port)
-	args := []string{"run", "-d", "--rm", "--name", name, "--cpus", p.cpus, "--memory", p.memory, "--memory-swap", p.memory,
-		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, map[string]int{postgresDriver: 5432, mysqlDriver: 3306}[driver])}
+	args := []string{
+		"run", "-d", "--rm", "--name", name, "--cpus", p.cpus, "--memory", p.memory, "--memory-swap", p.memory,
+		"-p", fmt.Sprintf("127.0.0.1:%d:%d", port, map[string]int{postgresDriver: 5432, mysqlDriver: 3306}[driver]),
+	}
 	if dev := dataDevice(t); limitIO && p.writeIOPS > 0 && dev != "" {
 		args = append(args, "--device-write-iops", fmt.Sprintf("%s:%d", dev, p.writeIOPS))
 	}
@@ -121,6 +127,9 @@ func startLoadsimDBWith(t *testing.T, driver string, p loadsimProfile, limitIO b
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
 
+	// The MySQL driver logs every refused ping while the server starts; the
+	// loop below already reports a server that never comes up.
+	_ = mysql.SetLogger(log.New(io.Discard, "", 0))
 	deadline := time.Now().Add(3 * time.Minute)
 	for {
 		conn, err := sql.Open(driver, dsn)

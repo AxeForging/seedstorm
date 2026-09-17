@@ -5,7 +5,6 @@ package integration_test
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,13 +59,6 @@ func runInContainer(t *testing.T, limits []string, args ...string) (string, int)
 		t.Fatalf("docker run: %v\n%s", err, out)
 	}
 	return string(out), 0
-}
-
-func hostDSN(e engine, port int, db string) string {
-	if e.driver == postgresDriver {
-		return fmt.Sprintf("postgres://seedstorm:seedstorm@127.0.0.1:%d/%s?sslmode=disable", port, db)
-	}
-	return fmt.Sprintf("seedstorm:seedstorm@tcp(127.0.0.1:%d)/%s?parseTime=true", port, db)
 }
 
 // Inside a container limited to 2 CPUs and 512MB, seedstorm sees
@@ -151,14 +143,28 @@ func TestLoadsim_FullDiskFailsClearly(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	t.Logf("seed ended with: %s", lines[len(lines)-1])
-	low := strings.ToLower(stderr)
+	// The disk, not memory, must be what stopped the run: an OOM kill also
+	// closes connections and would pass the message check below.
+	if d.oomKilled(t) {
+		t.Fatal("the database was OOM-killed: this run did not test a full disk")
+	}
+	serverLog, _ := exec.Command("docker", "logs", d.name).CombinedOutput()
+	if !strings.Contains(strings.ToLower(string(serverLog)), "no space left on device") {
+		t.Fatalf("the database never reported a full disk; its log ends:\n%s", tail(string(serverLog), 20))
+	}
 	// Postgres may report the full disk, or crash when its WAL cannot be
-	// written: either way the message says what happened in words.
+	// written: either way the message names the table and says what happened.
 	last := strings.ToLower(lines[len(lines)-1])
-	if !strings.Contains(last, "write · blobs") || !(strings.Contains(last, "disk is full") || strings.Contains(last, "closed the connection")) {
+	explained := strings.Contains(last, "disk is full") || strings.Contains(last, "closed the connection")
+	if !strings.Contains(last, "write · blobs") || !explained {
 		t.Fatalf("the failure does not name the table and explain it:\n%s", stderr)
 	}
-	_ = low
+}
+
+// tail returns the last n lines of s.
+func tail(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return strings.Join(lines[max(0, len(lines)-n):], "\n")
 }
 
 // Seedstorm itself stays within a 256MB container while seeding a
