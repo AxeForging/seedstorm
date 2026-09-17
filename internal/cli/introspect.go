@@ -11,6 +11,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/urfave/cli/v3"
 )
 
@@ -20,8 +21,10 @@ func introspectCmd() *cli.Command {
 		Usage: "Discover database schema and generate a schema YAML file",
 		Description: `Connects to a MySQL or PostgreSQL database and introspects all tables,
 columns, data types, primary keys, foreign keys, and enum values.
-Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
-		Flags: []cli.Flag{
+Outputs a schema.yaml that can be used for seeding or AI enrichment.
+--relationships <file> also measures every foreign key's shape (read-only,
+exact) and writes it with estimated table counts to a snapshot file.`,
+		Flags: append([]cli.Flag{
 			&cli.StringFlag{
 				Name:    "db",
 				Usage:   "Database type: mysql or postgres",
@@ -40,7 +43,11 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 				Usage:   "Output schema YAML file path",
 				Value:   "schema.yaml",
 			},
-		},
+			&cli.StringFlag{
+				Name:  "relationships",
+				Usage: "Also measure foreign-key shapes and write them (with estimated counts) to this snapshot file",
+			},
+		}, relationshipFlags()...),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
 			dbType := normalizeDBType(cmd.String("db"))
@@ -79,6 +86,9 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 				Int("tables", len(tables)).
 				Msg("Schema saved")
 
+			if path := cmd.String("relationships"); path != "" {
+				return writeRelationshipsSnapshot(ctx, cmd, seeder.Endpoint{Conn: conn, DBType: dbType, Label: dsnLabel(dbType, dsn), Schema: s}, path)
+			}
 			return nil
 		},
 	}

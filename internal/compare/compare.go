@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
 )
 
 // CountMode selects how row counts are read.
@@ -53,6 +54,8 @@ type Snapshot struct {
 	CountMode CountMode            `json:"countMode"`
 	TakenAt   time.Time            `json:"takenAt"`
 	Tables    map[string]TableStat `json:"tables"`
+	// Relationships are foreign-key shapes, when they were scanned.
+	Relationships []relations.Shape `json:"relationships,omitempty"`
 }
 
 // Take reads table names, columns, sizes and row counts. progress, if set, is
@@ -183,6 +186,8 @@ type Report struct {
 	Target SnapshotInfo `json:"target"`
 	Rows   []Row        `json:"rows"`
 	Totals Totals       `json:"totals"`
+	// Relationships is the per-foreign-key shape drift, when it was compared.
+	Relationships []ShapeDrift `json:"relationships,omitempty"`
 }
 
 func info(s Snapshot) SnapshotInfo {

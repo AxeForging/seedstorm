@@ -19,7 +19,8 @@ func snapshotCmd() *cli.Command {
 		Usage: "Save every table's row count and size to a file for later compare or mirror",
 		Description: `Reads one database (read-only) and writes a table-counts snapshot: row count,
 on-disk size and column names per table, wrapped in a versioned envelope
-(kind: seedstorm.table-counts, version: 1). Pass the file to
+(kind: seedstorm.table-counts). --relationships adds each foreign key's shape
+(children per parent: min, avg, p50, p95, max, histogram) and writes version 2. Pass the file to
 "compare --source-snapshot" or "mirror --source-snapshot" to follow a database
 you cannot (or should not) connect to at mirror time.
 
@@ -28,13 +29,14 @@ A hand-written file with only row counts also works:
   tables:
     users: 1200
     orders: 5000`,
-		Flags: []cli.Flag{
+		Flags: append([]cli.Flag{
 			&cli.StringFlag{Name: "db", Usage: "Database type: mysql or postgres", Value: "postgres", Sources: cli.EnvVars("SEEDSTORM_DB")},
 			&cli.StringFlag{Name: "dsn", Usage: "Data source name (connection string)", Required: true, Sources: cli.EnvVars("SEEDSTORM_DSN")},
 			&cli.StringFlag{Name: "counts", Usage: "Row counts: exact (COUNT(*)) or estimate (planner statistics, fast on large tables)", Value: "exact"},
 			&cli.StringFlag{Name: "format", Aliases: []string{"f"}, Usage: "Output format: yaml or json", Value: compare.FormatYAML},
 			&cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "Write the snapshot to this file (default: stdout)"},
-		},
+			&cli.BoolFlag{Name: "relationships", Usage: "Also measure every foreign key's shape (read-only; exact or estimate per --counts)"},
+		}, relationshipFlags()...),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
 			mode, err := countMode(cmd)
@@ -55,6 +57,12 @@ A hand-written file with only row counts also works:
 			snap, err := compare.Take(ctx, ep.Conn, ep.DBType, ep.Label, mode, stepLogger("Counting", time.Now))
 			if err != nil {
 				return err
+			}
+			if cmd.Bool("relationships") {
+				if snap.Relationships, err = ep.Shapes(ctx, relationshipOptions(cmd, mode, "")); err != nil {
+					return err
+				}
+				logShapeSummary(snap.Relationships)
 			}
 			data, err := compare.EncodeSnapshot(snap, format)
 			if err != nil {
