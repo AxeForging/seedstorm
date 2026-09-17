@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/faultinject"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
@@ -73,7 +76,11 @@ func newWriter(ctx context.Context, conn *sql.DB, dbType string, batch, workers,
 		go func() {
 			defer w.running.Done()
 			for task := range w.work {
-				task()
+				// A panic in a task fails the run, not the process; the
+				// task's own defers still release its bookkeeping.
+				if err := safego.Run("writer", func() error { task(); return nil }); err != nil {
+					w.abort(err)
+				}
 			}
 		}()
 	}
@@ -105,7 +112,11 @@ type tableWriter struct {
 func (w *writer) open(name string, parents []*tableWriter, ordered bool) *tableWriter {
 	tw := &tableWriter{w: w, name: name, parents: parents, ordered: ordered, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	w.tables.Add(1)
-	go tw.dispatch()
+	go func() {
+		if err := safego.Run("dispatch "+name, func() error { tw.dispatch(); return nil }); err != nil {
+			w.abort(runerr.At(runerr.PhaseWrite, name, err))
+		}
+	}()
 	return tw
 }
 
@@ -248,9 +259,15 @@ func (tw *tableWriter) write(item queued) {
 	if w.ctx.Err() != nil {
 		return
 	}
-	if err := insertStrict(w.ctx, w.conn, w.dbType, tw.name, rows, w.batch); err != nil {
+	err := safego.Run("write "+tw.name, func() error {
+		if err := faultinject.Hit(w.ctx, "write", tw.name); err != nil {
+			return err
+		}
+		return insertStrict(w.ctx, w.conn, w.dbType, tw.name, rows, w.batch)
+	})
+	if err != nil {
 		if w.ctx.Err() == nil {
-			w.cancel(err)
+			w.cancel(runerr.At(runerr.PhaseWrite, tw.name, err))
 		}
 		return
 	}

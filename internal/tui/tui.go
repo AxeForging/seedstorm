@@ -272,7 +272,8 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.review.dryRun {
 			return m, tea.Batch(m.execute.spinner.Tick, startDryRun(params))
 		}
-		return m, tea.Batch(m.execute.spinner.Tick, startSeed(m.ctx, params))
+		m.execute.events = make(chan tea.Msg, 64)
+		return m, tea.Batch(m.execute.spinner.Tick, startSeed(m.ctx, params, m.execute.events), waitSeed(m.execute.events))
 	}
 
 	return m, cmd

@@ -1842,6 +1842,13 @@ textarea { font-family: var(--mono); font-size: 12px; }
   text-transform: lowercase; white-space: nowrap;
 }
 .pill.ok { background: rgba(121,216,179,0.14); border-color: rgba(121,216,179,0.4); color: var(--ok); }
+.pill.prod { background: rgba(240,120,110,0.14); border-color: rgba(240,120,110,0.45); color: var(--danger, #f0786e); font-weight: 600; }
+.prod-dialog { max-width: min(460px, calc(100vw - 32px)); border: 1px solid var(--line, #333); border-radius: 14px; padding: 0; background: var(--panel, #16181c); color: inherit; }
+.prod-dialog::backdrop { background: rgba(0,0,0,0.55); }
+.prod-dialog form { display: grid; gap: 12px; padding: 18px; }
+.prod-dialog h2 { margin: 0; font-size: 1.05rem; }
+.prod-dialog input { width: 100%; box-sizing: border-box; }
+.prod-dialog footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .pill.param { background: rgba(216,181,111,0.12); border-color: rgba(216,181,111,0.32); color: var(--accent-2); }
 
 /* ── Connect: driver parameters ────────────────────────────────────────── */
@@ -2382,3 +2389,24 @@ textarea { font-family: var(--mono); font-size: 12px; }
 
 .ws-rail, .ws-tab-body, #ws-detail { min-width: 0; }
 .preview-table-wrap { max-width: 100%; overflow-x: auto; }
+
+/* ── run strip: the current job next to its action ─────────────────────── */
+.run-strip { display: grid; gap: 4px; min-width: 0; max-width: 100%; padding: 8px 10px; border: 1px solid var(--line, #2a2d33); border-radius: 10px; background: var(--panel, #16181c); font-size: 0.86rem; }
+.run-strip-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; min-width: 0; }
+.run-strip-name { min-width: 0; overflow-wrap: anywhere; }
+.run-strip-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; }
+.run-strip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent, #79d8b3); flex: none; align-self: center; }
+.run-strip[data-state="running"] .run-strip-dot, .run-strip[data-state="pending"] .run-strip-dot { animation: run-strip-pulse 1.2s ease-in-out infinite; }
+.run-strip[data-state="quiet"] .run-strip-dot { background: #d8b56f; }
+.run-strip[data-state="reconnecting"] .run-strip-dot { background: #d8b56f; animation: run-strip-pulse 0.6s ease-in-out infinite; }
+.run-strip[data-state="lost"] .run-strip-dot, .run-strip[data-state="failed"] .run-strip-dot { background: var(--danger, #f0786e); }
+.run-strip[data-state="canceled"] .run-strip-dot { background: #9aa0a6; }
+.run-strip[data-state="failed"], .run-strip[data-state="lost"] { border-color: rgba(240,120,110,0.45); }
+.run-strip-bar { width: 100%; height: 6px; }
+.run-strip-count { font-variant-numeric: tabular-nums; }
+.run-strip p { margin: 0; overflow-wrap: anywhere; }
+.run-strip-failure { color: var(--danger, #f0786e); }
+.cmp-run-strip { grid-column: 1 / -1; }
+@keyframes run-strip-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .run-strip-dot { animation: none !important; } }
+.page-error-notice { position: fixed; right: 16px; bottom: 16px; left: 16px; max-width: 520px; margin-left: auto; display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(240,120,110,0.45); background: var(--panel, #16181c); z-index: 1000; }

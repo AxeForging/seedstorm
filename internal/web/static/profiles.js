@@ -8,6 +8,7 @@
   const app = document.getElementById("profiles-app");
   if (!app) return;
   const $ = (id) => document.getElementById(id);
+  const ui = () => window.seedstorm.ui;
   const esc = (v) => window.seedstorm.ui.escapeHTML(v == null ? "" : v);
 
   const KINDS = [
@@ -726,12 +727,13 @@
       setStatusNote("Give the profile a name first; the CLI uses it with --profile.");
       return;
     }
-    const res = await fetch("/api/profiles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: state.id, rules: state.doc }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
+    let data;
+    try {
+      data = await ui().fetchJSON("/api/profiles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: state.id, rules: state.doc }) });
+    } catch (err) {
       const el = $("pf-status");
       el.className = "pf-status small error";
-      el.textContent = data.error || res.statusText;
+      el.textContent = "Not saved: " + (err.message || err);
       return;
     }
     await loadProfiles();
@@ -743,7 +745,14 @@
   async function remove() {
     const p = state.profiles.find((x) => x.id === state.id);
     if (!p || !window.confirm(`Delete profile “${p.rules.name}”? Runs that reference it by name will stop working.`)) return;
-    await fetch("/api/profiles?id=" + encodeURIComponent(p.id), { method: "DELETE" });
+    try {
+      await ui().fetchJSON("/api/profiles?id=" + encodeURIComponent(p.id), { method: "DELETE" });
+    } catch (err) {
+      const el = $("pf-status");
+      el.className = "pf-status small error";
+      el.textContent = "Not deleted: " + (err.message || err);
+      return;
+    }
     await loadProfiles();
     openProfile(state.profiles[0]?.id || "");
   }
@@ -754,8 +763,14 @@
     $("pf-yaml-error").hidden = true;
     dialog.dataset.mode = mode;
     if (mode === "export") {
-      const res = await fetch("/api/profiles/yaml", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: state.doc }) });
-      const data = await res.json();
+      let data;
+      try {
+        data = await ui().fetchJSON("/api/profiles/yaml", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: state.doc }) });
+      } catch (err) {
+        data = {};
+        $("pf-yaml-error").hidden = false;
+        $("pf-yaml-error").textContent = "Could not render the YAML: " + (err.message || err);
+      }
       text.value = data.yaml || "";
       text.readOnly = true;
       $("pf-yaml-eyebrow").textContent = "export";
@@ -807,12 +822,13 @@
   }
 
   async function loadYAML() {
-    const res = await fetch("/api/profiles/yaml", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ yaml: $("pf-yaml-text").value }) });
-    const data = await res.json().catch(() => ({}));
     const err = $("pf-yaml-error");
-    if (!res.ok) {
+    let data;
+    try {
+      data = await ui().fetchJSON("/api/profiles/yaml", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ yaml: $("pf-yaml-text").value }) });
+    } catch (e) {
       err.hidden = false;
-      err.textContent = data.error || res.statusText;
+      err.textContent = e.message || String(e);
       return;
     }
     const existing = state.profiles.find((p) => p.rules.name && p.rules.name.toLowerCase() === String(data.rules.name || "").toLowerCase());

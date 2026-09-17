@@ -83,7 +83,7 @@ func (c *webClient) start(path string, body any) string {
 
 // streamEvent is one SSE event of a job stream.
 type streamEvent struct {
-	Kind  string // log | phase | progress | status | error | end
+	Kind  string // log | phase | progress | status | failure | end
 	Seq   int
 	Text  string // log line, phase name, or progress label
 	Done  int
@@ -175,7 +175,7 @@ func (s *jobStream) read(res *http.Response) {
 			switch event {
 			case "status":
 				s.status = ev.Text
-			case "error":
+			case "failure":
 				s.errMsg = ev.Text
 			case "end":
 				s.ended = true

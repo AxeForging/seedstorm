@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
+	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -30,13 +32,15 @@ instead of a live database.`,
 			if err != nil {
 				return err
 			}
+			logging.Log.Info().Msg("Connecting to source and target")
 			source, target, err := openEndpoints(ctx, cmd)
 			if err != nil {
 				return err
 			}
 			defer closeEndpoints(source, target)
 
-			report, err := seeder.Snapshots(ctx, source, target, mode, nil)
+			logging.Log.Info().Str("source", source.Label).Str("target", target.Label).Str("counts", string(mode)).Msg("Reading table volumes")
+			report, err := seeder.Snapshots(ctx, source, target, mode, sideStepLogger("Counting", time.Now))
 			if err != nil {
 				return err
 			}

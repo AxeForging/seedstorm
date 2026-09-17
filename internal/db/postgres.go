@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -8,12 +9,13 @@ import (
 	"strings"
 )
 
-func introspectPostgres(db *sql.DB) ([]Table, error) {
-	tableRows, err := db.Query(`
+func introspectPostgres(ctx context.Context, db *sql.DB, onTable func(done, total int, table string)) ([]Table, error) {
+	tableRows, err := db.QueryContext(ctx, `
 		SELECT table_name
 		FROM information_schema.tables
 		WHERE table_schema = 'public'
 		  AND table_type = 'BASE TABLE'
+		  AND table_name NOT IN (`+postgresPartitionNames+`)
 		ORDER BY table_name`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
@@ -29,69 +31,79 @@ func introspectPostgres(db *sql.DB) ([]Table, error) {
 		tableNames = append(tableNames, name)
 	}
 
-	fkMap, err := postgresFKMap(db)
+	fkMap, err := postgresFKMap(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	pkMap, err := postgresPKMap(db)
+	pkMap, err := postgresPKMap(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	uniqueMap, err := postgresUniqueMap(db)
+	uniqueMap, err := postgresUniqueMap(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	checkMap, err := postgresCheckMap(db)
+	checkMap, err := postgresCheckMap(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	rangeMap, err := postgresRangeMap(db)
+	rangeMap, err := postgresRangeMap(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
-	indexMap, err := postgresIndexMap(db, uniqueMap)
+	indexMap, err := postgresIndexMap(ctx, db, uniqueMap)
 	if err != nil {
 		return nil, err
 	}
 
-	tableComments, columnComments, err := postgresCommentMaps(db)
+	tableComments, columnComments, err := postgresCommentMaps(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	partitions, err := postgresPartitioning(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 
 	var tables []Table
 	for _, tableName := range tableNames {
-		cols, err := postgresColumns(db, tableName, fkMap, pkMap, uniqueMap, checkMap, rangeMap, columnComments)
+		cols, err := postgresColumns(ctx, db, tableName, fkMap, pkMap, uniqueMap, checkMap, rangeMap, columnComments)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
-		tables = append(tables, Table{Name: tableName, Columns: cols, Indexes: indexMap[tableName], Comment: tableComments[tableName]})
+		tables = append(tables, Table{Name: tableName, Columns: cols, Indexes: indexMap[tableName], Comment: tableComments[tableName], Partition: partitions[tableName]})
+		if onTable != nil {
+			onTable(len(tables), len(tableNames), tableName)
+		}
 	}
 
 	return tables, nil
 }
 
-func postgresFKMap(db *sql.DB) (map[string]map[string]*ForeignKey, error) {
-	rows, err := db.Query(`
-		SELECT
-			kcu.table_name,
-			kcu.column_name,
-			ccu.table_name  AS foreign_table,
-			ccu.column_name AS foreign_column
-		FROM information_schema.table_constraints AS tc
-		JOIN information_schema.key_column_usage AS kcu
-		  ON tc.constraint_name = kcu.constraint_name
-		 AND tc.table_schema = kcu.table_schema
-		JOIN information_schema.constraint_column_usage AS ccu
-		  ON ccu.constraint_name = tc.constraint_name
-		 AND ccu.table_schema = tc.table_schema
-		WHERE tc.constraint_type = 'FOREIGN KEY'
-		  AND tc.table_schema = 'public'`)
+// postgresFKMap reads foreign keys from pg_constraint. conkey and confkey are
+// parallel arrays, so unnesting them together pairs each column with the one it
+// references, also for multi-column keys. information_schema is not used: it
+// joins constraints by name (same-named constraints on two tables mix) and
+// hides constraints from roles that only have SELECT.
+func postgresFKMap(ctx context.Context, db *sql.DB) (map[string]map[string]*ForeignKey, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.relname, a.attname, ft.relname, fa.attname
+		FROM pg_constraint c
+		JOIN pg_class t      ON t.oid = c.conrelid
+		JOIN pg_namespace n  ON n.oid = t.relnamespace
+		JOIN pg_class ft     ON ft.oid = c.confrelid
+		CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, fattnum)
+		JOIN pg_attribute a  ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+		JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.fattnum
+		WHERE c.contype = 'f'
+		  AND n.nspname = 'public'
+		ORDER BY t.relname, c.conname, a.attname`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query FK constraints: %w", err)
 	}
@@ -108,18 +120,20 @@ func postgresFKMap(db *sql.DB) (map[string]map[string]*ForeignKey, error) {
 		}
 		fkMap[table][column] = &ForeignKey{TableName: refTable, ColumnName: refColumn}
 	}
-	return fkMap, nil
+	return fkMap, rows.Err()
 }
 
-func postgresPKMap(db *sql.DB) (map[string]map[string]bool, error) {
-	rows, err := db.Query(`
-		SELECT kcu.table_name, kcu.column_name
-		FROM information_schema.table_constraints AS tc
-		JOIN information_schema.key_column_usage AS kcu
-		  ON tc.constraint_name = kcu.constraint_name
-		 AND tc.table_schema = kcu.table_schema
-		WHERE tc.constraint_type = 'PRIMARY KEY'
-		  AND tc.table_schema = 'public'`)
+// postgresPKMap reads primary keys from pg_constraint (visible to any role that
+// can read the table, unlike information_schema.table_constraints).
+func postgresPKMap(ctx context.Context, db *sql.DB) (map[string]map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT t.relname, a.attname
+		FROM pg_constraint c
+		JOIN pg_class t     ON t.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+		WHERE c.contype = 'p'
+		  AND n.nspname = 'public'`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query PK constraints: %w", err)
 	}
@@ -136,13 +150,13 @@ func postgresPKMap(db *sql.DB) (map[string]map[string]bool, error) {
 		}
 		pkMap[table][column] = true
 	}
-	return pkMap, nil
+	return pkMap, rows.Err()
 }
 
 type rangeConstraint struct{ Min, Max int64 }
 
-func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool, uniqueMap map[string]map[string]bool, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint, columnComments map[string]map[string]string) ([]Column, error) {
-	rows, err := db.Query(`
+func postgresColumns(ctx context.Context, db *sql.DB, tableName string, fkMap map[string]map[string]*ForeignKey, pkMap map[string]map[string]bool, uniqueMap map[string]map[string]bool, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint, columnComments map[string]map[string]string) ([]Column, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT
 			c.column_name,
 			c.data_type,
@@ -201,7 +215,7 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 
 		// Resolve enum values for user-defined enum types
 		if dataType == "USER-DEFINED" {
-			col.EnumValues, _ = postgresEnumValues(db, udtName)
+			col.EnumValues, _ = postgresEnumValues(ctx, db, udtName)
 		}
 
 		if fkMap[tableName] != nil {
@@ -229,8 +243,8 @@ func postgresColumns(db *sql.DB, tableName string, fkMap map[string]map[string]*
 }
 
 // postgresUniqueMap returns map[table][column]=true for single-column UNIQUE constraints.
-func postgresUniqueMap(db *sql.DB) (map[string]map[string]bool, error) {
-	rows, err := db.Query(`
+func postgresUniqueMap(ctx context.Context, db *sql.DB) (map[string]map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT t.relname, a.attname
 		FROM pg_constraint c
 		JOIN pg_class t       ON c.conrelid = t.oid
@@ -259,8 +273,8 @@ func postgresUniqueMap(db *sql.DB) (map[string]map[string]bool, error) {
 }
 
 // postgresCheckMap returns map[table][column]=[]values for single-column CHECK IN constraints.
-func postgresCheckMap(db *sql.DB) (map[string]map[string][]string, error) {
-	rows, err := db.Query(`
+func postgresCheckMap(ctx context.Context, db *sql.DB) (map[string]map[string][]string, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT t.relname, a.attname, pg_get_constraintdef(c.oid)
 		FROM pg_constraint c
 		JOIN pg_class t       ON c.conrelid = t.oid
@@ -291,8 +305,8 @@ func postgresCheckMap(db *sql.DB) (map[string]map[string][]string, error) {
 }
 
 // postgresRangeMap returns map[table][column]=rangeConstraint for CHECK (col >= N AND col <= M).
-func postgresRangeMap(db *sql.DB) (map[string]map[string]rangeConstraint, error) {
-	rows, err := db.Query(`
+func postgresRangeMap(ctx context.Context, db *sql.DB) (map[string]map[string]rangeConstraint, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT t.relname, a.attname, pg_get_constraintdef(c.oid)
 		FROM pg_constraint c
 		JOIN pg_class t       ON c.conrelid = t.oid
@@ -368,8 +382,8 @@ func parsePostgresCheckValues(clause string) []string {
 	return values
 }
 
-func postgresEnumValues(db *sql.DB, typeName string) ([]string, error) {
-	rows, err := db.Query(`
+func postgresEnumValues(ctx context.Context, db *sql.DB, typeName string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT e.enumlabel
 		FROM pg_type t
 		JOIN pg_enum e ON t.oid = e.enumtypid
@@ -395,8 +409,8 @@ func isPostgresSerialDefault(value string) bool {
 	return strings.HasPrefix(value, "nextval(")
 }
 
-func postgresIndexMap(db *sql.DB, uniqueMap map[string]map[string]bool) (map[string][]Index, error) {
-	rows, err := db.Query(postgresIndexQuery())
+func postgresIndexMap(ctx context.Context, db *sql.DB, uniqueMap map[string]map[string]bool) (map[string][]Index, error) {
+	rows, err := db.QueryContext(ctx, postgresIndexQuery())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query indexes: %w", err)
 	}
@@ -443,8 +457,8 @@ func postgresIndexQuery() string {
 		GROUP BY t.relname, i.relname, ix.indisunique`
 }
 
-func postgresCommentMaps(db *sql.DB) (map[string]string, map[string]map[string]string, error) {
-	tableRows, err := db.Query(`
+func postgresCommentMaps(ctx context.Context, db *sql.DB) (map[string]string, map[string]map[string]string, error) {
+	tableRows, err := db.QueryContext(ctx, `
 		SELECT c.relname, obj_description(c.oid, 'pg_class')
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -465,7 +479,7 @@ func postgresCommentMaps(db *sql.DB) (map[string]string, map[string]map[string]s
 		tableComments[table] = comment
 	}
 
-	columnRows, err := db.Query(`
+	columnRows, err := db.QueryContext(ctx, `
 		SELECT c.relname, a.attname, col_description(c.oid, a.attnum)
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace

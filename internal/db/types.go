@@ -6,6 +6,29 @@ type Table struct {
 	Columns []Column
 	Indexes []Index
 	Comment string
+	// Partition describes a Postgres partitioned table; its partitions are
+	// not listed as tables of their own.
+	Partition *Partitioning
+}
+
+// Partitioning is a partitioned table's key and the bounds of its partitions.
+type Partitioning struct {
+	Strategy string // range | list | hash
+	// Columns are the key columns; empty entries are expressions.
+	Columns []string
+	// Ranges are the FROM/TO bounds of range partitions, as Postgres prints
+	// them (quoted literals, MINVALUE, MAXVALUE).
+	Ranges []PartitionRange
+	// Values are the listed values of list partitions.
+	Values []string
+	// Default reports a DEFAULT partition, which accepts any key.
+	Default bool
+}
+
+// PartitionRange is one range partition's bounds for a single-column key.
+type PartitionRange struct {
+	From string
+	To   string
 }
 
 // Column represents a column in a database table.

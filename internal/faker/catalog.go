@@ -57,6 +57,8 @@ var catalog = []Generator{
 	{Name: "date", Expr: "date", Category: "Dates", Description: "Date (YYYY-MM-DD)"},
 	{Name: "time", Expr: "time", Category: "Dates", Description: "Time of day (HH:MM:SS)"},
 	{Name: "datetime", Expr: "datetime", Category: "Dates", Description: "Timestamp"},
+	{Name: "daterange", Expr: "daterange(2025-01-01,2026-01-01)", Category: "Dates", Description: "Date from (inclusive) to (exclusive)", Params: []string{"from", "to"}},
+	{Name: "datetimerange", Expr: "datetimerange(2025-01-01 00:00:00,2026-01-01 00:00:00)", Category: "Dates", Description: "Timestamp from (inclusive) to (exclusive)", Params: []string{"from", "to"}},
 	{Name: "uuid", Expr: "uuid", Category: "Identifiers", Description: "Random UUID"},
 	{Name: "json", Expr: "json", Category: "Identifiers", Description: "Small JSON object"},
 }
@@ -110,6 +112,9 @@ func BuildSchema(dbType string, tables []db.Table) *schema.Schema {
 			if idx.Unique && len(idx.Columns) > 1 {
 				st.Unique = append(st.Unique, append([]string(nil), idx.Columns...))
 			}
+		}
+		if p := t.Partition; p != nil {
+			applyPartitioning(&st, t, p)
 		}
 		out.Tables[t.Name] = st
 	}

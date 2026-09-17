@@ -2,17 +2,13 @@ package tui
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/schema"
-	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
 // gapsStep tracks the wizard state for the gaps command.
@@ -61,14 +57,14 @@ func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts m
 	// Build items: empty tables are selectable, populated are shown but disabled
 	var items []tableItem
 	for _, name := range sortedAll {
-		count := counts[name]
+		count, known := counts[name]
 		parents := g.Parents(name)
 		item := tableItem{
 			name:    name,
 			parents: parents,
 		}
-		if count == 0 {
-			item.selected = true // empty tables default to selected
+		if known && count == 0 {
+			item.selected = true // empty tables default to selected; an unknown count is never assumed empty
 		}
 		// Populated tables are not shown in picker (only empty ones matter for gaps)
 		items = append(items, item)
@@ -110,8 +106,12 @@ func RunGaps(ctx context.Context, s *schema.Schema, dbType, dsn string, counts m
 func newGapsPicker(items []tableItem, counts map[string]int64, height int) tablePickerModel {
 	// Annotate parents with row counts
 	for i := range items {
-		count := counts[items[i].name]
-		if count > 0 {
+		count, known := counts[items[i].name]
+		if !known {
+			items[i].name = items[i].name + " (count unknown)"
+			items[i].selected = false
+			items[i].autoSelected = false
+		} else if count > 0 {
 			items[i].name = fmt.Sprintf("%s (%d rows)", items[i].name, count)
 			items[i].selected = false
 			items[i].autoSelected = false
@@ -275,7 +275,8 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.review.dryRun {
 			return m, tea.Batch(m.execute.spinner.Tick, startGapsDryRun(params, m.sortedAll))
 		}
-		return m, tea.Batch(m.execute.spinner.Tick, startGapsFill(m.ctx, params, m.sortedAll))
+		m.execute.events = make(chan tea.Msg, 64)
+		return m, tea.Batch(m.execute.spinner.Tick, startGapsFill(m.ctx, params, m.sortedAll, m.execute.events), waitSeed(m.execute.events))
 	}
 	return m, cmd
 }
@@ -323,39 +324,10 @@ func (m GapsModel) View() string {
 	return sb.String()
 }
 
-// startGapsFill seeds only the selected gap tables, pre-loading PKs from all tables.
-func startGapsFill(ctx context.Context, s *seedParams, allSorted []string) tea.Cmd {
-	return func() tea.Msg {
-		start := time.Now()
-
-		batchSize := s.batchSize
-		if batchSize < 1 {
-			batchSize = 1
-		}
-
-		conn, err := sql.Open(s.dbType, s.dsn)
-		if err != nil {
-			return seedDoneMsg{err: fmt.Errorf("failed to open connection: %w", err)}
-		}
-		defer conn.Close()
-
-		if err := conn.PingContext(ctx); err != nil {
-			return seedDoneMsg{err: fmt.Errorf("failed to ping database: %w", err)}
-		}
-
-		// Move Postgres sequences past the inserted ids, even if an insert fails.
-		defer func() { _, _ = db.SyncSequences(ctx, conn, s.dbType, s.tables) }()
-		res, err := seeder.Seed(ctx, conn, s.dbType, s.schema, allSorted, s.tables, s.seedOptions(batchSize, false, nil))
-		if err != nil {
-			return seedDoneMsg{err: err}
-		}
-		return seedDoneMsg{
-			totalRows: res.Total,
-			elapsed:   time.Since(start),
-			tables:    s.tables,
-			rowsMap:   res.Counts,
-		}
-	}
+// startGapsFill seeds only the selected gap tables, pre-loading PKs from all
+// tables; progress arrives on events.
+func startGapsFill(ctx context.Context, s *seedParams, allSorted []string, events chan tea.Msg) tea.Cmd {
+	return runSeedInto(ctx, s, allSorted, false, events)
 }
 
 // startGapsDryRun generates data for gap tables and returns a preview.

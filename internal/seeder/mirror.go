@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/rules"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
@@ -87,13 +90,25 @@ func Snapshots(ctx context.Context, source, target Endpoint, mode compare.CountM
 		}
 		return func(done, total int, table string) { onCount(side, done, total, table) }
 	}
-	src, err := source.take(ctx, mode, progress("source"))
-	if err != nil {
-		return compare.Report{}, fmt.Errorf("source: %w", err)
+	// The two databases are independent: read them at the same time.
+	var src, tgt compare.Snapshot
+	var srcErr, tgtErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		srcErr = safego.Run("count source", func() (err error) { src, err = source.take(ctx, mode, progress("source")); return err })
+	}()
+	go func() {
+		defer wg.Done()
+		tgtErr = safego.Run("count target", func() (err error) { tgt, err = target.take(ctx, mode, progress("target")); return err })
+	}()
+	wg.Wait()
+	if srcErr != nil {
+		return compare.Report{}, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseCount, "", srcErr))
 	}
-	tgt, err := target.take(ctx, mode, progress("target"))
-	if err != nil {
-		return compare.Report{}, fmt.Errorf("target: %w", err)
+	if tgtErr != nil {
+		return compare.Report{}, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseCount, "", tgtErr))
 	}
 	return compare.Diff(src, tgt), nil
 }
@@ -174,12 +189,17 @@ func (j *MirrorJob) Run(ctx context.Context, opts Options, onTruncate func(done,
 	gen := j.generateOptions(opts.Generate.SelfRefDepth)
 	gen.OnWarning = opts.Generate.OnWarning
 	opts.Generate = gen
+	// Refuse tables that cannot be generated before anything is truncated.
+	if err := faker.CheckSeedable(j.Schema, j.Plan.Order, j.Overrides); err != nil {
+		return Result{}, err
+	}
 	if j.Plan.Mode == compare.ModeReset && len(j.Plan.Truncate) > 0 {
 		if err := db.TruncateConcurrently(ctx, j.target.Conn, j.target.DBType, j.Plan.Truncate, max(opts.Workers, 1), onTruncate); err != nil {
-			return Result{}, fmt.Errorf("truncate target: %w", err)
+			return Result{}, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseTruncate, "", err))
 		}
 	}
-	return Fill(ctx, j.target.Conn, j.target.DBType, j.Schema, j.Plan.Order, j.Plan.Counts(), opts)
+	res, err := Fill(ctx, j.target.Conn, j.target.DBType, j.Schema, j.Plan.Order, j.Plan.Counts(), opts)
+	return res, runerr.OnSide(runerr.SideTarget, err)
 }
 
 func (j *MirrorJob) generateOptions(selfRefDepth int) faker.GenerateOptions {

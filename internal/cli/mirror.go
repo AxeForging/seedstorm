@@ -40,6 +40,7 @@ func mirrorCmd() *cli.Command {
 		&cli.IntFlag{Name: "seed", Usage: "Random seed for reproducible data generation (0 = random)"},
 		&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "Review the plan, preview samples and confirm in the terminal UI"},
 	)
+	flags = append(flags, productionFlags()...)
 	return &cli.Command{
 		Name:  "mirror",
 		Usage: "Seed a target database so its table volumes follow a source database",
@@ -56,6 +57,11 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			mode, err := compare.ParseMirrorMode(cmd.String("mode"))
 			if err != nil {
 				return err
+			}
+			if !cmd.Bool("dry-run") {
+				if err := refuseProductionWrite(cmd, "mirror into the target"); err != nil {
+					return err
+				}
 			}
 			counts, err := countMode(cmd)
 			if err != nil {
@@ -87,6 +93,7 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 
 			log.Info().Str("source", source.Label).Str("target", target.Label).Msg("Comparing databases")
 			job, err := seeder.PrepareMirror(ctx, source, target, seeder.MirrorConfig{
+				OnCount: sideStepLogger("Counting", time.Now),
 				Options: compare.MirrorOptions{
 					Mode:       mode,
 					Scale:      cmd.Float("scale"),

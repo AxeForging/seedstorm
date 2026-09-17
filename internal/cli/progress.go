@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urfave/cli/v3"
@@ -12,6 +13,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/seeder"
+	"github.com/AxeForging/seedstorm/internal/tuning"
 )
 
 // progressInterval is the most often a run logs a progress line.
@@ -31,6 +33,18 @@ func genWorkersFlag() cli.Flag {
 		Usage: "Tables generated at once on separate cores (needs --workers > 1; seed ignores it with --seed so runs stay reproducible)",
 		Value: 1,
 	}
+}
+
+// genWorkers reads --gen-workers, lowered to the cores this process may use
+// (a container CPU quota counts, not only the host's cores) with a log line
+// saying so.
+func genWorkers(cmd *cli.Command) int {
+	requested := cmd.Int("gen-workers")
+	n := tuning.ClampGenerators(requested)
+	if requested > n {
+		logging.Log.Info().Int("requested", requested).Int("using", n).Msg("Generators limited to the CPUs available")
+	}
+	return n
 }
 
 // progressLogger logs rows written, rate and ETA at most every progressInterval,
@@ -91,5 +105,35 @@ func populatedCheck(ctx context.Context, conn *sql.DB, dbType string) func(strin
 			return false, err
 		}
 		return counts[table] > 0, nil
+	}
+}
+
+// stepLogger logs a table-by-table step (counting, introspecting) at most every
+// progressInterval, plus its last table, so a long step is never silent.
+func stepLogger(what string, now func() time.Time) func(done, total int, table string) {
+	var last time.Time
+	return func(done, total int, table string) {
+		t := now()
+		if done < total && t.Sub(last) < progressInterval {
+			return
+		}
+		last = t
+		logging.Log.Info().Int("done", done).Int("total", total).Str("table", table).Msg(what)
+	}
+}
+
+// sideStepLogger is stepLogger for a two-sided step, one throttle per side.
+func sideStepLogger(what string, now func() time.Time) func(side string, done, total int, table string) {
+	loggers := map[string]func(int, int, string){}
+	var mu sync.Mutex
+	return func(side string, done, total int, table string) {
+		mu.Lock()
+		l, ok := loggers[side]
+		if !ok {
+			l = stepLogger(what+" ("+side+")", now)
+			loggers[side] = l
+		}
+		mu.Unlock()
+		l(done, total, table)
 	}
 }

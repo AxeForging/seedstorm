@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/fsutil"
 	"github.com/AxeForging/seedstorm/internal/logging"
+	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
 // syncSequences moves Postgres sequences past the ids a run inserted so the
@@ -85,4 +87,25 @@ func buildInsert(tableName string, row map[string]interface{}, dbType string) (s
 // buildBatchInsert delegates to db.BuildBatchInsert.
 func buildBatchInsert(tableName string, rows []map[string]interface{}, dbType string) (string, []interface{}) {
 	return db.BuildBatchInsert(tableName, rows, dbType)
+}
+
+// logPartialRun says what a failed run wrote before it stopped, so the user
+// knows which tables hold new rows and which were never reached.
+func logPartialRun(res seeder.SeedResult, order []string) {
+	var written, notWritten []string
+	for _, t := range order {
+		if n := res.Counts[t]; n > 0 {
+			written = append(written, fmt.Sprintf("%s (%d)", t, n))
+		} else {
+			notWritten = append(notWritten, t)
+		}
+	}
+	ev := logging.Log.Warn().Int("rows_written", res.Total)
+	if len(written) > 0 {
+		ev = ev.Str("written", strings.Join(written, ", "))
+	}
+	if len(notWritten) > 0 {
+		ev = ev.Str("not_written", strings.Join(notWritten, ", "))
+	}
+	ev.Msg("Run stopped before finishing")
 }

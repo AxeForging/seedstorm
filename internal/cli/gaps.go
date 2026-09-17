@@ -13,6 +13,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
@@ -93,6 +94,8 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			},
 			workersFlag(),
 			genWorkersFlag(),
+			productionFlags()[0],
+			productionFlags()[1],
 			profileFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -111,6 +114,11 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			dryRun := cmd.Bool("dry-run")
 			yes := cmd.Bool("yes")
 			batchSize := cmd.Int("batch-size")
+			if fill && !dryRun {
+				if err := refuseProductionWrite(cmd, "fill its empty tables"); err != nil {
+					return err
+				}
+			}
 
 			log.Info().Str("path", schemaPath).Msg("Loading schema")
 			s, err := schema.Load(schemaPath)
@@ -133,15 +141,20 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				return fmt.Errorf("failed to open connection: %w", err)
 			}
 			defer dbConn.Close()
-			if err := dbConn.PingContext(ctx); err != nil {
-				return fmt.Errorf("failed to ping database: %w", err)
+			if err := pingWithin(ctx, dbConn); err != nil {
+				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("%s did not answer: %w", dsnLabel(dbType, dsn), err))
 			}
 
 			// Query current row counts for all tables.
 			log.Info().Int("tables", len(allSorted)).Msg("Scanning tables")
-			counts, err := db.GetTableRowCounts(ctx, dbConn, dbType, allSorted)
-			if err != nil {
-				return fmt.Errorf("row count scan failed: %w", err)
+			counts, failed := db.CountTables(ctx, dbConn, dbType, allSorted, stepLogger("Counting rows", time.Now))
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			for _, t := range allSorted {
+				if ferr, ok := failed[t]; ok {
+					log.Warn().Str("table", t).Err(ferr).Msg("Row count failed: the table is left out of the gaps (unknown is not empty)")
+				}
 			}
 
 			profile, err := loadProfile(cmd, s)
@@ -158,12 +171,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			fkParents := buildFKParents(s, allSorted)
 
 			// Identify gap tables in topological order, minus the profile's ignored ones.
-			var gapTables []string
-			for _, t := range allSorted {
-				if counts[t] == 0 {
-					gapTables = append(gapTables, t)
-				}
-			}
+			gapTables := seeder.GapTables(allSorted, counts, nil)
 			if gapTables, err = profile.applyIgnore(ctx, dbConn, dbType, gapTables); err != nil {
 				return err
 			}
@@ -211,19 +219,23 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allSorted, gapTables, seeder.SeedOptions{
 				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
 				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
-				GenWorkers: cmd.Int("gen-workers"),
+				GenWorkers: genWorkers(cmd),
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,
 					OnWarning:    logWarning,
 				},
-				OnRows: printDryRunSQL(dryRun, dbType),
+				OnRows:   printDryRunSQL(dryRun, dbType),
+				OnNotice: func(msg string) { log.Warn().Msg(msg) },
 				OnTableStart: func(table string) error {
 					log.Info().Str("table", table).Msg("Seeding table")
 					return nil
 				},
 			})
 			if err != nil {
+				if !dryRun {
+					logPartialRun(res, gapTables)
+				}
 				return err
 			}
 			totalRows := res.Total
@@ -285,7 +297,11 @@ func printGapReport(allSorted []string, counts map[string]int64, fkParents map[s
 
 	totalGapRows := 0
 	for _, tableName := range allSorted {
-		count := counts[tableName]
+		count, known := counts[tableName]
+		if !known {
+			fmt.Printf("  %-*s  %6s  count failed → skipped\n", nameWidth, tableName, "?")
+			continue
+		}
 		if gapSet[tableName] {
 			deps := formatFKDeps(fkParents[tableName], gapSet, counts)
 			fmt.Printf("  %-*s  %6d  EMPTY → would seed %d rows%s\n",
@@ -317,7 +333,11 @@ func formatFKDeps(parents []string, gapSet map[string]bool, counts map[string]in
 		if gapSet[p] {
 			parts = append(parts, p+" (filling)")
 		} else {
-			parts = append(parts, fmt.Sprintf("%s (%d rows)", p, counts[p]))
+			if n, ok := counts[p]; ok {
+				parts = append(parts, fmt.Sprintf("%s (%d rows)", p, n))
+			} else {
+				parts = append(parts, p+" (count unknown)")
+			}
 		}
 	}
 	return "  [FK → " + strings.Join(parts, ", ") + "]"

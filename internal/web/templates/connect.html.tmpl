@@ -99,6 +99,19 @@
             <em class="muted small">— written unencrypted to {{.StorePath}} on this machine.</em>
           </span>
         </label>
+        <label class="check-row">
+          <input type="checkbox" name="production" id="conn-production" value="1" data-testid="conn-production"
+                 {{if .Form.Production}}checked data-was-production="1"{{end}}>
+          <span>Production database
+            <em class="muted small">— seedstorm refuses to write to it until you type its label back.</em>
+          </span>
+        </label>
+        {{if .Form.Production}}
+        <label class="field sub" id="conn-confirm-label-row" hidden>
+          <span class="field-label">Type the label to remove the production mark</span>
+          <input type="text" name="confirmLabel" id="conn-confirm-label" data-testid="conn-confirm-label" autocomplete="off">
+        </label>
+        {{end}}
       </div>
 
       <div class="connect-actions span-2">
@@ -160,6 +173,7 @@
             <span class="muted small">{{$conn.Target}}</span>
           </div>
           <div class="saved-badges">
+            {{if $conn.Production}}<span class="pill prod" data-testid="conn-production-badge" title="Writes need the label typed back">production</span>{{end}}
             {{if $live}}<span class="pill ok">connected</span>{{end}}
             {{if $conn.HasPassword}}<span class="pill" title="Password stored on this machine">saved password</span>{{end}}
             {{range $conn.Params}}<span class="pill param" title="{{.Name}}={{.Value}}">{{.Name}}</span>{{end}}

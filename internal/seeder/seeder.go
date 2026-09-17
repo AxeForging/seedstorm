@@ -17,6 +17,8 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
@@ -60,6 +62,9 @@ type Options struct {
 	Generate faker.GenerateOptions
 	// OnProgress reports inserted/requested rows for the current table.
 	OnProgress func(p Progress)
+	// OnNotice receives decisions the run made, such as fewer writers because
+	// the server has few free connections.
+	OnNotice func(msg string)
 }
 
 // Progress is one progress tick: the table that just advanced, and the run.
@@ -120,6 +125,9 @@ func Fill(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, o
 	if opts.MaxRowFailures <= 0 {
 		opts.MaxRowFailures = DefaultMaxRowFailures
 	}
+	if opts.Workers > 1 {
+		opts.Workers = clampToServer(ctx, conn, dbType, opts.Workers, 1, opts.OnNotice)
+	}
 	// Explicit ids leave Postgres sequences behind; move them forward for every
 	// table that received rows, including when the run stops early.
 	defer func() {
@@ -178,8 +186,12 @@ func fillTable(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Sche
 	_, selfRef := referencedTables(sc, tableName, nil)
 	// Parents are complete by now (tables run in FK order), so their pools and
 	// this table's stored keys are read once and kept for every chunk.
-	stream, err := faker.NewStream(sc, preload, []string{tableName}, conn, dbType, opts.Generate.Overrides)
+	stream, err := faker.NewStreamContext(ctx, sc, preload, []string{tableName}, conn, dbType, opts.Generate.Overrides)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			tr.Missing, tr.Status, tr.Error = tr.Requested, StatusFailed, ctxErr.Error()
+			return tr, ctxErr
+		}
 		return finishStuck(tr, "read existing rows: "+err.Error(), opts)
 	}
 	genOpts := opts.Generate
@@ -329,7 +341,14 @@ func insertRowsConcurrently(ctx context.Context, conn *sql.DB, dbType, tableName
 		go func() {
 			defer wg.Done()
 			o := &results[i]
-			o.inserted, o.rejected, o.lastErr, o.err = insertRows(ctx, conn, dbType, tableName, piece, opts)
+			o.err = safego.Run("write "+tableName, func() error {
+				var err error
+				o.inserted, o.rejected, o.lastErr, err = insertRows(ctx, conn, dbType, tableName, piece, opts)
+				return err
+			})
+			if o.err != nil {
+				o.err = runerr.At(runerr.PhaseWrite, tableName, o.err)
+			}
 		}()
 	}
 	wg.Wait()

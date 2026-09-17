@@ -12,7 +12,7 @@
   <script src="/static/app.js" defer></script>
   {{block "scripts" .}}{{end}}
 </head>
-<body data-active="{{.Active}}">
+<body data-active="{{.Active}}"{{if .Session}} data-conn-key="{{connKey .Session}}"{{end}}>
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">
@@ -97,6 +97,7 @@
 {{end}}
 
 {{define "joblog"}}
+<div class="run-strip" data-run-strip data-testid="run-strip" role="status" aria-live="polite" hidden></div>
 <div class="job-panel" id="job-panel" hidden>
   <div class="row spread">
     <div class="row">

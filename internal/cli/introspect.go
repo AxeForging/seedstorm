@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/logging"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/urfave/cli/v3"
 )
@@ -47,10 +50,18 @@ Outputs a schema.yaml that can be used for seeding or AI enrichment.`,
 			log.Info().
 				Str("db", cmd.String("db")).
 				Msg("Connecting to database")
-
-			tables, err := db.Introspect(dbType, dsn)
+			conn, err := sql.Open(dbType, dsn)
 			if err != nil {
 				return fmt.Errorf("introspection failed: %w", err)
+			}
+			defer conn.Close()
+			if err := pingWithin(ctx, conn); err != nil {
+				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("%s did not answer: %w", dsnLabel(dbType, dsn), err))
+			}
+			log.Info().Msg("Reading the catalog")
+			tables, err := db.IntrospectConn(ctx, conn, dbType, stepLogger("Introspecting", time.Now))
+			if err != nil {
+				return runerr.At(runerr.PhaseIntrospect, "", fmt.Errorf("introspection failed: %w", err))
 			}
 
 			log.Info().

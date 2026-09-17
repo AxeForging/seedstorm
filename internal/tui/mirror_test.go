@@ -125,3 +125,25 @@ func TestMirrorModel_ProgressAndDoneMessages(t *testing.T) {
 		t.Fatalf("done: phase = %v result = %+v", m.phase, m.result)
 	}
 }
+
+// Sample rows read the target database. Generating them inside Update froze the
+// whole screen; now the key returns at once with a loading state and the rows
+// arrive as a message.
+func TestMirrorModel_PreviewLoadsWithoutBlockingTheScreen(t *testing.T) {
+	m := newMirrorModel(context.Background(), mirrorJob(compare.ModeTopUp, 40), seeder.Options{}, 3, true)
+	m, cmd := press(m, "p")
+	if cmd == nil {
+		t.Fatal("p did not start loading the preview in the background")
+	}
+	if !m.previewLoading || !strings.Contains(m.View(), "Generating sample rows") {
+		t.Fatalf("no loading state:\n%s", m.View())
+	}
+	next, _ := m.Update(mirrorPreviewMsg("Sample rows (up to 3 per table, nothing written)\n\nusers: []"))
+	m = next.(mirrorModel)
+	if m.previewLoading || !strings.Contains(m.View(), "nothing written") {
+		t.Fatalf("preview not shown after it arrived:\n%s", m.View())
+	}
+	if m, cmd = press(m, "p"); cmd != nil || m.showPreview {
+		t.Fatal("toggling back to the plan should not reload anything")
+	}
+}

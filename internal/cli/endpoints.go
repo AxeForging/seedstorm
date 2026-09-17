@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -37,11 +39,11 @@ func openEndpoints(ctx context.Context, cmd *cli.Command) (source, target seeder
 		return source, target, fmt.Errorf("use either --source-dsn or --source-snapshot, not both")
 	case snapshotPath != "":
 		if source, err = snapshotEndpoint(snapshotPath); err != nil {
-			return source, target, fmt.Errorf("source snapshot: %w", err)
+			return source, target, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseConnect, "", fmt.Errorf("snapshot file: %w", err)))
 		}
 	case sourceDSN != "":
 		if source, err = openEndpoint(ctx, cmd.String("source-db"), sourceDSN); err != nil {
-			return source, target, fmt.Errorf("source: %w", err)
+			return source, target, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseConnect, "", err))
 		}
 	default:
 		return source, target, fmt.Errorf("a source is required: pass --source-dsn (or SEEDSTORM_SOURCE_DSN) or --source-snapshot <file>")
@@ -49,7 +51,7 @@ func openEndpoints(ctx context.Context, cmd *cli.Command) (source, target seeder
 	target, err = openEndpoint(ctx, cmd.String("target-db"), cmd.String("target-dsn"))
 	if err != nil {
 		closeEndpoints(source)
-		return source, target, fmt.Errorf("target: %w", err)
+		return source, target, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseConnect, "", err))
 	}
 	return source, target, nil
 }
@@ -89,11 +91,22 @@ func openEndpoint(ctx context.Context, dbFlag, dsn string) (seeder.Endpoint, err
 	if err != nil {
 		return seeder.Endpoint{}, fmt.Errorf("open connection: %w", err)
 	}
-	if err := conn.PingContext(ctx); err != nil {
+	if err := pingWithin(ctx, conn); err != nil {
 		_ = conn.Close()
-		return seeder.Endpoint{}, fmt.Errorf("ping database: %w", err)
+		return seeder.Endpoint{}, fmt.Errorf("%s did not answer: %w", dsnLabel(driver, dsn), err)
 	}
 	return seeder.Endpoint{Conn: conn, DBType: driver, DSN: dsn, Label: dsnLabel(driver, dsn)}, nil
+}
+
+// connectTimeout bounds how long a database may take to answer before a
+// command reports it unreachable instead of waiting on the OS TCP timeout.
+var connectTimeout = 10 * time.Second
+
+// pingWithin pings conn, giving up after connectTimeout.
+func pingWithin(ctx context.Context, conn *sql.DB) error {
+	pctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	return conn.PingContext(pctx)
 }
 
 // dsnLabel names a connection for reports without leaking its password.

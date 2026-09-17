@@ -53,14 +53,17 @@ type MirrorOptions struct {
 
 // Reasons attached to plan entries and skips.
 const (
-	ReasonMatch      = "match source"
-	ReasonCapped     = "capped by max rows"
-	ReasonParent     = "required parent is empty"
-	ReasonDependent  = "truncated with its parent"
-	ReasonNotTarget  = "not in target"
-	ReasonUnknown    = "source row count unknown"
-	ReasonSatisfied  = "target already has enough rows"
-	ReasonNotInGraph = "not introspected on target"
+	ReasonMatch     = "match source"
+	ReasonCapped    = "capped by max rows"
+	ReasonParent    = "required parent is empty"
+	ReasonDependent = "truncated with its parent"
+	ReasonNotTarget = "not in target"
+	ReasonUnknown   = "source row count unknown"
+	// ReasonTargetUnknown: the target's count failed, so how many rows it
+	// already has is unknown; filling it could double its volume.
+	ReasonTargetUnknown = "target row count unknown"
+	ReasonSatisfied     = "target already has enough rows"
+	ReasonNotInGraph    = "not introspected on target"
 	// ReasonIgnored marks a table the profile ignores.
 	ReasonIgnored = "ignored by profile"
 	// ReasonIgnoredParent marks a table whose required FK parent is ignored and empty.
@@ -160,10 +163,14 @@ func PlanMirror(report Report, target *schema.Schema, opts MirrorOptions) (Mirro
 	targetRows := make(map[string]int64)
 	candidates := make(map[string]Row)
 	byTarget := make(map[string]Row)
+	// unknownTarget holds tables whose target count failed: never filled, and
+	// never assumed empty when a child needs a parent with rows.
+	unknownTarget := make(map[string]bool)
 	for _, row := range report.Rows {
 		name := targetName(row)
 		if row.Target != nil {
 			targetRows[name] = knownRows(row.Target.Rows)
+			unknownTarget[name] = row.Target.Rows < 0
 			byTarget[name] = row
 		}
 		if !selected(row) {
@@ -180,6 +187,9 @@ func PlanMirror(report Report, target *schema.Schema, opts MirrorOptions) (Mirro
 			continue
 		case row.Source.Rows < 0:
 			staticSkips = append(staticSkips, PlanSkip{Table: name, Reason: ReasonUnknown})
+			continue
+		case unknownTarget[name]:
+			staticSkips = append(staticSkips, PlanSkip{Table: name, Reason: ReasonTargetUnknown})
 			continue
 		}
 		if _, ok := target.Tables[name]; !ok {
@@ -223,6 +233,10 @@ func PlanMirror(report Report, target *schema.Schema, opts MirrorOptions) (Mirro
 		entries, truncated, skips = planPass(candidates, excluded, byTarget, target, opts, isIgnored)
 		available = func(name string) int64 {
 			have := targetRows[name]
+			if unknownTarget[name] && !truncated[name] {
+				// Unknown is not empty: do not refill it as a missing parent.
+				have = max(have, 1)
+			}
 			if truncated[name] {
 				have = 0
 			}

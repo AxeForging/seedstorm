@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/safego"
 )
 
 type cloneModel struct {
@@ -18,6 +21,8 @@ type cloneModel struct {
 	targetDSN  string
 	opts       db.CloneOptions
 	running    bool
+	spinner    spinner.Model
+	startedAt  time.Time
 	done       bool
 	confirmed  bool
 	result     db.CloneResult
@@ -31,7 +36,11 @@ type cloneDoneMsg struct {
 
 // RunClone presents a small confirmation UI around schema cloning.
 func RunClone(ctx context.Context, sourceType, sourceDSN, targetType, targetDSN string, opts db.CloneOptions) error {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = selectedStyle
 	m := cloneModel{
+		spinner:    sp,
 		ctx:        ctx,
 		sourceType: sourceType,
 		sourceDSN:  sourceDSN,
@@ -50,6 +59,15 @@ func RunClone(ctx context.Context, sourceType, sourceDSN, targetType, targetDSN 
 	if !fm.confirmed {
 		return fmt.Errorf("aborted by user")
 	}
+	// Printed after the screen is released, so it stays in the terminal.
+	if fm.opts.DryRun {
+		fmt.Println(strings.Join(fm.result.Statements, ";\n") + ";")
+	} else {
+		fmt.Printf("Cloned %d tables (%d statements).\n", fm.result.Tables, len(fm.result.Statements))
+	}
+	for _, skipped := range fm.result.Skipped {
+		fmt.Printf("Not cloned: %s %s (%s)\n", skipped.Kind, skipped.Name, skipped.Reason)
+	}
 	return nil
 }
 
@@ -67,8 +85,16 @@ func (m cloneModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.confirmed = true
 			m.running = true
-			return m, m.run()
+			m.startedAt = time.Now()
+			return m, tea.Batch(m.spinner.Tick, m.run())
 		}
+	case spinner.TickMsg:
+		if !m.running {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	case cloneDoneMsg:
 		m.running = false
 		m.done = true
@@ -95,7 +121,8 @@ func (m cloneModel) View() string {
 	}
 	sb.WriteString("\n")
 	if m.running {
-		sb.WriteString("  Cloning schema...\n")
+		fmt.Fprintf(&sb, "  %s Cloning schema: reading the source, then running DDL on the target · %s\n", m.spinner.View(), time.Since(m.startedAt).Round(100*time.Millisecond))
+		sb.WriteString(helpStyle.Render("  ctrl+c stops (statements already run stay)"))
 		return sb.String()
 	}
 	if m.done {
@@ -112,10 +139,11 @@ func (m cloneModel) View() string {
 
 func (m cloneModel) run() tea.Cmd {
 	return func() tea.Msg {
-		result, err := db.CloneSchema(m.ctx, m.sourceType, m.sourceDSN, m.targetType, m.targetDSN, m.opts)
-		if m.opts.DryRun && err == nil {
-			fmt.Println(strings.Join(result.Statements, ";\n") + ";")
-		}
+		var result db.CloneResult
+		err := safego.Run("clone schema", func() (err error) {
+			result, err = db.CloneSchema(m.ctx, m.sourceType, m.sourceDSN, m.targetType, m.targetDSN, m.opts)
+			return err
+		})
 		return cloneDoneMsg{result: result, err: err}
 	}
 }

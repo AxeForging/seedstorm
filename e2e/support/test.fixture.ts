@@ -35,6 +35,8 @@ export async function openWorkspace(page: Page, tables: number): Promise<void> {
   await page.goto("/");
   await expect(page.getByTestId(sel.workspace.tableCount)).toHaveText(String(tables));
   await expect(page.getByTestId(sel.workspace.graphLoading)).toBeHidden();
+  // Row counts fill in after the graph is drawn.
+  await expect(page.getByTestId(sel.workspace.countsStatus)).toHaveAttribute("data-state", "ready");
   await waitForCamera(page);
 }
 

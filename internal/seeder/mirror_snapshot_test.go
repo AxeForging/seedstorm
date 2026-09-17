@@ -96,7 +96,7 @@ func TestPrepareMirror_LiveEndpointsStillRunTheSameDatabaseCheck(t *testing.T) {
 func TestSnapshots_SnapshotSideIsNotReadAndLiveSideNeedsAConnection(t *testing.T) {
 	source := Endpoint{Snapshot: parsedSnapshot(t, "tables: {users: 1}")}
 	_, err := Snapshots(context.Background(), source, Endpoint{DBType: "pgx"}, compare.CountExact, nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "target: no database connection or snapshot") {
+	if err == nil || !strings.HasPrefix(err.Error(), "target · count: no database connection or snapshot") {
 		t.Fatalf("err = %v", err)
 	}
 

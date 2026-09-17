@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,6 +150,78 @@ func TestStreamJob_ReplaysBacklog(t *testing.T) {
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("missing %q in replayed body:\n%s", needle, body)
+		}
+	}
+}
+
+// A named SSE event called "error" also fires EventSource.onerror in browsers,
+// which closed the stream before "end" arrived: every failed job left the page
+// waiting forever. The terminal failure must use another event name.
+func TestStreamJob_FailedJobEndsWithFailureNotErrorEvent(t *testing.T) {
+	m := NewManager()
+	job := m.Start(context.Background(), "boom", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		jc.Phase("connect")
+		return nil, errors.New("target: ping database: connection refused")
+	})
+	<-job.Done()
+
+	srv := &Server{jobs: m}
+	w := httptest.NewRecorder()
+	srv.streamJob(w, httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil), job)
+
+	body := w.Body.String()
+	if strings.Contains(body, "event: error\n") {
+		t.Fatalf("stream uses the reserved 'error' event name:\n%s", body)
+	}
+	for _, needle := range []string{
+		"event: status\ndata: failed",
+		"event: failure\ndata: target: ping database: connection refused",
+		"event: end",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("missing %q in:\n%s", needle, body)
+		}
+	}
+	if strings.Index(body, "event: failure") > strings.Index(body, "event: end") {
+		t.Fatalf("failure must come before end:\n%s", body)
+	}
+}
+
+// Every job event carries an SSE id so a reconnecting client can resume after
+// the last one it saw instead of replaying (and duplicating) the whole log.
+func TestStreamJob_ResumesAfterLastSeenEvent(t *testing.T) {
+	m := NewManager()
+	job := m.Start(context.Background(), "resume", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		jc.Phase("one")
+		jc.Phase("two")
+		jc.Phase("three")
+		return nil, nil
+	})
+	<-job.Done()
+	srv := &Server{jobs: m}
+
+	w := httptest.NewRecorder()
+	srv.streamJob(w, httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil), job)
+	if body := w.Body.String(); !strings.Contains(body, "id: 1\n") || !strings.Contains(body, "id: 3\n") {
+		t.Fatalf("events carry no SSE ids:\n%s", body)
+	}
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream?after=2", nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil)
+			r.Header.Set("Last-Event-ID", "2")
+			return r
+		}(),
+	} {
+		w := httptest.NewRecorder()
+		srv.streamJob(w, req, job)
+		body := w.Body.String()
+		if strings.Contains(body, "] one") || strings.Contains(body, "] two") {
+			t.Fatalf("resumed stream replayed events already seen:\n%s", body)
+		}
+		if !strings.Contains(body, "] three") || !strings.Contains(body, "event: end") {
+			t.Fatalf("resumed stream lost later events:\n%s", body)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -51,7 +52,7 @@ A hand-written file with only row counts also works:
 			defer closeEndpoints(ep)
 
 			log.Info().Str("database", ep.Label).Str("counts", string(mode)).Msg("Reading table counts")
-			snap, err := compare.Take(ctx, ep.Conn, ep.DBType, ep.Label, mode, nil)
+			snap, err := compare.Take(ctx, ep.Conn, ep.DBType, ep.Label, mode, stepLogger("Counting", time.Now))
 			if err != nil {
 				return err
 			}

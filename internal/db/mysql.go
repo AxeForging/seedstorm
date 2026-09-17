@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -8,15 +9,15 @@ import (
 	"strings"
 )
 
-func introspectMySQL(db *sql.DB) ([]Table, error) {
+func introspectMySQL(ctx context.Context, db *sql.DB, onTable func(done, total int, table string)) ([]Table, error) {
 	// Get current database name
 	var dbName string
-	if err := db.QueryRow("SELECT DATABASE()").Scan(&dbName); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&dbName); err != nil {
 		return nil, fmt.Errorf("failed to get current database: %w", err)
 	}
 
 	// List all tables
-	tableRows, err := db.Query(`
+	tableRows, err := db.QueryContext(ctx, `
 		SELECT TABLE_NAME
 		FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = ?
@@ -37,7 +38,7 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 	}
 
 	// Fetch FK relationships for the whole database
-	fkMap, err := mysqlFKMap(db, dbName)
+	fkMap, err := mysqlFKMap(ctx, db, dbName)
 	if err != nil {
 		return nil, err
 	}
@@ -48,38 +49,41 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 	// or stored in metadata on those versions.
 	var checkMap map[string]map[string][]string
 	var rangeMap map[string]map[string]rangeConstraint
-	supportsCheck, err := mysqlSupportsCheckConstraints(db)
+	supportsCheck, err := mysqlSupportsCheckConstraints(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 	if supportsCheck {
-		checkMap, err = mysqlCheckMap(db, dbName)
+		checkMap, err = mysqlCheckMap(ctx, db, dbName)
 		if err != nil {
 			return nil, err
 		}
-		rangeMap, err = mysqlRangeMap(db, dbName)
+		rangeMap, err = mysqlRangeMap(ctx, db, dbName)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	indexMap, err := mysqlIndexMap(db, dbName)
+	indexMap, err := mysqlIndexMap(ctx, db, dbName)
 	if err != nil {
 		return nil, err
 	}
 
-	tableComments, err := mysqlTableCommentMap(db, dbName)
+	tableComments, err := mysqlTableCommentMap(ctx, db, dbName)
 	if err != nil {
 		return nil, err
 	}
 
 	var tables []Table
 	for _, tableName := range tableNames {
-		cols, err := mysqlColumns(db, dbName, tableName, fkMap, checkMap, rangeMap)
+		cols, err := mysqlColumns(ctx, db, dbName, tableName, fkMap, checkMap, rangeMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to introspect table %s: %w", tableName, err)
 		}
 		tables = append(tables, Table{Name: tableName, Columns: cols, Indexes: indexMap[tableName], Comment: tableComments[tableName]})
+		if onTable != nil {
+			onTable(len(tables), len(tableNames), tableName)
+		}
 	}
 
 	return tables, nil
@@ -87,9 +91,9 @@ func introspectMySQL(db *sql.DB) ([]Table, error) {
 
 // mysqlSupportsCheckConstraints reports whether the server exposes
 // information_schema.CHECK_CONSTRAINTS. Introduced in MySQL 8.0.16.
-func mysqlSupportsCheckConstraints(db *sql.DB) (bool, error) {
+func mysqlSupportsCheckConstraints(ctx context.Context, db *sql.DB) (bool, error) {
 	var one int
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT 1
 		FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = 'information_schema'
@@ -104,8 +108,8 @@ func mysqlSupportsCheckConstraints(db *sql.DB) (bool, error) {
 	return true, nil
 }
 
-func mysqlFKMap(db *sql.DB, dbName string) (map[string]map[string]*ForeignKey, error) {
-	rows, err := db.Query(`
+func mysqlFKMap(ctx context.Context, db *sql.DB, dbName string) (map[string]map[string]*ForeignKey, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT
 			kcu.TABLE_NAME,
 			kcu.COLUMN_NAME,
@@ -136,8 +140,8 @@ func mysqlFKMap(db *sql.DB, dbName string) (map[string]map[string]*ForeignKey, e
 	return fkMap, nil
 }
 
-func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[string]*ForeignKey, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint) ([]Column, error) {
-	rows, err := db.Query(`
+func mysqlColumns(ctx context.Context, db *sql.DB, dbName, tableName string, fkMap map[string]map[string]*ForeignKey, checkMap map[string]map[string][]string, rangeMap map[string]map[string]rangeConstraint) ([]Column, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT
 			COLUMN_NAME,
 			DATA_TYPE,
@@ -217,8 +221,8 @@ func mysqlColumns(db *sql.DB, dbName, tableName string, fkMap map[string]map[str
 }
 
 // mysqlCheckMap returns map[table][column]=[]values for CHECK IN constraints (MySQL 8.0.16+).
-func mysqlCheckMap(db *sql.DB, dbName string) (map[string]map[string][]string, error) {
-	rows, err := db.Query(`
+func mysqlCheckMap(ctx context.Context, db *sql.DB, dbName string) (map[string]map[string][]string, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT tc.TABLE_NAME, cc.CHECK_CLAUSE
 		FROM information_schema.TABLE_CONSTRAINTS tc
 		JOIN information_schema.CHECK_CONSTRAINTS cc
@@ -280,8 +284,8 @@ var (
 )
 
 // mysqlRangeMap returns map[table][column]=rangeConstraint for CHECK (col >= N AND col <= M).
-func mysqlRangeMap(db *sql.DB, dbName string) (map[string]map[string]rangeConstraint, error) {
-	rows, err := db.Query(`
+func mysqlRangeMap(ctx context.Context, db *sql.DB, dbName string) (map[string]map[string]rangeConstraint, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT tc.TABLE_NAME, cc.CHECK_CLAUSE
 		FROM information_schema.TABLE_CONSTRAINTS tc
 		JOIN information_schema.CHECK_CONSTRAINTS cc
@@ -351,8 +355,8 @@ func parseEnumValues(columnType string) []string {
 	return values
 }
 
-func mysqlIndexMap(db *sql.DB, dbName string) (map[string][]Index, error) {
-	rows, err := db.Query(`
+func mysqlIndexMap(ctx context.Context, db *sql.DB, dbName string) (map[string][]Index, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT
 			TABLE_NAME,
 			INDEX_NAME,
@@ -403,8 +407,8 @@ func parseIndexPrefixes(raw string) []int {
 	return out
 }
 
-func mysqlTableCommentMap(db *sql.DB, dbName string) (map[string]string, error) {
-	rows, err := db.Query(`
+func mysqlTableCommentMap(ctx context.Context, db *sql.DB, dbName string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT TABLE_NAME, TABLE_COMMENT
 		FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = ?

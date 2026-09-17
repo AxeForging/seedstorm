@@ -365,3 +365,87 @@ func TestRenderReport_MarksEstimatedCounts(t *testing.T) {
 		t.Fatalf("legend missing:\n%s", out)
 	}
 }
+
+// A count the database could not report is unknown, not zero: a table whose
+// count failed on either side is neither "same" nor "differs", and its delta
+// is not invented from a zero.
+func TestDiff_UnknownCountIsItsOwnStatus(t *testing.T) {
+	src := snap("a", map[string]TableStat{"users": stat(100), "orders": {Rows: db.UnknownCount, Bytes: db.UnknownCount}, "tags": stat(3)})
+	tgt := snap("b", map[string]TableStat{"users": {Rows: db.UnknownCount, Bytes: db.UnknownCount}, "orders": stat(7), "tags": stat(3)})
+	r := Diff(src, tgt)
+	for _, table := range []string{"users", "orders"} {
+		row := rowFor(t, r, table)
+		if row.Status != StatusUnknown || row.Delta != 0 {
+			t.Errorf("%s: status=%s delta=%d, want unknown with no delta", table, row.Status, row.Delta)
+		}
+	}
+	if row := rowFor(t, r, "tags"); row.Status != StatusSame {
+		t.Errorf("tags status = %s", row.Status)
+	}
+	if r.Totals.Unknown != 2 || r.Totals.Differs != 0 || r.Totals.Same != 1 {
+		t.Fatalf("totals = %+v", r.Totals)
+	}
+}
+
+// Mirror planned an unknown target count as an empty table and inserted the
+// full source volume into it. A target it cannot count is skipped, and it is
+// never picked as an empty parent to fill either.
+func TestPlanMirror_UnknownTargetCountIsNeverFilled(t *testing.T) {
+	src := snap("src", map[string]TableStat{"users": stat(50), "orders": stat(80)})
+	tgt := snap("tgt", map[string]TableStat{
+		"users":       {Rows: db.UnknownCount, Bytes: db.UnknownCount},
+		"orders":      stat(0),
+		"order_items": stat(0),
+		"audit_logs":  stat(0),
+	})
+	plan, err := PlanMirror(Diff(src, tgt), shopTarget(), MirrorOptions{Tables: []string{"orders"}, ParentRows: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range plan.Entries {
+		if e.Table == "users" {
+			t.Fatalf("users has an unknown target count but is planned: %+v", e)
+		}
+	}
+	if e := entry(t, plan, "orders"); e.Insert != 80 {
+		t.Fatalf("orders = %+v", e)
+	}
+
+	plan, err = PlanMirror(Diff(src, tgt), shopTarget(), MirrorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]string{}
+	for _, s := range plan.Skipped {
+		reasons[s.Table] = s.Reason
+	}
+	if reasons["users"] != ReasonTargetUnknown {
+		t.Fatalf("users skip = %q, all skips %+v", reasons["users"], plan.Skipped)
+	}
+}
+
+// Estimate mode exists to avoid COUNT(*) on huge tables. A zero or missing
+// estimate is still counted exactly when the table is small (stale statistics
+// on a fresh table), but a large table stays unknown instead of being scanned.
+func TestExactFallback_OnlyForTablesCheapToCount(t *testing.T) {
+	cases := []struct {
+		name        string
+		estimate    int64
+		hasEstimate bool
+		bytes       int64
+		want        bool
+	}{
+		{"positive estimate is used", 5000, true, 1 << 30, false},
+		{"zero estimate on a small table", 0, true, 64 << 10, true},
+		{"missing estimate on a small table", 0, false, 64 << 10, true},
+		{"missing estimate, size unknown", 0, false, db.UnknownCount, true},
+		{"zero estimate on a large table", 0, true, 4 << 30, false},
+		{"missing estimate at the limit", 0, false, exactFallbackMaxBytes, true},
+		{"missing estimate just over the limit", 0, false, exactFallbackMaxBytes + 1, false},
+	}
+	for _, c := range cases {
+		if got := exactFallback(c.estimate, c.hasEstimate, c.bytes); got != c.want {
+			t.Errorf("%s: exactFallback = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

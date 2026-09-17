@@ -136,8 +136,11 @@ func generateCmd() *cli.Command {
 					Overrides:    profile.overrides,
 					OnWarning:    logWarning,
 				},
-				OnTableStart: w.Table,
-				OnRows:       func(_ string, rows []map[string]interface{}) error { return w.Rows(rows) },
+				OnTableStart: func(table string) error {
+					log.Info().Str("table", table).Msg("Generating table")
+					return w.Table(table)
+				},
+				OnRows: func(_ string, rows []map[string]interface{}) error { return w.Rows(rows) },
 			}); err != nil {
 				return fmt.Errorf("generation failed: %w", err)
 			}

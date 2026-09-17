@@ -530,6 +530,269 @@
     });
   }
 
+  // ── starting runs (production confirmation) ────────────────────────────
+  // confirmProduction asks the user to type a production connection's label.
+  // It resolves to the typed label, or null when they cancel.
+  function confirmProduction(label, message) {
+    return new Promise((resolve) => {
+      const dlg = document.createElement("dialog");
+      dlg.className = "prod-dialog";
+      dlg.dataset.testid = "prod-confirm-dialog";
+      dlg.setAttribute("data-testid", "prod-confirm-dialog");
+      dlg.innerHTML = `
+        <form method="dialog">
+          <h2>Write to a production database?</h2>
+          <p class="muted small">${escapeHTML(message || "")}</p>
+          <label class="field"><span class="field-label">Type <code>${escapeHTML(label)}</code> to continue</span>
+            <input type="text" autocomplete="off" data-testid="prod-confirm-input"></label>
+          <footer>
+            <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+            <button class="btn-primary" value="ok" type="submit" data-testid="prod-confirm-ok" disabled>Write to ${escapeHTML(label)}</button>
+          </footer>
+        </form>`;
+      document.body.appendChild(dlg);
+      const input = dlg.querySelector("input");
+      const ok = dlg.querySelector('[value="ok"]');
+      input.addEventListener("input", () => { ok.disabled = input.value !== label; });
+      dlg.addEventListener("close", () => {
+        const typed = dlg.returnValue === "ok" && input.value === label ? input.value : null;
+        dlg.remove();
+        resolve(typed);
+      });
+      dlg.showModal();
+      input.focus();
+    });
+  }
+
+  // postRun starts a job. A refusal to write to a production connection asks
+  // for its label and retries; a request that never reaches the server, or a
+  // non-JSON answer, rejects with a readable message instead of hanging.
+  async function postRun(endpoint, body) {
+    let res;
+    try {
+      res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (err) {
+      throw new Error(`seedstorm did not answer (${err.message || err}). Is the server still running?`);
+    }
+    const j = await res.json().catch(() => ({ error: `unexpected answer (${res.status} ${res.statusText})` }));
+    if (res.status === 409 && j.code === "production_confirm") {
+      const typed = await confirmProduction(j.label, j.error);
+      if (typed == null) {
+        const err = new Error(`Not written: ${j.label} is a production database and the write was not confirmed.`);
+        err.cancelled = true;
+        throw err;
+      }
+      return postRun(endpoint, { ...body, confirmProduction: typed });
+    }
+    if (!res.ok) throw new Error(j.error || res.statusText);
+    return j;
+  }
+
+  // ── browser storage (per-viewer conveniences only) ─────────────────────
+  // Storage can be unavailable (private windows, blocked site data): every
+  // read and write falls back to nothing and the page keeps working.
+  function readStore(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch (_) { return fallback; }
+  }
+  function writeStore(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; }
+  }
+
+  // ── run strip: what the current job is doing, next to the action ────────
+  // Every page with jobs has one or more [data-run-strip] elements. The strip
+  // shows the job, its phase and progress, elapsed time, and the connection
+  // state: running (events arriving), quiet (no update for a while but the
+  // server still pings), reconnecting, or lost. A failure shows where it
+  // happened and what to do next.
+  const QUIET_AFTER_MS = 30000;
+  const LOST_AFTER_MS = 45000;
+  const run = {
+    jobId: "", name: "", status: "idle", phase: "", done: 0, total: 0, label: "",
+    startedAt: 0, endedAt: 0, lastEventAt: 0, lastPingAt: 0, conn: "running",
+    failure: null, nextStep: "", message: "", timer: null,
+  };
+  function stripElements() {
+    return document.querySelectorAll("[data-run-strip]");
+  }
+  function formatElapsed(ms) {
+    const s = Math.max(0, ms) / 1000;
+    if (s < 60) return s.toFixed(1) + "s";
+    const m = Math.floor(s / 60);
+    return m + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s";
+  }
+  function failureText(f, fallback) {
+    if (!f) return fallback || "";
+    const where = [f.side, f.phase, f.table].filter(Boolean).join(" · ");
+    return where ? `${where}: ${fallback || f.message || ""}` : (fallback || f.message || "");
+  }
+  function renderRunStrip() {
+    const strips = stripElements();
+    if (!strips.length || !run.jobId) return;
+    const now = Date.now();
+    const active = run.status === "running" || run.status === "pending";
+    const elapsed = formatElapsed((run.endedAt || now) - run.startedAt);
+    const pct = run.total > 0 ? Math.min(100, (run.done / run.total) * 100) : null;
+    let state = run.status;
+    if (active) state = run.conn;
+    let detail = run.label || "";
+    if (active && run.conn === "quiet") {
+      detail = `No update for ${formatElapsed(now - run.lastEventAt)} — last: ${[run.phase, run.label].filter(Boolean).join(" · ") || "starting"}. Still connected.`;
+    } else if (active && run.conn === "reconnecting") {
+      detail = "Connection to seedstorm dropped; reconnecting…";
+    } else if (run.conn === "lost") {
+      detail = run.message || "Lost contact with seedstorm. Is the server still running?";
+    }
+    const failed = run.status === "failed" || run.status === "canceled";
+    for (const el of strips) {
+      el.hidden = false;
+      el.dataset.state = state;
+      el.innerHTML = `
+        <div class="run-strip-head">
+          <span class="run-strip-dot" aria-hidden="true"></span>
+          <strong class="run-strip-status" data-testid="run-strip-status">${escapeHTML(stateLabel(state))}</strong>
+          <span class="run-strip-name">${escapeHTML(run.name)}${run.phase ? " · " + escapeHTML(run.phase) : ""}</span>
+          <span class="run-strip-elapsed muted small" data-testid="run-strip-elapsed">${elapsed}</span>
+        </div>
+        ${pct != null && !failed ? `<progress class="run-strip-bar" max="100" value="${pct.toFixed(1)}"></progress>
+          <span class="run-strip-count muted small">${run.done.toLocaleString()} / ${run.total.toLocaleString()} · ${pct.toFixed(pct < 10 ? 1 : 0)}%</span>` : ""}
+        ${failed ? `<p class="run-strip-failure" role="alert" data-testid="run-strip-failure">${escapeHTML(failureText(run.failure, run.message))}</p>` : ""}
+        ${failed && run.nextStep ? `<p class="run-strip-next muted small" data-testid="run-strip-next">${escapeHTML(run.nextStep)}</p>` : ""}
+        ${!failed && detail ? `<p class="run-strip-detail muted small" data-testid="run-strip-detail">${escapeHTML(detail)}</p>` : ""}`;
+    }
+  }
+  function stateLabel(state) {
+    return {
+      running: "Running", pending: "Starting", quiet: "Still working", reconnecting: "Reconnecting",
+      lost: "Connection lost", done: "Done", failed: "Failed", canceled: "Cancelled",
+    }[state] || state;
+  }
+  function tickRunStrip() {
+    const active = run.status === "running" || run.status === "pending";
+    if (active) {
+      const now = Date.now();
+      if (run.conn !== "reconnecting" && run.conn !== "lost") {
+        run.conn = now - run.lastEventAt > QUIET_AFTER_MS ? "quiet" : "running";
+      }
+      if (now - Math.max(run.lastPingAt, run.lastEventAt) > LOST_AFTER_MS && run.conn !== "lost") {
+        run.conn = "lost";
+        checkServerAfterLoss();
+      }
+    }
+    renderRunStrip();
+    if (!active && run.timer) { clearInterval(run.timer); run.timer = null; }
+  }
+  async function checkServerAfterLoss() {
+    const stored = readStore(LAST_JOB_KEY, null);
+    try {
+      const list = await fetchJSON("/api/jobs", { timeoutMs: 5000 });
+      if (stored && list.bootId !== stored.bootId) {
+        run.status = "failed";
+        run.message = `seedstorm restarted: the ${run.name} job was lost. Nothing more will be written by it.`;
+      } else {
+        run.conn = "reconnecting";
+      }
+    } catch (_) {
+      run.message = "Lost contact with seedstorm. Is the server still running?";
+    }
+    renderRunStrip();
+  }
+  function beginRun(jobId, name, bootId) {
+    Object.assign(run, {
+      jobId, name, status: "running", phase: "", done: 0, total: 0, label: "", failure: null, nextStep: "", message: "",
+      startedAt: Date.now(), endedAt: 0, lastEventAt: Date.now(), lastPingAt: Date.now(), conn: "running",
+    });
+    if (bootId) writeStore(LAST_JOB_KEY, { bootId, jobId, name, page: document.body.dataset.active || "" });
+    if (!run.timer) run.timer = setInterval(tickRunStrip, 1000);
+    renderRunStrip();
+  }
+  function endRun(job) {
+    const stored = readStore(LAST_JOB_KEY, null);
+    if (stored && stored.jobId === job.id) writeStore(LAST_JOB_KEY, { ...stored, seen: true });
+    run.status = job.status || "failed";
+    run.endedAt = job.end ? Date.parse(job.end) || Date.now() : Date.now();
+    const result = job.result || {};
+    run.failure = result.failure || null;
+    run.nextStep = result.nextStep || "";
+    run.message = job.error || "";
+    if (run.conn !== "lost") run.conn = "running";
+    renderRunStrip();
+  }
+  const LAST_JOB_KEY = "seedstorm.lastJob.v1";
+
+  // fetchJSON is the one way page scripts read the API: it times out, reads a
+  // non-JSON answer as an error, and rejects with a message a person can act on.
+  async function fetchJSON(url, opts = {}) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs || 30000);
+    let res;
+    try {
+      res = await fetch(url, { cache: "no-store", ...opts, signal: ctrl.signal });
+    } catch (err) {
+      throw new Error(err.name === "AbortError" ? `seedstorm did not answer ${url} in time` : `seedstorm did not answer (${err.message || err})`);
+    } finally {
+      clearTimeout(timer);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.error) || `${res.status} ${res.statusText}`);
+    if (body == null) throw new Error(`unexpected answer from ${url}`);
+    return body;
+  }
+
+  // resumeRun reattaches to this session's running job after the page was
+  // left and opened again, or says the server restarted and the job is gone.
+  async function resumeRun(names, hooks) {
+    if (!stripElements().length) return;
+    const stored = readStore(LAST_JOB_KEY, null);
+    let list;
+    try {
+      list = await fetchJSON("/api/jobs", { timeoutMs: 5000 });
+    } catch (_) { return; }
+    const running = (list.jobs || []).find((j) => (j.status === "running" || j.status === "pending") && names.includes(j.name));
+    if (running) {
+      streamJob(running.id, running.name, hooks, list.bootId);
+      return;
+    }
+    // The job this page started ended while the user was away: show how.
+    const finished = stored && stored.bootId === list.bootId && (list.jobs || []).find((j) => j.id === stored.jobId && names.includes(j.name));
+    if (finished && !stored.seen) {
+      let job = finished;
+      try { job = await fetchJSON(`/api/jobs/${finished.id}`, { timeoutMs: 5000 }); } catch (_) { /* the summary is enough */ }
+      Object.assign(run, { jobId: job.id, name: job.name, phase: "", done: 0, total: 0, label: "",
+        startedAt: Date.parse(job.start) || Date.now(), conn: "running" });
+      endRun(job);
+      writeStore(LAST_JOB_KEY, { ...stored, seen: true });
+      hooks?.onEnd?.(job);
+      return;
+    }
+    if (stored && stored.bootId && stored.bootId !== list.bootId && names.includes(stored.name)) {
+      Object.assign(run, { jobId: stored.jobId, name: stored.name, status: "failed", startedAt: Date.now(), endedAt: Date.now(), conn: "lost",
+        message: `seedstorm restarted since this page started the ${stored.name} job: it was stopped and will write nothing more.` });
+      writeStore(LAST_JOB_KEY, null);
+      renderRunStrip();
+    }
+  }
+
+  // A page error must never be silent: running jobs are not affected, and the
+  // user is told a reload is safe.
+  function setupGlobalErrorNotice() {
+    let shown = false;
+    const show = (detail) => {
+      console.error("seedstorm page error:", detail);
+      if (shown) return;
+      shown = true;
+      const box = document.createElement("div");
+      box.className = "page-error-notice";
+      box.setAttribute("role", "alert");
+      box.setAttribute("data-testid", "page-error-notice");
+      box.innerHTML = `<span>A page error happened; running jobs are not affected. Reload is safe.</span>
+        <button class="btn-ghost" type="button" aria-label="Dismiss">Dismiss</button>`;
+      box.querySelector("button").addEventListener("click", () => { box.remove(); shown = false; });
+      document.body.appendChild(box);
+    };
+    window.addEventListener("error", (ev) => show(ev.error || ev.message));
+    window.addEventListener("unhandledrejection", (ev) => show(ev.reason));
+  }
+
   // ── shared job streaming ──────────────────────────────────────────────
   let elapsedTimer = null;
   function startElapsed() {
@@ -665,13 +928,15 @@
     const m = /^\[(\d+)\]\s?(.*)$/.exec(s);
     return m ? m[2] : s;
   }
-  function streamJob(jobId, jobName, hooks) {
+  function streamJob(jobId, jobName, hooks, bootId) {
     const cancel = document.getElementById("job-cancel");
     setStatus("running");
     resetPhases();
+    beginRun(jobId, jobName, bootId);
     if (cancel) {
       cancel.disabled = false;
-      cancel.onclick = () => fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      cancel.onclick = () => fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" })
+        .catch((err) => appendLog("ERROR: could not cancel: " + (err.message || err)));
     }
     const expandAll = document.getElementById("job-expand-all");
     if (expandAll) {
@@ -681,36 +946,72 @@
         expandAll.dataset.open = (!open).toString();
       };
     }
+    // The browser reconnects on its own after a dropped connection and sends
+    // Last-Event-ID, so the server resumes after the last event we saw.
     const es = new EventSource(`/api/jobs/${jobId}/stream`);
+    let settled = false;
+    const settle = (job) => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      if (cancel) cancel.disabled = true;
+      endRun(job);
+      setStatus(job.status);
+      finalizeLastPhase(job.status);
+      hooks?.onEnd?.(job);
+    };
+    const settleFromServer = () =>
+      fetch(`/api/jobs/${jobId}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`job lookup failed (${r.status})`))))
+        .then(settle)
+        .catch((err) => settle({ id: jobId, name: jobName, status: "failed", error: `Lost track of the job: ${err.message || err}` }));
+    const seen = () => { run.lastEventAt = Date.now(); run.lastPingAt = run.lastEventAt; if (run.conn !== "lost") run.conn = "running"; };
+    es.addEventListener("ping", () => { run.lastPingAt = Date.now(); if (run.conn === "reconnecting") run.conn = "running"; });
     es.addEventListener("log", (e) => {
+      seen();
       const text = stripSeq(e.data);
       appendLog(text);
       hooks?.onLog?.(text);
     });
     es.addEventListener("phase", (e) => {
+      seen();
       const text = stripSeq(e.data);
+      run.phase = text;
       startPhase(text);
     });
     es.addEventListener("progress", (e) => {
       // payload: `[seq] done/total label`
       const m = /^\[\d+\]\s?(\d+)\/(\d+)\s?(.*)$/.exec(e.data);
       if (!m) return;
+      seen();
+      run.done = Number(m[1]); run.total = Number(m[2]); run.label = m[3];
       setProgress(Number(m[1]), Number(m[2]), m[3]);
     });
     es.addEventListener("status", (e) => setStatus(e.data));
-    es.addEventListener("error", (e) => {
+    // The server names a job's failure "failure": a named "error" event would
+    // trigger onerror below and used to close the stream before "end".
+    es.addEventListener("failure", (e) => {
       if (e.data) appendLog("ERROR: " + e.data);
     });
     es.addEventListener("end", () => {
       es.close();
-      if (cancel) cancel.disabled = true;
-      fetch(`/api/jobs/${jobId}`).then(r => r.json()).then((j) => {
-        setStatus(j.status);
-        finalizeLastPhase(j.status);
-        hooks?.onEnd?.(j);
-      });
+      settleFromServer();
     });
-    es.onerror = () => { es.close(); };
+    es.onerror = () => {
+      if (settled) return;
+      if (es.readyState === EventSource.CONNECTING) { run.conn = "reconnecting"; renderRunStrip(); }
+      // Connection trouble: if the job is over, finish with its real state;
+      // if it is still running, let the browser reconnect and resume.
+      fetch(`/api/jobs/${jobId}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`job lookup failed (${r.status})`))))
+        .then((job) => {
+          if (job.status !== "running" && job.status !== "pending") settle(job);
+          else if (es.readyState === EventSource.CLOSED) streamJob(jobId, jobName, hooks);
+        })
+        .catch(() => {
+          if (es.readyState === EventSource.CLOSED) settle({ id: jobId, name: jobName, status: "failed", error: "Connection to seedstorm lost" });
+        });
+    };
   }
 
   // ── simple run-form (used by /generate, /enrich, /export pages) ───────
@@ -736,14 +1037,15 @@
       form.querySelectorAll('input[type="checkbox"]').forEach((el) => {
         if (!(el.name in payload)) payload[el.name] = false;
       });
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const j = await res.json();
       document.getElementById("job-panel").hidden = false;
-      if (!res.ok) { resetPhases(); appendLog("ERROR: " + (j.error || res.statusText)); return; }
+      let j;
+      try {
+        j = await postRun(endpoint, payload);
+      } catch (err) {
+        resetPhases();
+        appendLog("ERROR: " + (err.message || err));
+        return;
+      }
       streamJob(j.id, j.name, {
         onEnd: (job) => {
           const r = job.result || {};
@@ -751,7 +1053,7 @@
           if (!out) return;
           renderJobResult(out, r, job.name || j.name || "run");
         },
-      });
+      }, j.bootId);
     });
   }
 
@@ -1158,8 +1460,10 @@
       b.addEventListener("click", () => {
         document.querySelectorAll(".ws-mode-pill").forEach(x => x.classList.remove("active"));
         b.classList.add("active");
+        const wasClone = ws.mode === "clone";
         ws.mode = b.dataset.mode;
         updateCloneControls();
+        if (ws.mode === "clone" && !wasClone) loadCloneTargetAccess();
         recomputeAuto();
         refreshSelectionUI();
       });
@@ -1169,7 +1473,7 @@
     document.querySelector('[data-act="none"]').addEventListener("click", () => clearSelection());
     document.querySelector('[data-act="empty"]').addEventListener("click", () => selectEmpty());
     document.querySelector('[data-act="invert"]').addEventListener("click", () => invertSelection());
-    document.querySelector('[data-act="refresh"]').addEventListener("click", () => refreshCounts());
+    document.querySelector('[data-act="refresh"]').addEventListener("click", () => refreshCounts(true));
     document.getElementById("ws-search")?.addEventListener("input", (ev) => applySearch(ev.target.value));
     document.getElementById("ws-search")?.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
@@ -1195,6 +1499,7 @@
       if (ws.onlyMatches) { exitOnlyMatches(); fitGraph(); } else enterOnlyMatches();
     });
     setupMinimap();
+    setupWorkspaceFormMemory();
     syncTuningSummary();
     document.getElementById("ws-fit")?.addEventListener("click", () => fitGraph());
     document.getElementById("ws-zoom-in")?.addEventListener("click", () => zoomGraph(1.18));
@@ -1217,9 +1522,66 @@
     document.getElementById("ws-run").addEventListener("click", runMode);
 
     loadCloneTargets();
-    loadProfileOptions();
+    loadProfileOptions().then(() => {
+      restoreWorkspaceForm(true);
+      const id = document.getElementById("cfg-profile")?.value;
+      if (id) loadProfileInsights(id);
+    });
     loadGraph();
+    resumeRun(["seed", "gaps", "generate", "clone-schema"], { onLog: (line) => onLogPulse(line), onEnd: (job) => onJobEnd(job) });
     loadWorkspaceAccess(false);
+  }
+
+  // ── remembered workspace form (per connection) ─────────────────────────
+  // Volume, tuning, profile and dry-run survive leaving the page. Destructive
+  // toggles (truncate, disable FK checks, drop existing on clone) always start
+  // off: they are never remembered.
+  const WS_FORM_KEY = "seedstorm.workspaceForm.v1";
+  const WS_FORM_FIELDS = [
+    ["cfg-rows", "value"], ["cfg-workers", "value"], ["cfg-gen-workers", "value"], ["cfg-batch", "value"],
+    ["cfg-enum", "value"], ["cfg-selfref-depth", "value"], ["cfg-dryrun", "checked"], ["cfg-profile", "value"],
+    ["cfg-clone-dryrun", "checked"], ["ws-clone-views", "checked"], ["ws-clone-routines", "checked"], ["ws-clone-triggers", "checked"],
+  ];
+  function formConnKey() {
+    return document.body.dataset.connKey || "default";
+  }
+  function saveWorkspaceForm() {
+    const all = readStore(WS_FORM_KEY, {});
+    const values = {};
+    for (const [id, prop] of WS_FORM_FIELDS) {
+      const el = document.getElementById(id);
+      if (el) values[id] = el[prop];
+    }
+    all[formConnKey()] = { ...values, savedAt: Date.now() };
+    // Keep the ten most recent connections.
+    const keys = Object.keys(all).sort((a, b) => (all[b].savedAt || 0) - (all[a].savedAt || 0));
+    for (const k of keys.slice(10)) delete all[k];
+    writeStore(WS_FORM_KEY, all);
+  }
+  // restoreWorkspaceForm sets remembered values; the profile select only once
+  // its options exist (they load asynchronously).
+  function restoreWorkspaceForm(onlyProfile) {
+    const values = readStore(WS_FORM_KEY, {})[formConnKey()];
+    if (!values) return;
+    for (const [id, prop] of WS_FORM_FIELDS) {
+      if ((id === "cfg-profile") !== !!onlyProfile) continue;
+      const el = document.getElementById(id);
+      if (!el || !(id in values)) continue;
+      if (id === "cfg-profile") {
+        const known = [...el.options].some((o) => o.value === values[id]);
+        if (!known) continue; // the profile was deleted since
+      }
+      el[prop] = values[id];
+    }
+  }
+  function setupWorkspaceFormMemory() {
+    for (const [id] of WS_FORM_FIELDS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.addEventListener("input", saveWorkspaceForm);
+      el.addEventListener("change", saveWorkspaceForm);
+    }
+    restoreWorkspaceForm(false);
   }
 
   function syncTuningSummary() {
@@ -1253,6 +1615,13 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       initGraph(data);
+      if (data.countsTakenAt) {
+        ws.countsTakenAt = Date.parse(data.countsTakenAt);
+        const status = document.getElementById("ws-counts-status");
+        if (status) { status.dataset.state = "ready"; status.textContent = countsAgeText(); }
+      } else {
+        refreshCounts(false);
+      }
     } catch (err) {
       setGraphLoading("Graph failed", err.message || String(err), true);
     }
@@ -1934,10 +2303,11 @@
     target.hidden = false;
     target.innerHTML = '<p class="muted small">Loading rows...</p>';
     const q = new URLSearchParams({ table: tableName, limit: "5", offset: "0", _: String(Date.now()) });
-    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
-    const data = await res.json();
-    if (!res.ok) {
-      target.innerHTML = `<p class="muted small">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+    let data;
+    try {
+      data = await fetchJSON("/api/table?" + q.toString());
+    } catch (err) {
+      target.innerHTML = `<p class="muted small">Preview failed: ${escapeHTML(err.message || String(err))}</p>`;
       return;
     }
     if (!data.rows || data.rows.length === 0) {
@@ -2373,10 +2743,16 @@
     if (legend) legend.hidden = noInsert.size === 0;
   }
 
+  // Checking a saved target opens (and pings) that connection on the server,
+  // so it only happens while clone mode is active.
   async function loadCloneTargetAccess() {
     const target = document.getElementById("cfg-clone-target");
     const selected = target?.selectedOptions?.[0];
     ws.cloneAccess = null;
+    if (ws.mode !== "clone") {
+      updateAccessWarnings();
+      return;
+    }
     if (selected && selected.value && selected.dataset.kind !== "empty") {
       const key = selected.dataset.kind === "saved" ? "savedId" : "id";
       try {
@@ -2482,7 +2858,7 @@
     ws.preview.offset = 0;
     const target = document.getElementById("ws-detail");
     target.innerHTML = "<p class='muted small'>loading...</p>";
-    fetch("/api/schema").then(r => r.json()).then((sc) => {
+    fetchJSON("/api/schema").then((sc) => {
       const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
       if (!t) { target.innerHTML = "<p class='muted small'>not in schema</p>"; return; }
       const entries = Object.entries(t.columns || t.Columns);
@@ -2560,6 +2936,8 @@
         loadPreview(tableName);
       });
       loadPreview(tableName);
+    }).catch((err) => {
+      target.innerHTML = `<p class="muted small">Could not load ${escapeHTML(tableName)}: ${escapeHTML(err.message || String(err))}</p>`;
     });
   }
 
@@ -2603,7 +2981,12 @@
 
   async function ensureSchemaColumns(tableName) {
     if (ws.schemaColumns[tableName]) return;
-    const sc = await fetch("/api/schema").then(r => r.json());
+    let sc;
+    try {
+      sc = await fetchJSON("/api/schema");
+    } catch (_) {
+      return; // column hints are optional: the preview still renders without them
+    }
     const t = (sc.tables && sc.tables[tableName]) || (sc.Tables && sc.Tables[tableName]);
     if (!t) return;
     const entries = Object.entries(t.columns || t.Columns);
@@ -2630,10 +3013,11 @@
       offset: String(ws.modal.offset),
       _: String(Date.now()),
     });
-    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
-    const data = await res.json();
-    if (!res.ok) {
-      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+    let data;
+    try {
+      data = await fetchJSON("/api/table?" + q.toString());
+    } catch (err) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(err.message || String(err))}</p>`;
       return;
     }
     const start = data.total === 0 ? 0 : data.offset + 1;
@@ -2659,10 +3043,11 @@
       offset: String(ws.preview.offset),
       _: String(Date.now()),
     });
-    const res = await fetch("/api/table?" + q.toString(), { cache: "no-store" });
-    const data = await res.json();
-    if (!res.ok) {
-      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(data.error || res.statusText)}</p>`;
+    let data;
+    try {
+      data = await fetchJSON("/api/table?" + q.toString());
+    } catch (err) {
+      box.innerHTML = `<p class="muted small empty-hint">Preview failed: ${escapeHTML(err.message || String(err))}</p>`;
       return;
     }
     const start = data.total === 0 ? 0 : data.offset + 1;
@@ -2754,20 +3139,17 @@
     document.getElementById("job-result").innerHTML = "";
     if (ws.cy) ws.cy.nodes().removeClass("seeding done failed");
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg),
-    });
-    const j = await res.json();
-    if (!res.ok) {
-      appendLog("ERROR: " + (j.error || res.statusText));
+    let j;
+    try {
+      j = await postRun(endpoint, cfg);
+    } catch (err) {
+      appendLog("ERROR: " + (err.message || err));
       return;
     }
     streamJob(j.id, j.name, {
       onLog: (line) => onLogPulse(line),
       onEnd: (job) => onJobEnd(job),
-    });
+    }, j.bootId);
   }
 
   async function runCloneSchema() {
@@ -2790,14 +3172,11 @@
     activateTab("logs");
     resetPhases();
     document.getElementById("job-result").innerHTML = "";
-    const res = await fetch("/api/clone-schema", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg),
-    });
-    const j = await res.json();
-    if (!res.ok) {
-      appendLog("ERROR: " + (j.error || res.statusText));
+    let j;
+    try {
+      j = await postRun("/api/clone-schema", cfg);
+    } catch (err) {
+      appendLog("ERROR: " + (err.message || err));
       return;
     }
     streamJob(j.id, j.name, {
@@ -2815,7 +3194,7 @@
           out.querySelector(".result-shell")?.appendChild(box);
         }
       },
-    });
+    }, j.bootId);
   }
 
   function tableRowPayload() {
@@ -2849,35 +3228,68 @@
     refreshCounts();
   }
 
-  function refreshCounts() {
+  // refreshCounts fills node counts without blocking the graph: the page is
+  // usable while tables are counted. force recounts instead of reusing the
+  // counts the server cached for this connection.
+  let countsRequest = 0;
+  function refreshCounts(force) {
     if (!ws.cy) return;
-    setGraphLoading("Refreshing counts", "Reading row counts for every table.");
-    fetch("/api/counts").then(r => r.json()).then((counts) => {
-      ws.cy.batch(() => {
-        ws.cy.nodes().forEach((n) => {
-          const id = n.id();
-          if (id in counts) {
-            n.data("count", counts[id]);
-            n.data("counted", true);
-            n.data("countLabel", formatCount(counts[id]));
-          }
-        });
+    const status = document.getElementById("ws-counts-status");
+    const setState = (state, text) => {
+      if (!status) return;
+      status.dataset.state = state;
+      status.textContent = text;
+    };
+    const seq = ++countsRequest;
+    setState("loading", `Counting rows in ${ws.nodes.length} tables…`);
+    fetch("/api/counts" + (force ? "?refresh=1" : ""), { cache: "no-store" })
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || r.statusText);
+        return { counts: body, takenAt: r.headers.get("X-Counts-Taken-At") };
+      })
+      .then(({ counts, takenAt }) => {
+        if (seq !== countsRequest) return;
+        applyCounts(counts);
+        const missing = ws.nodes.filter((n) => !(n.id in counts)).length;
+        ws.countsTakenAt = takenAt ? Date.parse(takenAt) : Date.now();
+        setState("ready", countsAgeText() + (missing ? ` · ${missing} could not be counted` : ""));
+      })
+      .catch((err) => {
+        if (seq !== countsRequest) return;
+        setState("failed", "Row counts unavailable: " + (err.message || err));
       });
-      // Keep the JS-side mirror in sync so isPopulated() sees fresh counts.
-      for (const n of ws.nodes) {
-        if (n.id in counts) {
-          n.count = counts[n.id];
-          n.counted = true;
+  }
+
+  function applyCounts(counts) {
+    ws.cy.batch(() => {
+      ws.cy.nodes().forEach((n) => {
+        const id = n.id();
+        if (id in counts) {
+          n.data("count", counts[id]);
+          n.data("counted", true);
+          n.data("countLabel", formatCount(counts[id]));
         }
-      }
-      updateStats();
-      recomputeAuto();
-      refreshSelectionUI();
-      renderIgnoredTab(document.getElementById("ws-ignored-profile")?.textContent);
-      clearGraphLoading();
-    }).catch((err) => {
-      setGraphLoading("Count refresh failed", err.message || String(err), true);
+      });
     });
+    // Keep the JS-side mirror in sync so isPopulated() sees fresh counts.
+    for (const n of ws.nodes) {
+      if (n.id in counts) {
+        n.count = counts[n.id];
+        n.counted = true;
+      }
+    }
+    updateStats();
+    recomputeAuto();
+    refreshSelectionUI();
+    renderIgnoredTab(document.getElementById("ws-ignored-profile")?.textContent);
+  }
+
+  function countsAgeText() {
+    if (!ws.countsTakenAt) return "";
+    const s = Math.max(0, Math.round((Date.now() - ws.countsTakenAt) / 1000));
+    const age = s < 45 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+    return `Row counts from ${age} · ↻ to recount`;
   }
 
   // Narrow screens collapse the top navigation into a drawer.
@@ -2928,8 +3340,19 @@
     }
   }
 
+  function setupProductionToggle() {
+    const box = document.getElementById("conn-production");
+    const row = document.getElementById("conn-confirm-label-row");
+    if (!box || !row) return;
+    const sync = () => { row.hidden = !(box.dataset.wasProduction && !box.checked); };
+    box.addEventListener("change", sync);
+    sync();
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    setupGlobalErrorNotice();
     setupNavDrawer();
+    setupProductionToggle();
     setupAccessBadge();
     setupConnectForm();
     setupConnectionDialog();
@@ -2947,7 +3370,8 @@
   window.seedstorm = {
     // Shared helpers for page scripts (compare.js, profiles.js).
     ui: {
-      streamJob, resetPhases, appendLog, escapeHTML, formatCount, copyText,
+      streamJob, postRun, confirmProduction, resumeRun, fetchJSON, readStore, writeStore,
+      resetPhases, appendLog, escapeHTML, formatCount, copyText,
       fetchConnections, fetchSavedConnections, connectionLabel, connectionKey, fetchAccess,
     },
     state: ws,

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/graph"
@@ -35,6 +36,9 @@ type graphPayload struct {
 	Edges []graphEdge `json:"edges"`
 	Order []string    `json:"order,omitempty"`
 	Cycle bool        `json:"cycle"`
+	// CountsTakenAt is when the node counts were taken; empty when the graph
+	// carries no counts yet (the page asks /api/counts).
+	CountsTakenAt string `json:"countsTakenAt,omitempty"`
 }
 
 type tablePreviewPayload struct {
@@ -57,17 +61,14 @@ func (s *Server) handleGraphJSON(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Row counts are best-effort; if the COUNT(*) sweep fails (e.g., a missing
-	// table after a DDL edit) we still serve the structure.
-	counts := map[string]int64{}
-	tableNames := make([]string, 0, len(sc.Tables))
-	for n := range sc.Tables {
-		tableNames = append(tableNames, n)
-	}
-	if c, cerr := db.GetTableRowCounts(r.Context(), sess.Conn(), sess.DBType, tableNames); cerr == nil {
-		counts = c
-	}
+	// The graph is structure only, with counts the session already holds:
+	// counting every table here made each return to the workspace wait on a
+	// COUNT(*) per table before anything was drawn.
+	counts, at := sess.CachedCounts()
 	payload := buildGraphPayload(sc, counts)
+	if counts != nil {
+		payload.CountsTakenAt = at.Format(time.RFC3339)
+	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -89,11 +90,14 @@ func (s *Server) handleCountsJSON(w http.ResponseWriter, r *http.Request) {
 		tables = append(tables, n)
 	}
 	sort.Strings(tables)
-	counts, cerr := db.GetTableRowCounts(r.Context(), sess.Conn(), sess.DBType, tables)
-	if cerr != nil {
-		writeError(w, http.StatusInternalServerError, cerr.Error())
+	// Counts are cached per session; ?refresh=1 recounts. Tables whose count
+	// fails are left out: the page keeps them uncounted instead of empty.
+	counts, at := sess.Counts(r.Context(), tables, r.URL.Query().Get("refresh") == "1")
+	if len(counts) == 0 && len(tables) > 0 {
+		writeError(w, http.StatusInternalServerError, "no table could be counted (see the server log)")
 		return
 	}
+	w.Header().Set("X-Counts-Taken-At", at.Format(time.RFC3339))
 	writeJSON(w, http.StatusOK, counts)
 }
 
@@ -218,7 +222,17 @@ func clampQueryInt(r *http.Request, key string, def, min, max int) int {
 	return n
 }
 
-func loadTablePreview(ctx context.Context, conn *sql.DB, dbType, tableName string, columns []string, limit, offset int) (tablePreviewPayload, error) {
+// loadTablePreview reads one page of a table in a read-only transaction that
+// never waits behind a lock.
+func loadTablePreview(ctx context.Context, conn *sql.DB, dbType, tableName string, columns []string, limit, offset int) (payload tablePreviewPayload, err error) {
+	err = db.ReadOnce(ctx, conn, dbType, db.DefaultCountLimits, func(ctx context.Context, q db.Querier) error {
+		payload, err = readTablePreview(ctx, q, dbType, tableName, columns, limit, offset)
+		return err
+	})
+	return payload, err
+}
+
+func readTablePreview(ctx context.Context, conn db.Querier, dbType, tableName string, columns []string, limit, offset int) (tablePreviewPayload, error) {
 	payload := tablePreviewPayload{
 		Table:   tableName,
 		Limit:   limit,

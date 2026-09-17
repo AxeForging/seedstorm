@@ -40,6 +40,10 @@ type SavedConnection struct {
 	Password    string `json:"-" yaml:"password,omitempty"`
 	HasPassword bool   `json:"hasPassword" yaml:"-"`
 
+	// Production marks a database seedstorm must not write to without the
+	// user typing its label back.
+	Production bool `json:"production" yaml:"production,omitempty"`
+
 	CreatedAt time.Time `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
 	UsedAt    time.Time `json:"usedAt,omitempty" yaml:"usedAt,omitempty"`
 }

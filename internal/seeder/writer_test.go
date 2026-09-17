@@ -41,6 +41,8 @@ type recording struct {
 	active map[string]int
 	// overlapSelf records a table that ever had two inserts in flight.
 	overlapSelf map[string]bool
+	// inFlight and peak count inserts running at once across tables.
+	inFlight, peak int
 	// discard keeps no events (benchmarks).
 	discard bool
 }
@@ -104,6 +106,8 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 	if r.active[table] > 1 {
 		r.overlapSelf[table] = true
 	}
+	r.inFlight++
+	r.peak = max(r.peak, r.inFlight)
 	ev := insertEvent{table: table, start: time.Now()}
 	if !r.discard {
 		ev.rows = decodeInsert(query, args)
@@ -124,6 +128,7 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 	}
 	r.mu.Lock()
 	r.active[table]--
+	r.inFlight--
 	ev.end = time.Now()
 	if err == nil && !r.discard {
 		r.events = append(r.events, ev)
@@ -164,6 +169,12 @@ func (r *recording) rowsOf(table string) []map[string]interface{} {
 		out = append(out, e.rows...)
 	}
 	return out
+}
+
+func (r *recording) peakConcurrency() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.peak
 }
 
 func (r *recording) inserts(table string) []insertEvent {
@@ -422,4 +433,27 @@ func TestFill_WorkersSplitAChunkButKeepSelfReferencesWhole(t *testing.T) {
 			t.Fatal("a self-referencing table was split over concurrent writers")
 		}
 	})
+}
+
+// A server with few free connections gets fewer writers, and the run says so
+// instead of failing with "too many connections" part-way through.
+func TestSeed_WritersClampedToTheServersFreeConnections(t *testing.T) {
+	defer func(old func(context.Context, *sql.DB, string) (int, int, error)) { connectionUsage = old }(connectionUsage)
+	connectionUsage = func(context.Context, *sql.DB, string) (int, int, error) { return 20, 16, nil }
+	conn, rec := openRecording(t, map[string]time.Duration{"users": 3 * time.Millisecond, "audit": 3 * time.Millisecond}, nil)
+	var notices []string
+	order := []string{"users", "reviewers", "audit", "posts"}
+	_, err := Seed(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), order, order, SeedOptions{
+		Rows: 4000, BatchSize: 250, ChunkRows: 1000, Workers: 8,
+		OnNotice: func(msg string) { notices = append(notices, msg) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "Using 2 writers instead of 8") {
+		t.Fatalf("notices = %q", notices)
+	}
+	if peak := rec.peakConcurrency(); peak > 2 {
+		t.Fatalf("%d inserts ran at once with 2 writers allowed", peak)
+	}
 }
