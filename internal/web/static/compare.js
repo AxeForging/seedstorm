@@ -399,6 +399,7 @@
       selfRefDepth: Number($("cmp-selfref").value || 0),
       stopOnError: $("cmp-stop").checked,
       previewRows: 3,
+      sourceShapes: $("cmp-shape-source").checked ? sourceShapes() : undefined,
       dryRun,
     };
   }
@@ -440,6 +441,8 @@
       ? `<div class="cmp-callout"><strong>Profile notes</strong><span>${result.issues.map((i) => esc(`${i.path}: ${i.message}`)).join("<br>")}</span></div>`
       : "") + ((result.serverNotices || []).length
       ? `<div class="cmp-callout" data-testid="cmp-plan-server"><strong>Servers</strong><span>${result.serverNotices.map(esc).join("<br>")}</span></div>`
+      : "") + (result.shapedKeys
+      ? `<div class="cmp-callout" data-testid="cmp-plan-shapes"><strong>Relationships shaped</strong><span>${fmt(result.shapedKeys)} foreign ${result.shapedKeys === 1 ? "key gets" : "keys get"} the source's children per parent; the job log shows the result next to the target after the run.</span></div>`
       : "") + (result.sameDatabaseUnchecked
       ? `<div class="cmp-callout" data-testid="cmp-plan-imported-source"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
       : "");
@@ -643,6 +646,11 @@
     exportBox.disabled = !drift?.length;
     if (exportBox.disabled) exportBox.checked = false;
     $("cmp-export-relationships-note").textContent = drift?.length ? `(${drift.length})` : "(compare them first)";
+    const usable = sourceShapes().length;
+    const shapeBox = $("cmp-shape-source");
+    shapeBox.disabled = !usable;
+    if (!usable) shapeBox.checked = false;
+    $("cmp-shape-source-note").textContent = usable ? `(${usable} ${usable === 1 ? "key" : "keys"})` : "(compare relationships first)";
     if (!drift) { body.hidden = true; body.innerHTML = ""; return; }
     body.hidden = false;
     if (!drift.length) {
@@ -662,6 +670,11 @@
     }).join("");
     body.innerHTML = `<p class="cmp-shapes-summary" data-testid="cmp-shapes-summary">${drift.length} ${drift.length === 1 ? "relationship" : "relationships"} · ${counts.same || 0} same · ${counts.differs || 0} differ · ${(counts.source_only || 0) + (counts.target_only || 0)} on one side · ${counts.unknown || 0} unknown · children per parent: avg / p95 / max · parents without children · ~ = estimated</p>
       <div class="cmp-shape-row head" aria-hidden="true"><span>relationship</span><span class="cmp-shape-src">source</span><span class="cmp-shape-tgt">target</span><span class="cmp-shape-status">status</span></div>${rows}`;
+  }
+
+  // sourceShapes are the measured source side of the compared relationships.
+  function sourceShapes() {
+    return (state.report?.relationships || []).map((d) => d.source).filter((s) => s && s.max > 0 && ["ok", "estimated", "skipped: unindexed"].includes(s.outcome));
   }
 
   async function compareShapes() {

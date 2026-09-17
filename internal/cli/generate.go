@@ -134,6 +134,7 @@ func generateCmd() *cli.Command {
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,
+					Shapes:       profile.shapes,
 					OnWarning:    logWarning,
 				},
 				OnTableStart: func(table string) error {

@@ -2,14 +2,18 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
+	"github.com/rs/zerolog"
 )
 
 // RelationshipsRequest measures the active connection's relationship shapes.
@@ -190,4 +194,33 @@ func (s *Server) runCompareRelationships(ctx context.Context, _ *Session, req Co
 	jc.Phase("done")
 	log.Info().Int("same", counts[compare.ShapeSame]).Int("differs", counts[compare.ShapeDiffers]).Int("unknown", counts[compare.ShapeUnknown]).Msg("Relationships compared")
 	return map[string]any{"relationships": drift}, nil
+}
+
+// measureShapes reads shaped keys back after a run that wrote, logging target
+// next to achieved. Failures only warn: the rows are written already.
+func measureShapes(ctx context.Context, log zerolog.Logger, conn *sql.DB, dbType string, sc *schema.Schema, shapes map[string]faker.Shape) []seeder.ShapeResult {
+	if len(shapes) == 0 {
+		return nil
+	}
+	results, err := seeder.MeasureShapes(ctx, conn, dbType, sc, shapes)
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not measure the seeded relationship shapes")
+		return nil
+	}
+	for _, r := range results {
+		a := r.Achieved
+		if a.Outcome != db.OutcomeOK {
+			log.Warn().Str("relationship", r.Key).Str("outcome", string(a.Outcome)).Msg(a.Detail)
+			continue
+		}
+		ev := log.Info()
+		if a.Max > int64(r.Target.Max) {
+			ev = log.Warn()
+		}
+		ev.Str("relationship", r.Key).
+			Str("avg", fmt.Sprintf("%.2f → %.2f", r.Target.Avg, a.Avg)).
+			Str("max", fmt.Sprintf("%d → %d", r.Target.Max, a.Max)).
+			Msg("Relationship shape (target → table now)")
+	}
+	return results
 }

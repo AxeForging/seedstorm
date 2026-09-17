@@ -82,6 +82,21 @@
         <p class="pf-empty muted small" id="pf-ignore-empty">No ignored tables: every table can be written.</p>
       </section>
 
+      <section class="pf-ignore pf-shapes" aria-labelledby="pf-shapes-title" data-testid="pf-shapes">
+        <header class="pf-section-head">
+          <div>
+            <h2 id="pf-shapes-title">Relationships</h2>
+            <p class="muted small">Children per parent for a foreign key (<code>table.column</code>): seed, fill empty and mirror deal parents so no parent gets more than max. Import them from a counts file with relationships.</p>
+          </div>
+        </header>
+        <div class="pf-shapes-import">
+          <label class="btn-ghost pf-file-btn">Import from a counts file…<input type="file" id="pf-shapes-file" data-testid="pf-shapes-file" accept=".json,.yaml,.yml,application/json,text/yaml,text/plain" hidden></label>
+          <span class="small muted" id="pf-shapes-status" data-testid="pf-shapes-status" role="status"></span>
+        </div>
+        <ul class="pf-ignore-list" id="pf-shapes-list"></ul>
+        <p class="pf-empty muted small" id="pf-shapes-empty">No relationships: foreign keys pick parents evenly.</p>
+      </section>
+
       <section class="pf-issues" id="pf-issues" hidden></section>
     </section>
 

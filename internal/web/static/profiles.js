@@ -188,6 +188,7 @@
     $("pf-description").value = state.doc.description || "";
     renderRules();
     renderIgnore();
+    renderShapes();
     renderStatus();
     renderSelect();
     scheduleExplain(0);
@@ -234,6 +235,42 @@
     const note = $("pf-ignored-note");
     note.hidden = !ignored;
     note.textContent = ignored ? `Ignored by ${pattern}: runs never write ${state.table}, so its column rules below never apply.` : "";
+  }
+
+  // ── relationships ───────────────────────────────────────────────────
+  const SHAPE_FIELDS = [["min", 1, 1], ["avg", 0.01, 0], ["max", 1, 1], ["zeroShare", 0.01, 0], ["nullShare", 0.01, 0]];
+  function renderShapes() {
+    const rels = state.doc.relationships || {};
+    const keys = Object.keys(rels).sort();
+    $("pf-shapes-empty").hidden = keys.length > 0;
+    $("pf-shapes-list").innerHTML = keys.map((key) => {
+      const r = rels[key];
+      const inputs = SHAPE_FIELDS.map(([f, step, minv]) => `<label class="pf-shape-field"><span>${f === "zeroShare" ? "no children" : f === "nullShare" ? "NULL" : f}</span><input type="number" inputmode="decimal" step="${step}" min="${minv}" ${f.endsWith("Share") ? 'max="0.99"' : ""} value="${esc(r[f] ?? "")}" data-shape-key="${esc(key)}" data-shape-field="${f}"></label>`).join("");
+      return `<li class="pf-ignore-item pf-shape-item" data-testid="pf-shape-item">
+        <code class="pf-ignore-glob">${esc(key)}</code>
+        <span class="pf-shape-fields">${inputs}${r.histogram?.length ? `<span class="muted small">${r.histogram.length} buckets</span>` : ""}</span>
+        <button type="button" class="btn-ghost pf-ignore-remove" data-shape-remove="${esc(key)}" aria-label="Remove ${esc(key)}">×</button>
+      </li>`;
+    }).join("");
+  }
+
+  async function importShapes(file) {
+    if (!file) return;
+    const status = $("pf-shapes-status");
+    try {
+      const data = await file.text();
+      const res = await fetch("/api/profiles/relationships", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || res.statusText);
+      state.doc.relationships = { ...(state.doc.relationships || {}), ...out.relationships };
+      const n = Object.keys(out.relationships).length;
+      status.textContent = `Imported ${n} ${n === 1 ? "relationship" : "relationships"}` + (out.skipped.length ? ` · skipped ${out.skipped.length} without a measured max: ${out.skipped.join(", ")}` : "");
+      renderShapes();
+      markDirty();
+      scheduleExplain(0);
+    } catch (err) {
+      status.textContent = "Could not import: " + (err.message || err);
+    }
   }
 
   function addIgnore(glob) {
@@ -925,6 +962,25 @@
     $("pf-ignore-list").addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-ignore-index]");
       if (btn) removeIgnore(Number(btn.dataset.ignoreIndex));
+    });
+    $("pf-shapes-file").addEventListener("change", (ev) => { importShapes(ev.target.files?.[0]); ev.target.value = ""; });
+    $("pf-shapes-list").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-shape-remove]");
+      if (!btn) return;
+      delete state.doc.relationships[btn.dataset.shapeRemove];
+      if (!Object.keys(state.doc.relationships).length) delete state.doc.relationships;
+      renderShapes();
+      markDirty();
+    });
+    $("pf-shapes-list").addEventListener("change", (ev) => {
+      const input = ev.target.closest("[data-shape-field]");
+      if (!input) return;
+      const rel = state.doc.relationships?.[input.dataset.shapeKey];
+      if (!rel) return;
+      const n = Number(input.value);
+      if (input.value === "" || !Number.isFinite(n)) delete rel[input.dataset.shapeField];
+      else rel[input.dataset.shapeField] = input.dataset.shapeField === "min" || input.dataset.shapeField === "max" ? Math.round(n) : n;
+      markDirty();
     });
     $("pf-table-ignore").addEventListener("change", (ev) => {
       if (!state.table) return;

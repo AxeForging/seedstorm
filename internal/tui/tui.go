@@ -35,6 +35,7 @@ type seedParams struct {
 	dbType       string
 	dsn          string
 	overrides    faker.Overrides
+	shapes       map[string]faker.Shape
 }
 
 // Model is the top-level TUI model orchestrating the wizard steps.
@@ -264,6 +265,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			dbType:       m.dbType,
 			dsn:          m.dsn,
 			overrides:    m.profile.Overrides,
+			shapes:       m.profile.Shapes,
 		}
 
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)

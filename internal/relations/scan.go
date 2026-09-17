@@ -45,6 +45,8 @@ type Options struct {
 	IncludeUnindexed bool
 	// LargeRows marks child tables above it as Large (0: DefaultLargeRows).
 	LargeRows int64
+	// Only limits the scan to these "child.column" keys (nil: every one).
+	Only map[string]bool
 	// OnEdge is called after each relationship, one call at a time.
 	OnEdge func(done, total int, s Shape)
 }
@@ -94,6 +96,15 @@ func Scan(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, o
 	}
 
 	edges := Edges(sc)
+	if opts.Only != nil {
+		kept := edges[:0]
+		for _, e := range edges {
+			if opts.Only[e.Child+"."+e.Column] {
+				kept = append(kept, e)
+			}
+		}
+		edges = kept
+	}
 	estimates, _ := db.GetEstimatedRowCounts(ctx, conn, dbType)
 	size := func(table string) int64 {
 		if n, ok := estimates[table]; ok && n >= 0 {

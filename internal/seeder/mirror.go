@@ -11,6 +11,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/rules"
 	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/safego"
@@ -62,6 +63,10 @@ type MirrorConfig struct {
 	CountMode compare.CountMode
 	Profile   *rules.RuleSet
 	RunID     string
+	// SourceShapes, when set, shapes the target's foreign keys like the
+	// source's (from a compare or a snapshot file; never scanned here). A
+	// profile's own relationships win for the keys they name.
+	SourceShapes []relations.Shape
 	// OnCount reports snapshot progress: side is "source" or "target".
 	OnCount func(side string, done, total int, table string)
 }
@@ -72,8 +77,10 @@ type MirrorJob struct {
 	Plan      compare.MirrorPlan
 	Schema    *schema.Schema
 	Overrides faker.Overrides
-	Issues    []rules.Issue
-	RunID     string
+	// Shapes are the relationship shapes the run follows (profile + source).
+	Shapes map[string]faker.Shape
+	Issues []rules.Issue
+	RunID  string
 	// SameDatabaseUnchecked is true when a side was a pre-taken snapshot, so
 	// PrepareMirror could not verify that source and target differ.
 	SameDatabaseUnchecked bool
@@ -157,6 +164,18 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 	if job.RunID == "" {
 		job.RunID = rules.NewRunID()
 	}
+	if len(cfg.SourceShapes) > 0 {
+		fromSource, _ := rules.RelationshipsFromShapes(cfg.SourceShapes)
+		job.Shapes = (&rules.RuleSet{Relationships: fromSource}).Shapes(sc)
+	}
+	if shapes := cfg.Profile.Shapes(sc); len(shapes) > 0 {
+		if job.Shapes == nil {
+			job.Shapes = map[string]faker.Shape{}
+		}
+		for k, v := range shapes {
+			job.Shapes[k] = v
+		}
+	}
 	if cfg.Profile != nil {
 		job.Issues = cfg.Profile.Validate(sc)
 		if job.Overrides, err = cfg.Profile.Compile(sc, job.RunID); err != nil {
@@ -194,6 +213,10 @@ func (j *MirrorJob) Preview(perTable int, selfRefDepth int) (map[string][]map[st
 func (j *MirrorJob) Run(ctx context.Context, opts Options, onTruncate func(done, total int, table string)) (Result, error) {
 	gen := j.generateOptions(opts.Generate.SelfRefDepth)
 	gen.OnWarning = opts.Generate.OnWarning
+	if len(gen.Shapes) > 0 {
+		// Fill generates a table in rounds: shapes deal over the whole planned table.
+		gen.ShapeTotals = j.Plan.Counts()
+	}
 	opts.Generate = gen
 	// Refuse tables that cannot be generated before anything is truncated.
 	if err := faker.CheckSeedable(j.Schema, j.Plan.Order, j.Overrides); err != nil {
@@ -214,6 +237,7 @@ func (j *MirrorJob) generateOptions(selfRefDepth int) faker.GenerateOptions {
 		opts.SelfRefDepth = selfRefDepth
 	}
 	opts.Overrides = j.Overrides
+	opts.Shapes = j.Shapes
 	return opts
 }
 

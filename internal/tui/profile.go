@@ -11,6 +11,7 @@ import (
 type Profile struct {
 	Name      string
 	Overrides faker.Overrides
+	Shapes    map[string]faker.Shape
 	TableRows map[string]int
 }
 

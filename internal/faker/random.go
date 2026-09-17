@@ -120,6 +120,8 @@ func (globalSource) Zip() string                    { return gofakeit.Zip() }
 // generator generates values from one random source.
 type generator struct {
 	rnd randomSource
+	// shapes deals shaped foreign keys; nil when the run has no shapes.
+	shapes *shaper
 }
 
 // defaultGen is the single-goroutine generator on the global, seeded source.

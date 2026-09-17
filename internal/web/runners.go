@@ -342,6 +342,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
 		OnNotice:     func(msg string) { log.Warn().Msg(msg) },
@@ -358,6 +359,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		return partialSeedResult(res, targetTables, err), err
 	}
 	finishProgress()
+	var shapeResults []seeder.ShapeResult
+	if !req.DryRun {
+		shapeResults = measureShapes(ctx, log, conn, sess.DBType, sc, profile.shapes)
+	}
 	totalRows := res.Total
 	tableCounts := res.Counts
 	elapsed := time.Since(start).Round(time.Millisecond)
@@ -382,6 +387,9 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	}
 	if len(warnings) > 0 {
 		result["warnings"] = generationWarningsView(warnings)
+	}
+	if shapeResults != nil {
+		result["shapes"] = shapeResults
 	}
 	if req.DryRun {
 		result["output"] = dryRunSQL.String()
@@ -509,6 +517,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    profile.overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
 		OnNotice:     func(msg string) { log.Warn().Msg(msg) },
@@ -525,6 +534,11 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		return partial, err
 	}
 	finishProgress()
+	if !req.DryRun {
+		if shapes := measureShapes(ctx, log, conn, sess.DBType, sc, profile.shapes); shapes != nil {
+			result["shapes"] = shapes
+		}
+	}
 	totalRows := res.Total
 	result["filled"] = totalRows
 	if len(warnings) > 0 {
@@ -596,6 +610,7 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
 		OnTableStart: w.Table,
@@ -640,6 +655,7 @@ type runProfile struct {
 	rules     *rules.RuleSet
 	schema    *schema.Schema
 	overrides faker.Overrides
+	shapes    map[string]faker.Shape
 	tableRows map[string]int
 }
 
@@ -661,7 +677,7 @@ func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string
 		return runProfile{}, err
 	}
 	log.Info().Str("profile", rs.Name).Str("run", runID).Msg("Seed profile applied")
-	return runProfile{rules: rs, schema: sc, overrides: overrides, tableRows: cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows))}, nil
+	return runProfile{rules: rs, schema: sc, overrides: overrides, shapes: rs.Shapes(sc), tableRows: cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows))}, nil
 }
 
 // applyIgnore removes the profile's ignored tables from a run. A kept table

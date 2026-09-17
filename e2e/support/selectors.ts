@@ -145,6 +145,12 @@ export const sel = {
     summary: "cmp-shapes-summary",
     row: "cmp-shape-row",
     exportInclude: "cmp-export-relationships",
+    shapeLikeSource: "cmp-shape-source",
+    planShapes: "cmp-plan-shapes",
+    profileSection: "pf-shapes",
+    profileFile: "pf-shapes-file",
+    profileStatus: "pf-shapes-status",
+    profileItem: "pf-shape-item",
   },
   tuning: {
     open: "ws-recommend",

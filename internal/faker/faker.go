@@ -31,6 +31,12 @@ type GenerateOptions struct {
 	// rows then come in smaller chunks: the first chunk probes the row size
 	// and later ones are sized from it, never above the row cap.
 	ChunkBytes int
+	// Shapes are target children-per-parent distributions keyed by
+	// "table.column" (ShapeKey). Unshaped keys pick parents uniformly.
+	Shapes map[string]Shape
+	// ShapeTotals is each shaped table's total rows when it is generated in
+	// several calls (mirror rounds); without it one call's rows are the total.
+	ShapeTotals map[string]int
 }
 
 type GenerationWarning struct {
@@ -301,6 +307,7 @@ func (gen generator) generateEnumRows(data map[string][]map[string]interface{}, 
 			generated := false
 			for attempt := 0; attempt < 200; attempt++ {
 				var err error
+				gen.shapes.beginRow()
 				row, err = gen.generateRow(table, tableName, generatedPKs, &v, enumCol)
 				if err != nil {
 					return err
@@ -314,6 +321,7 @@ func (gen generator) generateEnumRows(data map[string][]map[string]interface{}, 
 					break
 				}
 				rollbackLastRowPKs(generatedPKs, tableName, table)
+				gen.shapes.undoRow()
 			}
 			if !generated {
 				return fmt.Errorf("could not generate unique composite PK after 200 attempts for table %s (enum=%s, FK pool too small?)", tableName, enumVal)
@@ -332,6 +340,7 @@ func (gen generator) generateStandardRows(data map[string][]map[string]interface
 		generated := false
 		for attempt := 0; attempt < 200; attempt++ {
 			var err error
+			gen.shapes.beginRow()
 			row, err = gen.generateRow(table, tableName, generatedPKs, nil, "")
 			if err != nil {
 				return err
@@ -347,6 +356,7 @@ func (gen generator) generateStandardRows(data map[string][]map[string]interface
 			// Collision detected — discard the PK values just appended and retry.
 			// Roll back the PKs that were added for this row.
 			rollbackLastRowPKs(generatedPKs, tableName, table)
+			gen.shapes.undoRow()
 		}
 		if !generated {
 			return fmt.Errorf("could not generate a unique composite PK after 200 attempts for table %s (FK pool too small?)", tableName)
@@ -543,6 +553,9 @@ func (gen generator) generateValue(col schema.Column, colName, tableName string,
 					return nil, nil
 				}
 				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
+			}
+			if v, ok := gen.shapes.pick(gen.rnd, tableName, colName, pks); ok {
+				return v, nil
 			}
 			return pks[gen.rnd.Number(0, len(pks)-1)], nil
 		}

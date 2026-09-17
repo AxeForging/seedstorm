@@ -268,6 +268,7 @@ func (m GapsModel) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			dbType:       m.dbType,
 			dsn:          m.dsn,
 			overrides:    m.profile.Overrides,
+			shapes:       m.profile.Shapes,
 		}
 		m.execute = newExecute(len(m.review.tables), m.review.dryRun)
 		m.step = gapsStepExecute

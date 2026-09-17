@@ -414,7 +414,7 @@ func (s *seedParams) seedOptions(batchSize int, dryRun bool, onRows func(string,
 	return seeder.SeedOptions{
 		Rows: s.rows, EnumRows: s.enumRows, TableRows: s.tableRows, BatchSize: batchSize, DryRun: dryRun,
 		Workers:  seeder.DefaultWorkers,
-		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides},
+		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides, Shapes: s.shapes},
 		OnRows:   onRows,
 	}
 }

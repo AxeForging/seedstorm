@@ -8,6 +8,7 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
@@ -150,6 +151,9 @@ type MirrorRequest struct {
 	StopOnError    bool              `json:"stopOnError"`
 	DryRun         bool              `json:"dryRun"`
 	PreviewRows    int               `json:"previewRows"`
+	// SourceShapes are the source's relationship shapes (from the compare
+	// report); when set the target's foreign keys are seeded like them.
+	SourceShapes []relations.Shape `json:"sourceShapes,omitempty"`
 	// ConfirmProduction is the target's label, typed to write to a
 	// production connection.
 	ConfirmProduction string `json:"confirmProduction,omitempty"`
@@ -202,8 +206,9 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		Options: compare.MirrorOptions{
 			Mode: mode, Scale: req.Scale, MaxRows: req.MaxRows, ParentRows: req.ParentRows, Tables: req.Tables,
 		},
-		CountMode: counts,
-		Profile:   profile,
+		CountMode:    counts,
+		Profile:      profile,
+		SourceShapes: req.SourceShapes,
 		OnCount: func(side string, done, total int, table string) {
 			jc.Progress(done, total, side+": "+table)
 		},
@@ -221,6 +226,7 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		// A snapshot source cannot be checked against the target.
 		"sameDatabaseUnchecked": job.SameDatabaseUnchecked,
 		"serverNotices":         job.Servers.Notices(),
+		"shapedKeys":            len(job.Shapes),
 	}
 	for _, notice := range job.Servers.Notices() {
 		log.Warn().Msg(notice)
@@ -283,6 +289,9 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 	if runErr != nil {
 		result["failure"] = failureView(runErr)
 		return result, runErr
+	}
+	if shapes := measureShapes(ctx, log, tgtEP.Conn, tgtEP.DBType, job.Schema, job.Shapes); shapes != nil {
+		result["shapes"] = shapes
 	}
 	jc.Phase("done")
 	log.Info().Int64("inserted", run.Inserted).Int64("missing", run.Missing).Msg("Mirror complete")

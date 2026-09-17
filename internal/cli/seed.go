@@ -102,6 +102,7 @@ Use --dry-run to print SQL statements without executing them.`,
 			workersFlag(),
 			genWorkersFlag(),
 			profileFlag(),
+			shapeRowsFlag(),
 			productionFlags()[0],
 			productionFlags()[1],
 		},
@@ -192,9 +193,10 @@ Use --dry-run to print SQL statements without executing them.`,
 				return err
 			}
 
+			derivedRows := deriveShapedRows(cmd, s, sortedTables, rows, tableRows, profile.shapes)
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
-				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, tableRows))
+				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, planCounts(tableRows, derivedRows)))
 				fmt.Println("--- SQL ---")
 			}
 
@@ -229,12 +231,13 @@ Use --dry-run to print SQL statements without executing them.`,
 			}
 			onProgress, onTable := progressLogger(time.Now)
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allTables, sortedTables, seeder.SeedOptions{
-				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
+				Rows: rows, EnumRows: enumRows, TableRows: tableRows, DerivedRows: derivedRows, BatchSize: batchSize, DryRun: dryRun,
 				Workers: workers, OnProgress: onProgress, OnTable: onTable,
 				GenWorkers: genWorkers(cmd), Reproducible: cmd.Int("seed") != 0,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,
+					Shapes:       profile.shapes,
 					OnWarning:    logWarning,
 				},
 				OnRows:   printDryRunSQL(dryRun, dbType),
@@ -257,6 +260,10 @@ Use --dry-run to print SQL statements without executing them.`,
 				Int("total_rows", res.Total).
 				Dur("duration", elapsed).
 				Msg("Seeding complete")
+
+			if !dryRun {
+				logShapeResults(ctx, dbConn, dbType, s, profile.shapes)
+			}
 
 			// Summary
 			for _, tableName := range sortedTables {

@@ -2,6 +2,7 @@ package seeder
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/safego"
+	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
 // ErrNoRelationships: a snapshot endpoint was asked for shapes it does not hold.
@@ -75,4 +77,34 @@ func CompareShapes(ctx context.Context, source, target Endpoint, opts relations.
 		return nil, runerr.OnSide(runerr.SideTarget, tgtErr)
 	}
 	return compare.DiffShapes(src, tgt), nil
+}
+
+// ShapeResult compares a shaped key's target with what the table holds after
+// a run (stored rows included).
+type ShapeResult struct {
+	Key      string          `json:"key"`
+	Target   faker.Shape     `json:"target"`
+	Achieved relations.Shape `json:"achieved"`
+}
+
+// MeasureShapes reads the shaped keys back exactly (read-only, indexed or
+// not: the tables were just written by this run).
+func MeasureShapes(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, shapes map[string]faker.Shape) ([]ShapeResult, error) {
+	if len(shapes) == 0 || conn == nil {
+		return nil, nil
+	}
+	only := make(map[string]bool, len(shapes))
+	for k := range shapes {
+		only[k] = true
+	}
+	measured, err := relations.Scan(ctx, conn, dbType, sc, relations.Options{Mode: relations.Exact, IncludeUnindexed: true, Only: only})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ShapeResult, 0, len(measured))
+	for _, m := range measured {
+		key := faker.ShapeKey(m.Child, m.Column)
+		out = append(out, ShapeResult{Key: key, Target: shapes[key], Achieved: m})
+	}
+	return out, nil
 }

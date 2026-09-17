@@ -227,6 +227,7 @@ Use --fill --dry-run to preview the SQL without executing it.`,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,
+					Shapes:       profile.shapes,
 					OnWarning:    logWarning,
 				},
 				OnRows:   printDryRunSQL(dryRun, dbType),

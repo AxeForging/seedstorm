@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/relations"
+	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -119,4 +122,77 @@ func logScanServer(ctx context.Context, eps ...seeder.Endpoint) {
 			logging.Log.Info().Msg(notice)
 		}
 	}
+}
+
+// shapeRowsFlag derives child row counts from the profile's relationships.
+func shapeRowsFlag() cli.Flag {
+	return &cli.BoolFlag{Name: "shape-rows", Usage: "Derive row counts of shaped child tables from their parents (parents × avg children); --table-rows still wins"}
+}
+
+// deriveShapedRows plans row counts when --shape-rows is set, logging each
+// derived table and every conflict between shaped keys.
+func deriveShapedRows(cmd *cli.Command, sc *schema.Schema, order []string, rows int, tableRows map[string]int, shapes map[string]faker.Shape) map[string]int {
+	if !cmd.Bool("shape-rows") {
+		return nil
+	}
+	log := logging.Log
+	if len(shapes) == 0 {
+		log.Warn().Msg("--shape-rows needs a profile with relationships: row counts unchanged")
+		return nil
+	}
+	derived, notes := faker.DeriveShapedRows(sc, order, rows, tableRows, shapes)
+	for _, n := range notes {
+		log.Warn().Msg(n)
+	}
+	for _, t := range order {
+		if n, ok := derived[t]; ok {
+			log.Info().Str("table", t).Int("rows", n).Msg("Rows derived from relationship shapes")
+		}
+	}
+	return derived
+}
+
+// logShapeResults measures shaped keys after a run and logs target next to
+// achieved. A failed measurement is a warning: the rows are already written.
+func logShapeResults(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, shapes map[string]faker.Shape) {
+	if len(shapes) == 0 {
+		return
+	}
+	log := logging.Log
+	results, err := seeder.MeasureShapes(ctx, conn, dbType, sc, shapes)
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not measure the seeded relationship shapes")
+		return
+	}
+	for _, r := range results {
+		a := r.Achieved
+		if a.Outcome != db.OutcomeOK {
+			log.Warn().Str("relationship", r.Key).Str("outcome", string(a.Outcome)).Msg(a.Detail)
+			continue
+		}
+		ev := log.Info()
+		if a.Max > int64(r.Target.Max) {
+			ev = log.Warn()
+		}
+		ev.Str("relationship", r.Key).
+			Str("avg", fmt.Sprintf("%.2f → %.2f", r.Target.Avg, a.Avg)).
+			Str("max", fmt.Sprintf("%d → %d", r.Target.Max, a.Max)).
+			Str("without_children", fmt.Sprintf("%.0f%% → %.0f%%", r.Target.ZeroShare*100, a.ZeroShare*100)).
+			Msg("Relationship shape (target → table now)")
+	}
+}
+
+// planCounts overlays derived counts under explicit ones, for plan output.
+func planCounts(tableRows, derived map[string]int) map[string]int {
+	if len(derived) == 0 {
+		return tableRows
+	}
+	out := make(map[string]int, len(tableRows)+len(derived))
+	for k, v := range derived {
+		out[k] = v
+	}
+	for k, v := range tableRows {
+		out[k] = v
+	}
+	return out
 }

@@ -24,6 +24,10 @@ type SeedOptions struct {
 	Rows      int
 	EnumRows  int
 	TableRows map[string]int
+	// DerivedRows are row counts planned from relationship shapes
+	// (faker.DeriveShapedRows). Unlike TableRows they keep enum coverage, and
+	// an explicit TableRows entry wins.
+	DerivedRows map[string]int
 	// BatchSize is the most rows per INSERT; SplitBatches may send fewer.
 	BatchSize int
 	// ChunkRows bounds rows generated at once (0: DefaultChunkRows).
@@ -91,7 +95,7 @@ func seedSequential(ctx context.Context, conn *sql.DB, dbType string, stream *fa
 				return tally.result(), err
 			}
 		}
-		count, overridden := faker.TableRowCount(tableName, opts.Rows, opts.TableRows)
+		count, overridden := opts.rowCount(tableName)
 		err := safego.Run("generate "+tableName, func() error {
 			if err := faultinject.Hit(ctx, "generate", tableName); err != nil {
 				return err
@@ -192,7 +196,7 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 				return err
 			}
 		}
-		count, overridden := faker.TableRowCount(tableName, opts.Rows, opts.TableRows)
+		count, overridden := opts.rowCount(tableName)
 		return gen.GenerateChunks(tableName, count, opts.EnumRows, overridden, chunk, opts.Generate, func(rows []map[string]interface{}) error {
 			if opts.OnRows != nil {
 				if err := opts.OnRows(tableName, rows); err != nil {
@@ -392,7 +396,7 @@ func newSeedTally(tables []string, opts SeedOptions) *seedTally {
 	t := &seedTally{opts: opts, index: map[string]int{}, requested: map[string]int64{}, counts: map[string]int{}, tables: len(tables)}
 	for i, name := range tables {
 		t.index[name] = i + 1
-		n, _ := faker.TableRowCount(name, opts.Rows, opts.TableRows)
+		n, _ := opts.rowCount(name)
 		t.requested[name] = int64(n)
 		t.wanted += int64(n)
 	}
@@ -460,4 +464,14 @@ func clampToServer(ctx context.Context, conn *sql.DB, dbType string, writers, ge
 		notice(fmt.Sprintf("Using %d writers instead of %d: the server has %d of %d connections in use", clamped, writers, used, maxConns))
 	}
 	return clamped
+}
+
+// rowCount is a table's planned rows: TableRows, then DerivedRows, then Rows.
+// overridden (TableRows only) turns off enum coverage rows.
+func (opts SeedOptions) rowCount(table string) (int, bool) {
+	count, overridden := faker.TableRowCount(table, opts.Rows, opts.TableRows)
+	if n, ok := opts.DerivedRows[table]; ok && !overridden {
+		return n, false
+	}
+	return count, overridden
 }

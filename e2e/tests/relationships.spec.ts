@@ -12,6 +12,7 @@ const cmp = sel.compare;
 // 1,000 customers with 3 orders and 200 with 2 (avg 2.83, p95 3, max 3). The
 // key has no index on Postgres, so it is only scanned when asked.
 test("analyze relationships, export them and compare them with another database", async ({ page }) => {
+  let exported = "";
   await connectPostgres(page, DB.tgt);
   await connectPostgres(page, DB.src);
   await openWorkspace(page, 2);
@@ -64,5 +65,22 @@ test("analyze relationships, export them and compare them with another database"
     await expect(dialog.getByTestId(cmp.exportPreview)).not.toContainText("relationships:");
     await dialog.getByTestId(rel.exportInclude).check();
     await expect(dialog.getByTestId(cmp.exportPreview)).toContainText(/relationships:[\s\S]*max: 3/);
+    exported = (await dialog.getByTestId(cmp.exportPreview).textContent()) || "";
+    await dialog.getByTestId(cmp.exportClose).click();
+  });
+
+  await test.step("the mirror plan shapes keys like the source", async () => {
+    const box = page.getByTestId(rel.shapeLikeSource);
+    await expect(box).toBeEnabled();
+    await box.check();
+    await page.getByTestId(cmp.plan).click();
+    await expect(page.getByTestId(rel.planShapes)).toContainText("1 foreign key gets the source's children per parent", { timeout: 30_000 });
+  });
+
+  await test.step("a profile imports the relationships from the exported file", async () => {
+    await page.goto("/profiles");
+    await page.getByTestId(rel.profileFile).setInputFiles({ name: "source-counts.yaml", mimeType: "text/yaml", buffer: Buffer.from(exported) });
+    await expect(page.getByTestId(rel.profileStatus)).toHaveText("Imported 1 relationship");
+    await expect(page.getByTestId(rel.profileItem)).toContainText("orders.customer_id");
   });
 });

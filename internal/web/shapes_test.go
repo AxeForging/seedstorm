@@ -99,3 +99,36 @@ func TestSnapshotsAPI_RelationshipsOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("snapshot export without the flag kept shapes: %v", out["content"])
 	}
 }
+
+// A counts file with relationships becomes profile relationships; shapes
+// without a measured max are listed as skipped, and a file without any is refused.
+func TestProfileRelationships_FromACountsFile(t *testing.T) {
+	s := profileServer(t)
+	s.sessions.sessions["sess-snap"] = &Session{ID: "sess-snap", DBType: "pgx"}
+	snap := compare.Snapshot{Label: "prod", DBType: "pgx", TakenAt: time.Now().UTC(), Tables: map[string]compare.TableStat{"orders": {Rows: 10}}, Relationships: []relations.Shape{
+		{Child: "orders", Column: "user_id", Parent: "users", Min: 1, Avg: 2.5, Max: 9, ZeroShare: 0.2, Outcome: db.OutcomeOK},
+		{Child: "orders", Column: "coupon_id", Parent: "coupons", Avg: 3, Max: -1, Outcome: relations.OutcomeEstimated},
+	}}
+	data, err := compare.EncodeSnapshot(snap, compare.FormatYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, out := snapshotCall(t, s, "/api/profiles/relationships", map[string]any{"data": string(data)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body)
+	}
+	rels := out["relationships"].(map[string]any)
+	if r := rels["orders.user_id"].(map[string]any); len(rels) != 1 || r["max"].(float64) != 9 || r["zeroShare"].(float64) != 0.2 {
+		t.Fatalf("relationships = %v", rels)
+	}
+	if skipped := out["skipped"].([]any); len(skipped) != 1 || skipped[0] != "orders.coupon_id" {
+		t.Fatalf("skipped = %v", out["skipped"])
+	}
+
+	snap.Relationships = nil
+	data, _ = compare.EncodeSnapshot(snap, compare.FormatYAML)
+	rec, out = snapshotCall(t, s, "/api/profiles/relationships", map[string]any{"data": string(data)})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(out["error"].(string), "no relationships") {
+		t.Fatalf("counts-only file = %d %v", rec.Code, out)
+	}
+}

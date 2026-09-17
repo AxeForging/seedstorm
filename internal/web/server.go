@@ -146,6 +146,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/profiles/explain", s.handleProfileExplain)
 	s.mux.HandleFunc("/api/profiles/yaml", s.handleProfileYAML)
 	s.mux.HandleFunc("/api/profiles/example", s.handleProfileExample)
+	s.mux.HandleFunc("/api/profiles/relationships", s.handleProfileRelationships)
 }
 
 // loadTemplates parses each page template as its own template set, with the

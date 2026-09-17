@@ -127,6 +127,19 @@ func TableRowCount(tableName string, rows int, tableRows map[string]int) (count 
 func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOverride bool, chunk int, opts GenerateOptions, emit func([]map[string]interface{}) error) error {
 	opts = normalizeOptions(opts)
 	table := g.sc.Tables[tableName]
+	if len(opts.Shapes) > 0 {
+		if g.gen.shapes == nil {
+			g.gen.shapes = newShaper()
+		}
+		total := rows
+		if enumCol, enumVals := findEnumColumn(withoutColumns(table, opts.Overrides[tableName])); enumCol != "" && enumRows > 0 && !hasRowOverride {
+			total = len(enumVals) * enumRows
+		}
+		if t, ok := opts.ShapeTotals[tableName]; ok && t > 0 {
+			total = t
+		}
+		g.gen.shapes.beginTable(g.sc, tableName, total, opts)
+	}
 	if chunk <= 0 {
 		chunk = math.MaxInt
 	}
@@ -290,6 +303,7 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 	// self-references can point at them.
 	if kept, dropped := g.gen.enforceUniqueGroups(rows, table, opts.Overrides[tableName], existing.uniqueFor(tableName)); len(dropped) > 0 {
 		requested := len(rows)
+		g.gen.shapes.returnRows(tableName, droppedRows(rows, kept))
 		rows = kept
 		rebuildPKPool(g.pks, tableName, table, preloaded, kept)
 		if opts.OnWarning != nil {
@@ -377,7 +391,8 @@ func (g *Stream) ForkTable(tableName string) *Stream {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	child := &Stream{
-		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, ctx: g.ctx, sampled: g.sampled, gen: g.gen,
+		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, ctx: g.ctx, sampled: g.sampled,
+		gen:       generator{rnd: g.gen.rnd, shapes: g.gen.shapes.fork(tableName)},
 		pks:       make(map[string][]interface{}),
 		cursor:    map[string]int{tableName: g.cursor[tableName]},
 		sinceDraw: map[string]int{tableName: g.sinceDraw[tableName]},
@@ -411,7 +426,9 @@ func (g *Stream) ForkTable(tableName string) *Stream {
 // on its own goroutine never waits on the global source's lock. Output is then
 // not reproducible by seed, which is why only concurrent generation uses it.
 func (g *Stream) UseOwnRandom() {
+	shapes := g.gen.shapes
 	g.gen = privateGenerator()
+	g.gen.shapes = shapes
 }
 
 // MergeTable records what a fork generated for tableName (its key pool, junction

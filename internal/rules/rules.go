@@ -17,7 +17,8 @@ import (
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
-// Version is the rule file format version this build reads and writes.
+// Version is the rule file format version written without relationships;
+// this build reads up to versionRelationships.
 const Version = 1
 
 // RuleSet is a complete rules document.
@@ -30,6 +31,9 @@ type RuleSet struct {
 	// Ignore lists table globs (case-insensitive, path.Match syntax) that no
 	// run may write: seed, gaps, generate and mirror all leave them untouched.
 	Ignore []string `json:"ignore,omitempty" yaml:"ignore,omitempty"`
+	// Relationships shapes foreign keys, keyed by "table.column": how many
+	// children each parent gets. A profile with them is version 2.
+	Relationships map[string]Relationship `json:"relationships,omitempty" yaml:"relationships,omitempty"`
 }
 
 // Rule applies an action to every column matching the table and column globs.
@@ -135,9 +139,7 @@ func Load(filePath string) (*RuleSet, error) {
 // Marshal encodes the rule set as YAML.
 func (rs *RuleSet) Marshal() ([]byte, error) {
 	out := *rs
-	if out.Version == 0 {
-		out.Version = Version
-	}
+	out.Version = FormatVersion(&out)
 	return yaml.Marshal(out)
 }
 
@@ -208,8 +210,8 @@ func (rs *RuleSet) validateStructure() []Issue {
 	add := func(sev Severity, p, format string, args ...interface{}) {
 		issues = append(issues, Issue{Severity: sev, Path: p, Message: fmt.Sprintf(format, args...)})
 	}
-	if rs.Version > Version {
-		add(SeverityError, "version", "version %d is newer than this seedstorm supports (%d)", rs.Version, Version)
+	if rs.Version > versionRelationships {
+		add(SeverityError, "version", "version %d is newer than this seedstorm supports (%d)", rs.Version, versionRelationships)
 	}
 	for i, r := range rs.Rules {
 		p := fmt.Sprintf("rules[%d]", i)
@@ -239,6 +241,7 @@ func (rs *RuleSet) validateStructure() []Issue {
 		}
 	}
 	issues = append(issues, rs.validateIgnoreStructure()...)
+	issues = append(issues, rs.validateRelationshipsStructure()...)
 	return issues
 }
 
