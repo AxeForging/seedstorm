@@ -77,8 +77,10 @@ children lowered`, or fewer parents with children. More rows than planned
 (enum coverage) pick parents evenly and are reported. After a run that writes,
 the achieved shape is measured and logged next to the target.
 
-Not shaped (validation warns with the reason): self-references, junction
-tables whose key is made of foreign keys, key columns. Parents above 500,000
+Not shaped (every run names them with the reason, and the profile validation
+warns too): self-references, junction tables whose key is made of foreign keys,
+and foreign keys that are part of the primary key. Real schemas hit this often:
+on Keycloak's 87 tables, 29 of 67 measured keys are shaped. Parents above 500,000
 rows are shaped over the sample of parents seedstorm keeps, so the shape is
 approximate for them.
 

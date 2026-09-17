@@ -442,7 +442,7 @@
       : "") + ((result.serverNotices || []).length
       ? `<div class="cmp-callout" data-testid="cmp-plan-server"><strong>Servers</strong><span>${result.serverNotices.map(esc).join("<br>")}</span></div>`
       : "") + (result.shapedKeys
-      ? `<div class="cmp-callout" data-testid="cmp-plan-shapes"><strong>Relationships shaped</strong><span>${fmt(result.shapedKeys)} foreign ${result.shapedKeys === 1 ? "key gets" : "keys get"} the source's children per parent; the job log shows the result next to the target after the run.</span></div>`
+      ? `<div class="cmp-callout" data-testid="cmp-plan-shapes"><strong>Relationships shaped</strong><span>${fmt(result.shapedKeys)} foreign ${result.shapedKeys === 1 ? "key gets" : "keys get"} the source's children per parent; the job log shows the result next to the target after the run.${(result.shapesSkipped || []).length ? ` ${result.shapesSkipped.length} cannot be shaped in this schema (junction keys, key columns) and are spread evenly — see the log.` : ""}</span></div>`
       : "") + (result.sameDatabaseUnchecked
       ? `<div class="cmp-callout" data-testid="cmp-plan-imported-source"><strong>Source is an imported counts file</strong><span>seedstorm cannot check that the target is a different database. Make sure ${esc(result.target)} is the one you mean to write.</span></div>`
       : "");

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
@@ -79,8 +80,11 @@ type MirrorJob struct {
 	Overrides faker.Overrides
 	// Shapes are the relationship shapes the run follows (profile + source).
 	Shapes map[string]faker.Shape
-	Issues []rules.Issue
-	RunID  string
+	// ShapesSkipped names the measured shapes this schema cannot follow, with
+	// the reason for each (junction keys, key columns, self-references).
+	ShapesSkipped []string
+	Issues        []rules.Issue
+	RunID         string
 	// SameDatabaseUnchecked is true when a side was a pre-taken snapshot, so
 	// PrepareMirror could not verify that source and target differ.
 	SameDatabaseUnchecked bool
@@ -165,8 +169,7 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 		job.RunID = rules.NewRunID()
 	}
 	if len(cfg.SourceShapes) > 0 {
-		fromSource, _ := rules.RelationshipsFromShapes(cfg.SourceShapes)
-		job.Shapes = (&rules.RuleSet{Relationships: fromSource}).Shapes(sc)
+		job.Shapes, job.ShapesSkipped = shapesForSchema(sc, cfg.SourceShapes)
 	}
 	if shapes := cfg.Profile.Shapes(sc); len(shapes) > 0 {
 		if job.Shapes == nil {
@@ -271,4 +274,24 @@ func Preview(conn *sql.DB, dbType string, sc *schema.Schema, order []string, cou
 	}
 	sort.Strings(preload)
 	return faker.GenerateFilteredWithOptions(sc, preload, order, 0, 0, sample, conn, dbType, gen)
+}
+
+// shapesForSchema compiles measured shapes for sc: the ones it can follow, and
+// a line per shape it cannot, with the reason. A mirror that silently seeded
+// half the keys evenly would look like the shapes did not work.
+func shapesForSchema(sc *schema.Schema, measured []relations.Shape) (map[string]faker.Shape, []string) {
+	fromSource, unmeasured := rules.RelationshipsFromShapes(measured)
+	rs := &rules.RuleSet{Relationships: fromSource}
+	applied := rs.Shapes(sc)
+	var skipped []string
+	for _, key := range unmeasured {
+		skipped = append(skipped, key+": not measured on the source")
+	}
+	for _, issue := range rs.Validate(sc) {
+		if key, ok := strings.CutPrefix(issue.Path, "relationships."); ok {
+			skipped = append(skipped, key+": "+strings.TrimPrefix(issue.Message, "not shaped: "))
+		}
+	}
+	sort.Strings(skipped)
+	return applied, skipped
 }

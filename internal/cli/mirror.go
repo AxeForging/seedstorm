@@ -146,6 +146,12 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			if len(job.Shapes) > 0 {
 				log.Info().Int("relationships", len(job.Shapes)).Msg("Relationship shapes applied")
 			}
+			for _, skipped := range job.ShapesSkipped {
+				log.Warn().Msg("Relationship not shaped: " + skipped)
+			}
+			if n := len(job.ShapesSkipped); n > 0 {
+				log.Warn().Int("not_shaped", n).Int("shaped", len(job.Shapes)).Msg("Some measured relationships cannot be shaped in this schema; their keys are spread evenly")
+			}
 
 			if cmd.Bool("interactive") {
 				return tui.RunMirror(ctx, job, runOpts, cmd.Int("preview-rows"), cmd.Bool("dry-run"))

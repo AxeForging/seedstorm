@@ -10,6 +10,8 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
+	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
 func stubServers(t *testing.T, byConn map[*sql.DB]db.ServerInfo) {
@@ -106,5 +108,31 @@ func TestRelateServers_MySQLReadOnlyWarnsButSuperReadOnlyRefuses(t *testing.T) {
 	_, err := PrepareMirror(context.Background(), Endpoint{Conn: src, DBType: "mysql"}, Endpoint{Conn: superReadOnly, DBType: "mysql"}, MirrorConfig{})
 	if !errors.Is(err, ErrTargetReplica) {
 		t.Fatalf("super_read_only target = %v, want ErrTargetReplica", err)
+	}
+}
+
+// Shapes measured on a source do not all apply: junction keys and key columns
+// are not shaped in v1. The plan must say which ones were dropped and why
+// instead of quietly seeding them evenly (Keycloak: 42 of 67).
+func TestPrepareMirror_ReportsShapesItCannotApply(t *testing.T) {
+	sc := &schema.Schema{Tables: map[string]schema.Table{
+		"users":  {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}}},
+		"orders": {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}, "user_id": {Type: "int", FK: "users.id"}}},
+		"user_roles": {Columns: map[string]schema.Column{
+			"user_id": {Type: "int", PK: true, FK: "users.id"},
+			"role_id": {Type: "int", PK: true, FK: "roles.id"},
+		}},
+		"roles": {Columns: map[string]schema.Column{"id": {Type: "int", PK: true}}},
+	}}
+	shapes := []relations.Shape{
+		{Child: "orders", Column: "user_id", Parent: "users", Min: 1, Avg: 2, Max: 5, Outcome: db.OutcomeOK},
+		{Child: "user_roles", Column: "user_id", Parent: "users", Min: 1, Avg: 2, Max: 5, Outcome: db.OutcomeOK},
+	}
+	applied, skipped := shapesForSchema(sc, shapes)
+	if len(applied) != 1 || applied["orders.user_id"].Max != 5 {
+		t.Fatalf("applied = %v", applied)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0], "user_roles.user_id") || !strings.Contains(skipped[0], "junction") {
+		t.Fatalf("skipped = %v, want user_roles.user_id with its reason", skipped)
 	}
 }

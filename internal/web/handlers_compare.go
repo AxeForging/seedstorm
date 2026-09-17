@@ -227,9 +227,13 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		"sameDatabaseUnchecked": job.SameDatabaseUnchecked,
 		"serverNotices":         job.Servers.Notices(),
 		"shapedKeys":            len(job.Shapes),
+		"shapesSkipped":         job.ShapesSkipped,
 	}
 	for _, notice := range job.Servers.Notices() {
 		log.Warn().Msg(notice)
+	}
+	for _, skipped := range job.ShapesSkipped {
+		log.Warn().Msg("Relationship not shaped: " + skipped)
 	}
 	if job.SameDatabaseUnchecked {
 		log.Warn().Msg("Source is an imported counts file: cannot check that source and target are different databases")
