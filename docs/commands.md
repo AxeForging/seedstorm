@@ -183,7 +183,7 @@ info   Rows derived from relationship shapes rows=14000 table=orders
 info   Relationship shape (target → table now) avg="4.00 → 4.00" max="25 → 25" relationship=orders.account_id without_children="30% → 30%"
 ```
 
-Shapes that cannot fit the planned rows are adjusted with a warning instead of looping (`14000 rows over 500 parents do not fit max 25: max raised to 28`). Self-references and junction keys are not shaped (reported). Parent tables above 500,000 rows are shaped over the sampled parents, so the shape is approximate there.
+Shapes that cannot fit the planned rows are adjusted with a warning instead of looping (`14000 rows over 500 parents do not fit max 25: max raised to 28`). Self-references and junction keys are not shaped (reported). A parent table above 500,000 rows is kept as a sample: children are dealt a round at a time over each sample (the run says so), and seeding against a live database rotates the sample so the whole table gets its share.
 
 Any `--rows` is safe: rows are generated and written 20,000 at a time, Postgres takes each chunk through `COPY`, and memory stays flat (600k rows on Postgres: 7s, under 100MB). A dry run prints the SQL the same way.
 

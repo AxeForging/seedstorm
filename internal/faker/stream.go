@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"math"
 	"sync"
 
@@ -29,6 +30,10 @@ type Stream struct {
 	ctx context.Context
 	// sampled marks preloaded tables whose pool is a sample of the stored keys.
 	sampled map[string]bool
+	// capped marks tables this run generated past poolLimit, whose pool is
+	// therefore a sample too. Kept per stream (forks copy and merge it) so
+	// generators never write a shared map.
+	capped map[string]bool
 	// sinceDraw counts rows generated per table since its parents' samples
 	// were last drawn.
 	sinceDraw map[string]int
@@ -57,7 +62,8 @@ func NewStreamContext(ctx context.Context, s *schema.Schema, allTables, targetTa
 	}
 	g := &Stream{
 		sc: s, pks: make(map[string][]interface{}), cursor: make(map[string]int),
-		conn: conn, dbType: dbType, ctx: ctx, sampled: make(map[string]bool), sinceDraw: make(map[string]int), offset: make(map[string]int),
+		conn: conn, dbType: dbType, ctx: ctx, sampled: make(map[string]bool), capped: make(map[string]bool),
+		sinceDraw: make(map[string]int), offset: make(map[string]int),
 		gen: defaultGen, refCols: referencedColumns(s),
 	}
 	for table, cols := range g.refCols {
@@ -138,7 +144,7 @@ func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOver
 		if t, ok := opts.ShapeTotals[tableName]; ok && t > 0 {
 			total = t
 		}
-		g.gen.shapes.beginTable(g.sc, tableName, total, opts)
+		g.gen.shapes.beginTable(g.sc, tableName, total, g.sampledParents(table), opts)
 	}
 	if chunk <= 0 {
 		chunk = math.MaxInt
@@ -316,6 +322,10 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 	existing.record(table, tableName, rows)
 	g.recordReferencedValues(tableName, rows)
 	g.sinceDraw[tableName] += len(rows)
+	if len(g.pks[tableName]) > poolLimit {
+		// From here the pool is a sample of this table's keys.
+		g.capped[tableName] = true
+	}
 	g.pks[tableName] = capPool(g.pks[tableName], poolLimit, g.gen.rnd)
 	return rows, nil
 }
@@ -392,6 +402,7 @@ func (g *Stream) ForkTable(tableName string) *Stream {
 	defer g.mu.Unlock()
 	child := &Stream{
 		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, ctx: g.ctx, sampled: g.sampled,
+		capped:    maps.Clone(g.capped),
 		gen:       generator{rnd: g.gen.rnd, shapes: g.gen.shapes.fork(tableName)},
 		pks:       make(map[string][]interface{}),
 		cursor:    map[string]int{tableName: g.cursor[tableName]},
@@ -443,6 +454,9 @@ func (g *Stream) MergeTable(child *Stream, tableName string) {
 		key := referencePoolKey(tableName, col)
 		g.pks[key] = child.pks[key]
 	}
+	if child.capped[tableName] {
+		g.capped[tableName] = true
+	}
 	g.cursor[tableName] = child.cursor[tableName]
 	g.sinceDraw[tableName] = child.sinceDraw[tableName]
 	g.offset[tableName] = child.offset[tableName]
@@ -482,4 +496,18 @@ func (g *Stream) queryReferencedValues(tables []string) error {
 		}
 	}
 	return nil
+}
+
+// sampledParents reports, per parent table of one table's foreign keys,
+// whether its key pool holds a sample rather than every key.
+func (g *Stream) sampledParents(table schema.Table) map[string]bool {
+	out := map[string]bool{}
+	for _, colName := range sortedColumnNames(table) {
+		parent, _ := splitFK(table.Columns[colName].FK)
+		if parent == "" {
+			continue
+		}
+		out[parent] = g.sampled[parent] || g.capped[parent]
+	}
+	return out
 }

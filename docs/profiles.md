@@ -80,9 +80,11 @@ the achieved shape is measured and logged next to the target.
 Not shaped (every run names them with the reason, and the profile validation
 warns too): self-references, junction tables whose key is made of foreign keys,
 and foreign keys that are part of the primary key. Real schemas hit this often:
-on Keycloak's 87 tables, 29 of 67 measured keys are shaped. Parents above 500,000
-rows are shaped over the sample of parents seedstorm keeps, so the shape is
-approximate for them.
+on Keycloak's 87 tables, 29 of 67 measured keys are shaped. A parent table above 500,000 rows is held as a
+sample: children are then dealt a round at a time over each sample, and the run
+says so. Seeding against a live database rotates the sample, so the whole
+parent table gets its share; `generate` (no connection) can only reach the
+parents in the sample.
 
 Where shapes come from:
 

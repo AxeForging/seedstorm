@@ -204,7 +204,7 @@ func TestShaper_UndoAndReturnRestoreSlots(t *testing.T) {
 	sc := shapeSchema()
 	s := newShaper()
 	opts := GenerateOptions{Shapes: map[string]Shape{"orders.customer_id": {Min: 2, Avg: 2, Max: 2}, "orders.coupon_id": {Min: 1, Avg: 1, Max: 1, NullShare: 0.5}}}
-	s.beginTable(sc, "orders", 4, opts)
+	s.beginTable(sc, "orders", 4, nil, opts)
 	pool := []interface{}{int64(1), int64(2)}
 	s.beginRow()
 	v, ok := s.pick(defaultGen.rnd, "orders", "customer_id", pool)

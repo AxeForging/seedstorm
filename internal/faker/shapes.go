@@ -78,7 +78,9 @@ func newShaper() *shaper {
 
 // beginTable prepares the table's shaped edges for total rows (the whole
 // table, across chunks and calls). Edges that cannot be shaped are reported.
-func (s *shaper) beginTable(sc *schema.Schema, tableName string, total int, opts GenerateOptions) {
+// beginTable prepares the shaped edges of tableName for total rows. sampled
+// names parent tables whose key pool is a sample of a larger table.
+func (s *shaper) beginTable(sc *schema.Schema, tableName string, total int, sampled map[string]bool, opts GenerateOptions) {
 	if s == nil || s.begun[tableName] {
 		return
 	}
@@ -101,7 +103,12 @@ func (s *shaper) beginTable(sc *schema.Schema, tableName string, total int, opts
 			continue
 		}
 		col := table.Columns[colName]
-		s.edges[key] = &edgeDealer{key: key, table: tableName, shape: shape, nullable: col.Nullable, total: total, warn: func(msg string) { warnShape(opts, tableName, msg) }}
+		parent, _ := splitFK(col.FK)
+		s.edges[key] = &edgeDealer{
+			key: key, table: tableName, shape: shape, nullable: col.Nullable, total: total,
+			sampledParent: sampled[parent],
+			warn:          func(msg string) { warnShape(opts, tableName, msg) },
+		}
 	}
 }
 
@@ -205,16 +212,23 @@ type edgeDealer struct {
 	total    int
 	warn     func(string)
 
-	pool      []interface{}
-	degree    []int32
-	remain    []int32
-	tree      []int64
-	slots     int64
-	rowsLeft  int64
-	nullsLeft int64
-	overflow  int64
-	index     map[string]int
-	approx    bool
+	// sampledParent means the pool holds a sample of a larger parent table:
+	// rows are then dealt a round at a time, sized to the sample, instead of
+	// crowding every child onto the sampled parents.
+	sampledParent bool
+	pool          []interface{}
+	degree        []int32
+	remain        []int32
+	tree          []int64
+	slots         int64
+	rowsLeft      int64
+	nullsLeft     int64
+	overflow      int64
+	index         map[string]int
+	approx        bool
+	// dealt marks the first deal: later rounds repeat its adjustments, which
+	// the user has already been told about.
+	dealt bool
 }
 
 // ensure deals degrees over pool, again when the pool changed (a parent
@@ -226,21 +240,37 @@ func (e *edgeDealer) ensure(rnd randomSource, pool []interface{}) {
 	rows := int64(e.total)
 	if e.pool != nil {
 		rows = max(e.rowsLeft, 0)
-		if !e.approx {
-			e.approx = true
-			e.warn(e.key + ": the parent sample changed during the run, the shape is approximate")
+	}
+	if e.sampledParent {
+		// Only this sample's share of the children: the rest go to the parents
+		// of later samples (redrawParents rotates them), so each parent keeps
+		// the shape instead of absorbing the whole table's children.
+		if round := e.roundRows(len(pool)); round < rows {
+			rows = round
+			if !e.approx {
+				e.approx = true
+				e.warn(e.key + ": the parent table is larger than the key pool, so the shape is dealt over each sample of parents in turn")
+			}
 		}
 	}
 	e.pool, e.index = pool, nil
+	e.deal(rnd, rows)
+}
+
+// deal gives every parent in the pool a degree for the next rows children.
+func (e *edgeDealer) deal(rnd randomSource, rows int64) {
 	e.rowsLeft = rows
 	e.nullsLeft = 0
 	if e.nullable {
 		e.nullsLeft = int64(math.Round(e.shape.NullShare * float64(rows)))
 	}
 	slots := rows - e.nullsLeft
-	degrees, notes := dealDegrees(rnd, len(pool), slots, e.shape)
-	for _, n := range notes {
-		e.warn(e.key + ": " + n)
+	degrees, notes := dealDegrees(rnd, len(e.pool), slots, e.shape)
+	if !e.dealt {
+		e.dealt = true
+		for _, n := range notes {
+			e.warn(e.key + ": " + n)
+		}
 	}
 	e.degree = degrees
 	e.remain = append([]int32(nil), degrees...)
@@ -250,6 +280,20 @@ func (e *edgeDealer) ensure(rnd randomSource, pool []interface{}) {
 		e.add(i, int64(d))
 		e.slots += int64(d)
 	}
+}
+
+// roundRows is how many children a sample of n parents should take: the
+// shape's average over the parents that have children, plus their NULL share.
+func (e *edgeDealer) roundRows(n int) int64 {
+	avg := e.shape.Avg
+	if avg <= 0 {
+		avg = float64(max(e.shape.Min, 1))
+	}
+	rows := float64(n) * (1 - e.shape.ZeroShare) * avg
+	if e.nullable && e.shape.NullShare > 0 && e.shape.NullShare < 1 {
+		rows /= 1 - e.shape.NullShare
+	}
+	return max(int64(math.Round(rows)), 1)
 }
 
 func samePool(a, b []interface{}) bool {
@@ -265,6 +309,11 @@ func (e *edgeDealer) draw(rnd randomSource) int {
 		return -1
 	}
 	e.rowsLeft--
+	if e.slots <= 0 && e.sampledParent {
+		// This sample's round is used up and no new sample arrived: deal
+		// another round over the parents at hand rather than crowding them.
+		e.deal(rnd, e.roundRows(len(e.pool)))
+	}
 	if e.slots <= 0 {
 		if e.overflow == 0 {
 			e.warn(e.key + ": more rows than the shape planned; extra rows pick parents uniformly")
