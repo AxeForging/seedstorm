@@ -10,7 +10,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/db"
 )
 
-// Assertion 7: the read safeguards behave on the smallest managed instance as
+// The read safeguards behave on the smallest managed instance as
 // they do on an unconstrained server.
 func TestLoadsim_ReadSafeguardsOnTheSmallestInstance(t *testing.T) {
 	p := loadsimProfiles["cloudsql-micro"]

@@ -69,7 +69,7 @@ func hostDSN(e engine, port int, db string) string {
 	return fmt.Sprintf("seedstorm:seedstorm@tcp(127.0.0.1:%d)/%s?parseTime=true", port, db)
 }
 
-// Assertion 1: inside a container limited to 2 CPUs and 512MB, seedstorm sees
+// Inside a container limited to 2 CPUs and 512MB, seedstorm sees
 // those limits, not the host's, and never runs more generators than 2.
 func TestLoadsim_DetectsContainerLimits(t *testing.T) {
 	requireHeadroom(t, 2048)
@@ -93,7 +93,7 @@ func TestLoadsim_DetectsContainerLimits(t *testing.T) {
 	}
 }
 
-// Assertion 3: a server with few free connections gets fewer writers, says so,
+// A server with few free connections gets fewer writers, says so,
 // and the run completes instead of failing with too many connections.
 func TestLoadsim_FewFreeConnectionsClampWriters(t *testing.T) {
 	requireHeadroom(t, 2048)
@@ -131,7 +131,7 @@ func TestLoadsim_FewFreeConnectionsClampWriters(t *testing.T) {
 	}
 }
 
-// Assertion 2: a database whose disk fills up ends the run with a clear error
+// A database whose disk fills up ends the run with a clear error
 // naming the table, and nothing hangs.
 func TestLoadsim_FullDiskFailsClearly(t *testing.T) {
 	requireHeadroom(t, 3072)
@@ -161,7 +161,7 @@ func TestLoadsim_FullDiskFailsClearly(t *testing.T) {
 	_ = low
 }
 
-// Assertion 4: seedstorm itself stays within a 256MB container while seeding a
+// Seedstorm itself stays within a 256MB container while seeding a
 // million rows.
 func TestLoadsim_SeedStaysUnderAMemoryLimit(t *testing.T) {
 	requireHeadroom(t, 2048)

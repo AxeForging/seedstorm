@@ -4,7 +4,7 @@ package integration_test
 
 // Database profiles modelled on managed Cloud SQL instances. Server settings
 // that Cloud SQL derives from memory are set explicitly, never left to the
-// container's defaults (docs/specs 004, D13).
+// container's defaults.
 
 type loadsimProfile struct {
 	name   string
