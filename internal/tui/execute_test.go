@@ -2,9 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -484,5 +486,42 @@ func TestStartDryRun_usesPerTableRowOverrides(t *testing.T) {
 	}
 	if got["users"] != 2 || got["orders"] != 5 {
 		t.Fatalf("rows by table = %+v, want users=2 orders=5", got)
+	}
+}
+
+// ── progress while seeding ──────────────────────────────────────────────────
+
+// The running view used to stay at "0/N tables, 0%" for the whole run: no
+// progress ever reached it. Progress messages move it, with rows and rate.
+func TestExecute_progressMessagesMoveTheRunningView(t *testing.T) {
+	m := newExecute(3, false)
+	m.events = make(chan tea.Msg, 1)
+	m.startedAt = time.Now().Add(-10 * time.Second)
+	updated, cmd := m.Update(seedProgressMsg{Table: "orders", TableIndex: 2, Tables: 3, RowsDone: 12000, RowsTotal: 40000})
+	view := updated.View()
+	for _, want := range []string{"orders", "12,000 / 40,000 rows", "30%"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view lacks %q:\n%s", want, view)
+		}
+	}
+	if cmd == nil {
+		t.Error("after a progress message the model must keep listening for the next one")
+	}
+	updated, _ = updated.Update(tableSeededMsg{table: "users", rows: 5000})
+	if !strings.Contains(updated.View(), "1/3 tables") {
+		t.Errorf("finished tables not counted:\n%s", updated.View())
+	}
+}
+
+// A failed run keeps what it wrote on screen and says where it stopped.
+func TestExecute_failureKeepsPartialResultsAndLocation(t *testing.T) {
+	m := newExecute(2, false)
+	cause := runerr.At(runerr.PhaseWrite, "orders", fmt.Errorf("insert into orders failed: duplicate key"))
+	updated, _ := m.Update(seedDoneMsg{err: cause, tables: []string{"users", "orders"}, rowsMap: map[string]int{"users": 50}, totalRows: 50})
+	view := updated.View()
+	for _, want := range []string{"write · orders", "users", "50 rows", "not written", "orders"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("failure view lacks %q:\n%s", want, view)
+		}
 	}
 }

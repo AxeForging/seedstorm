@@ -42,6 +42,8 @@ type ConnectionInfo struct {
 // Session holds a live database connection plus the cached schema introspected
 // from it. The DSN (including the password) is intentionally not retained.
 type Session struct {
+	// SavedID is the saved connection this session was opened from, if any.
+	SavedID   string
 	ID        string
 	Info      ConnectionInfo
 	DBType    string // driver name: "pgx" or "mysql"
@@ -51,9 +53,21 @@ type Session struct {
 	schema    *schema.Schema
 	cachedAt  time.Time
 	createdAt time.Time
+	// loading is the introspection in flight: callers wait for it instead of
+	// starting another, and the session lock is never held across it.
+	loading *schemaLoad
+
+	// Row counts of the workspace, cached until a run writes or the user
+	// refreshes; countsLoading is the count in flight.
+	counts        map[string]int64
+	countsAt      time.Time
+	countsLoading *countsLoad
 
 	accessMu sync.Mutex
 	access   *accessView
+
+	// Relationship shapes measured on this connection (see shapes.go).
+	shapes shapeCache
 }
 
 // SessionRegistry holds active sessions keyed by their server-issued ID.
@@ -111,10 +125,14 @@ func (r *SessionRegistry) open(driver, dsn string, info ConnectionInfo) (*Sessio
 		conn:      conn,
 		createdAt: time.Now(),
 	}
+	r.add(s)
+	return s, nil
+}
+
+func (r *SessionRegistry) add(s *Session) {
 	r.mu.Lock()
 	r.sessions[s.ID] = s
 	r.mu.Unlock()
-	return s, nil
 }
 
 func (r *SessionRegistry) findByDSN(driver, dsn string) *Session {
@@ -225,27 +243,59 @@ func (s *Session) OpenRunConn(ctx context.Context) (*sql.DB, error) {
 	return conn, nil
 }
 
-// Schema returns the cached schema, introspecting if needed.
-func (s *Session) Schema(force bool) (*schema.Schema, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !force && s.schema != nil {
-		return s.schema, nil
-	}
-	tables, err := db.Introspect(s.DBType, s.DSN)
-	if err != nil {
-		return nil, err
-	}
-	out := faker.BuildSchema(s.DBType, tables)
-	s.schema = out
-	s.cachedAt = time.Now()
-	return out, nil
+// schemaLoadTimeout bounds one introspection of a session's database.
+var schemaLoadTimeout = 5 * time.Minute
+
+type schemaLoad struct {
+	done chan struct{}
+	sc   *schema.Schema
+	err  error
 }
 
-// RawTables returns the raw introspected tables (with constraint metadata
-// such as enum values, CHECK ranges, etc.) — re-introspects on each call.
+// Schema returns the cached schema, introspecting if needed. Concurrent calls
+// share one introspection, run on the session's own connection, without
+// holding the session lock while the database answers.
+func (s *Session) Schema(force bool) (*schema.Schema, error) {
+	s.mu.Lock()
+	if !force && s.schema != nil {
+		sc := s.schema
+		s.mu.Unlock()
+		return sc, nil
+	}
+	if l := s.loading; l != nil {
+		s.mu.Unlock()
+		<-l.done
+		return l.sc, l.err
+	}
+	l := &schemaLoad{done: make(chan struct{})}
+	s.loading = l
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), schemaLoadTimeout)
+	tables, err := db.IntrospectConn(ctx, s.conn, s.DBType, nil)
+	cancel()
+	if err == nil {
+		l.sc = faker.BuildSchema(s.DBType, tables)
+	}
+	l.err = err
+
+	s.mu.Lock()
+	s.loading = nil
+	if err == nil {
+		s.schema = l.sc
+		s.cachedAt = time.Now()
+	}
+	s.mu.Unlock()
+	close(l.done)
+	return l.sc, l.err
+}
+
+// RawTables introspects the session's database again (constraint metadata such
+// as enum values and CHECK ranges), on its own connection.
 func (s *Session) RawTables() ([]db.Table, error) {
-	return db.Introspect(s.DBType, s.DSN)
+	ctx, cancel := context.WithTimeout(context.Background(), schemaLoadTimeout)
+	defer cancel()
+	return db.IntrospectConn(ctx, s.conn, s.DBType, nil)
 }
 
 // SetSchema overrides the cached schema (used by upload/paste flows).
@@ -296,4 +346,62 @@ func newSessionID() string {
 		return fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+type countsLoad struct {
+	done   chan struct{}
+	counts map[string]int64
+	at     time.Time
+}
+
+// countConcurrency is how many tables a workspace counts at once.
+const countConcurrency = 2
+
+// Counts returns the tables' row counts: the cached ones unless force is set
+// or they were invalidated. Concurrent calls share one count. A table whose
+// count failed is missing from the map (unknown, never 0).
+func (s *Session) Counts(ctx context.Context, tables []string, force bool) (map[string]int64, time.Time) {
+	s.mu.Lock()
+	if !force && s.counts != nil {
+		counts, at := s.counts, s.countsAt
+		s.mu.Unlock()
+		return counts, at
+	}
+	if l := s.countsLoading; l != nil {
+		s.mu.Unlock()
+		<-l.done
+		return l.counts, l.at
+	}
+	l := &countsLoad{done: make(chan struct{})}
+	s.countsLoading = l
+	s.mu.Unlock()
+
+	lim := db.DefaultCountLimits
+	lim.Concurrency = countConcurrency
+	counts, _ := db.CountTablesWithin(ctx, s.conn, s.DBType, tables, lim, nil)
+	l.counts, l.at = counts, time.Now().UTC()
+
+	s.mu.Lock()
+	s.countsLoading = nil
+	if ctx.Err() == nil {
+		s.counts, s.countsAt = l.counts, l.at
+	}
+	s.mu.Unlock()
+	close(l.done)
+	return l.counts, l.at
+}
+
+// CachedCounts returns the cached counts without counting (nil when none).
+func (s *Session) CachedCounts() (map[string]int64, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts, s.countsAt
+}
+
+// InvalidateCounts drops the cached counts: a run wrote to the database.
+func (s *Session) InvalidateCounts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts, s.countsAt = nil, time.Time{}
+	s.shapes.reset()
 }

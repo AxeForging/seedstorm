@@ -13,6 +13,7 @@ import (
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/logging"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
@@ -101,6 +102,9 @@ Use --dry-run to print SQL statements without executing them.`,
 			workersFlag(),
 			genWorkersFlag(),
 			profileFlag(),
+			shapeRowsFlag(),
+			productionFlags()[0],
+			productionFlags()[1],
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
@@ -120,6 +124,11 @@ Use --dry-run to print SQL statements without executing them.`,
 			yes := cmd.Bool("yes")
 			batchSize := cmd.Int("batch-size")
 			seed := cmd.Int("seed")
+			if !dryRun {
+				if err := refuseProductionWrite(cmd, "seed it"); err != nil {
+					return err
+				}
+			}
 
 			if seed != 0 {
 				faker.SeedRandom(int64(seed))
@@ -169,8 +178,12 @@ Use --dry-run to print SQL statements without executing them.`,
 			}
 			defer dbConn.Close()
 
-			if err := dbConn.PingContext(ctx); err != nil {
-				return fmt.Errorf("failed to ping database: %w", err)
+			if err := pingWithin(ctx, dbConn); err != nil {
+				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("%s did not answer: %w", dsnLabel(dbType, dsn), err))
+			}
+			workers, err := workersFromFlag(ctx, cmd, dbConn, dbType)
+			if err != nil {
+				return err
 			}
 
 			// Every table stays in the preload so FKs can reference rows of ignored
@@ -180,10 +193,16 @@ Use --dry-run to print SQL statements without executing them.`,
 				return err
 			}
 
+			derivedRows := deriveShapedRows(cmd, s, sortedTables, rows, tableRows, profile.shapes)
 			if dryRun {
 				log.Info().Msg("Dry-run mode — SQL will be printed, not executed")
-				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, tableRows))
+				fmt.Print(graph.RenderPlanWithCounts(s, sortedTables, rows, planCounts(tableRows, derivedRows)))
 				fmt.Println("--- SQL ---")
+			}
+
+			// Refuse tables that cannot be generated before anything is truncated.
+			if err := faker.CheckSeedable(s, sortedTables, profile.overrides); err != nil {
+				return err
 			}
 
 			// Truncate tables before seeding
@@ -197,8 +216,8 @@ Use --dry-run to print SQL statements without executing them.`,
 					}
 				}
 				log.Info().Int("tables", len(sortedTables)).Msg("Truncating tables")
-				if err := db.TruncateConcurrently(ctx, dbConn, dbType, sortedTables, cmd.Int("workers"), nil); err != nil {
-					return fmt.Errorf("truncate failed: %w", err)
+				if err := db.TruncateConcurrently(ctx, dbConn, dbType, sortedTables, workers, nil); err != nil {
+					return runerr.At(runerr.PhaseTruncate, "", fmt.Errorf("truncate failed: %w", err))
 				}
 				log.Info().Msg("Truncate complete")
 			}
@@ -206,27 +225,32 @@ Use --dry-run to print SQL statements without executing them.`,
 			// Rows are generated and written chunk by chunk (memory stays flat for
 			// any --rows), on --workers connections at once.
 			start := time.Now()
-			log.Info().Int("tables", len(sortedTables)).Int("rows", rows).Int("workers", cmd.Int("workers")).Msg("Seeding: generating and writing in chunks")
+			log.Info().Int("tables", len(sortedTables)).Int("rows", rows).Int("workers", workers).Msg("Seeding: generating and writing in chunks")
 			if !dryRun {
 				defer syncSequences(ctx, dbConn, dbType, sortedTables)
 			}
 			onProgress, onTable := progressLogger(time.Now)
 			res, err := seeder.Seed(ctx, dbConn, dbType, s, allTables, sortedTables, seeder.SeedOptions{
-				Rows: rows, EnumRows: enumRows, TableRows: tableRows, BatchSize: batchSize, DryRun: dryRun,
-				Workers: cmd.Int("workers"), OnProgress: onProgress, OnTable: onTable,
-				GenWorkers: cmd.Int("gen-workers"), Reproducible: cmd.Int("seed") != 0,
+				Rows: rows, EnumRows: enumRows, TableRows: tableRows, DerivedRows: derivedRows, BatchSize: batchSize, DryRun: dryRun,
+				Workers: workers, OnProgress: onProgress, OnTable: onTable,
+				GenWorkers: genWorkers(cmd), Reproducible: cmd.Int("seed") != 0,
 				Generate: faker.GenerateOptions{
 					SelfRefDepth: selfRefDepth,
 					Overrides:    profile.overrides,
+					Shapes:       profile.shapes,
 					OnWarning:    logWarning,
 				},
-				OnRows: printDryRunSQL(dryRun, dbType),
+				OnRows:   printDryRunSQL(dryRun, dbType),
+				OnNotice: func(msg string) { log.Warn().Msg(msg) },
 				OnTableStart: func(table string) error {
 					log.Info().Str("table", table).Msg("Seeding table")
 					return nil
 				},
 			})
 			if err != nil {
+				if !dryRun {
+					logPartialRun(res, sortedTables)
+				}
 				return err
 			}
 
@@ -236,6 +260,10 @@ Use --dry-run to print SQL statements without executing them.`,
 				Int("total_rows", res.Total).
 				Dur("duration", elapsed).
 				Msg("Seeding complete")
+
+			if !dryRun {
+				logShapeResults(ctx, dbConn, dbType, s, profile.shapes)
+			}
 
 			// Summary
 			for _, tableName := range sortedTables {

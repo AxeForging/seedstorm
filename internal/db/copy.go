@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/AxeForging/seedstorm/internal/faultinject"
+	"github.com/AxeForging/seedstorm/internal/safego"
 )
 
 // ErrCopyUnsupported reports an engine or connection without COPY support.
@@ -39,7 +42,13 @@ func CopyRows(ctx context.Context, conn *sql.DB, dbType, table string, rows []ma
 		}
 		reader, writer := io.Pipe()
 		go func() {
-			writer.CloseWithError(writeCSVRows(writer, cols, rows))
+			// A panic while encoding rows fails this COPY instead of the process.
+			writer.CloseWithError(safego.Run("copy "+table, func() error {
+				if err := faultinject.Hit(ctx, "copy", table); err != nil {
+					return err
+				}
+				return writeCSVRows(writer, cols, rows)
+			}))
 		}()
 		_, err := pc.Conn().PgConn().CopyFrom(ctx, reader, stmt)
 		_ = reader.Close()

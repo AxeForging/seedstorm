@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
 )
 
 func sampleSnapshot() Snapshot {
@@ -226,9 +227,9 @@ func TestParseSnapshot_RejectsWithReadableErrors(t *testing.T) {
 	rejects("bad estimated", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, estimated: maybe}\n", "estimated must be true or false")
 	rejects("wrong kind", "kind: seedstorm.profile\nversion: 1\ntables: {a: 1}", `kind is "seedstorm.profile", want "seedstorm.table-counts"`)
 	rejects("missing rows", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {bytes: 3}\n", `table "users": missing rows`)
-	rejects("missing version", "kind: seedstorm.table-counts\ntables: {a: 1}", "snapshot has no version (supported: 1)")
+	rejects("missing version", "kind: seedstorm.table-counts\ntables: {a: 1}", "snapshot has no version (supported: 1, 2)")
 	rejects("unknown table field", "kind: seedstorm.table-counts\nversion: 1\ntables:\n  users: {rows: 1, size: 3}\n", `table "users": unexpected field "size"`)
-	rejects("unsupported version", "kind: seedstorm.table-counts\nversion: 2\ntables: {a: 1}", "unsupported snapshot version 2 (supported: 1)")
+	rejects("unsupported version", "kind: seedstorm.table-counts\nversion: 3\ntables: {a: 1}", "unsupported snapshot version 3 (supported: 1, 2)")
 	rejects("random json", `{"hello": "world"}`, `unexpected field(s) "hello"`)
 	rejects("version without kind", "version: 1\ntables: {a: 1}", "add kind: seedstorm.table-counts")
 	rejects("compare report json", `{"source": {}, "target": {}, "rows": [], "totals": {}}`, `unexpected field(s) "rows", "source", "target", "totals"`)
@@ -262,5 +263,52 @@ func TestParseSnapshot_DiffsLikeATakenSnapshot(t *testing.T) {
 	}
 	if r.Totals.SourceBytes != 0 {
 		t.Errorf("unknown sizes leaked into totals: %+v", r.Totals)
+	}
+}
+
+// Relationship shapes travel in snapshot version 2. A counts-only snapshot is
+// still written as version 1, so older seedstorm binaries keep reading it.
+func TestSnapshot_RelationshipsNeedVersion2AndRoundTrip(t *testing.T) {
+	base := Snapshot{Label: "app@db", DBType: "pgx", CountMode: CountExact, Tables: map[string]TableStat{"teams": {Rows: 5, Bytes: 100}, "players": {Rows: 17, Bytes: 200}}}
+
+	for _, format := range []string{FormatYAML, FormatJSON} {
+		data, err := EncodeSnapshot(base, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "version: 1") && !strings.Contains(string(data), `"version": 1`) {
+			t.Fatalf("counts-only %s snapshot is not version 1:\n%s", format, data)
+		}
+
+		withShapes := base
+		withShapes.Relationships = []relations.Shape{{
+			Child: "players", Column: "team_id", Parent: "teams", ParentColumn: "id",
+			Parents: 5, Children: 15, NullRows: 2, ParentsWithChildren: 4, ZeroShare: 0.2, NullShare: 0.117647,
+			Min: 1, Max: 10, Avg: 3.75, P50: 1, P95: 10, Indexed: true, Outcome: db.OutcomeOK,
+			Histogram: []db.DegreeBucket{{Min: 1, Max: 1, Parents: 2, Children: 2}, {Min: 3, Max: 3, Parents: 1, Children: 3}, {Min: 10, Max: 10, Parents: 1, Children: 10}},
+		}}
+		data, err = EncodeSnapshot(withShapes, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "version: 2") && !strings.Contains(string(data), `"version": 2`) {
+			t.Fatalf("%s snapshot with relationships is not version 2:\n%s", format, data)
+		}
+		back, err := ParseSnapshot(data)
+		if err != nil {
+			t.Fatalf("parse %s: %v\n%s", format, err, data)
+		}
+		if len(back.Relationships) != 1 || !reflect.DeepEqual(back.Relationships[0], withShapes.Relationships[0]) {
+			t.Fatalf("%s round trip:\n got %+v\nwant %+v", format, back.Relationships, withShapes.Relationships)
+		}
+	}
+
+	_, err := ParseSnapshot([]byte("kind: seedstorm.table-counts\nversion: 1\ntables: {users: 1}\nrelationships: []\n"))
+	if err == nil || !strings.Contains(err.Error(), "version 2") {
+		t.Fatalf("relationships in a version 1 file: %v", err)
+	}
+	_, err = ParseSnapshot([]byte("kind: seedstorm.table-counts\nversion: 2\ntables: {users: 1}\nrelationships:\n  - {column: team_id}\n"))
+	if err == nil || !strings.Contains(err.Error(), "child") {
+		t.Fatalf("a relationship without its child table: %v", err)
 	}
 }

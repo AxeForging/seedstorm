@@ -10,6 +10,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -32,8 +33,12 @@ type mirrorModel struct {
 	phase       mirrorPhase
 	showPreview bool
 	preview     string
-	offset      int
-	height      int
+	// previewLoading: sample rows are being generated (reads the target) in
+	// the background, so the screen stays responsive.
+	previewLoading bool
+	truncating     string
+	offset         int
+	height         int
 
 	progress seeder.Progress
 	events   chan tea.Msg
@@ -43,6 +48,12 @@ type mirrorModel struct {
 }
 
 type mirrorProgressMsg seeder.Progress
+
+// mirrorPreviewMsg carries sample rows generated in the background.
+type mirrorPreviewMsg string
+
+// mirrorTruncateMsg reports the table being truncated in reset mode.
+type mirrorTruncateMsg string
 
 type mirrorDoneMsg struct {
 	result seeder.Result
@@ -61,8 +72,15 @@ func RunMirror(ctx context.Context, job *seeder.MirrorJob, opts seeder.Options, 
 	fm := final.(mirrorModel)
 	switch {
 	case fm.err != nil:
+		// Keep what was written visible after the screen closes.
+		if len(fm.result.Tables) > 0 {
+			seeder.RenderResult(os.Stdout, fm.result)
+		}
 		return fm.err
 	case fm.aborted:
+		if len(fm.result.Tables) > 0 {
+			seeder.RenderResult(os.Stdout, fm.result)
+		}
 		return fmt.Errorf("aborted by user")
 	case fm.phase == mirrorDone:
 		seeder.RenderResult(os.Stdout, fm.result)
@@ -84,8 +102,16 @@ func (m mirrorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
 	case mirrorProgressMsg:
+		m.truncating = ""
 		m.progress = seeder.Progress(msg)
 		return m, waitMirror(m.events)
+	case mirrorTruncateMsg:
+		m.truncating = string(msg)
+		return m, waitMirror(m.events)
+	case mirrorPreviewMsg:
+		m.previewLoading = false
+		m.preview = string(msg)
+		return m, nil
 	case mirrorDoneMsg:
 		m.phase = mirrorDone
 		m.result = msg.result
@@ -124,10 +150,11 @@ func (m mirrorModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.offset++
 	case "p":
 		m.showPreview = !m.showPreview
-		if m.showPreview && m.preview == "" {
-			m.preview = m.renderPreview()
-		}
 		m.offset = 0
+		if m.showPreview && m.preview == "" && !m.previewLoading {
+			m.previewLoading = true
+			return m, m.loadPreview()
+		}
 	case "y", "enter":
 		if m.dryRun || m.job.Plan.TotalInsert == 0 {
 			return m, nil
@@ -153,9 +180,29 @@ func (m mirrorModel) start() tea.Cmd {
 			default:
 			}
 		}
-		result, err := job.Run(ctx, opts, nil)
+		var result seeder.Result
+		err := safego.Run("mirror", func() (err error) {
+			result, err = job.Run(ctx, opts, func(_, _ int, table string) {
+				select {
+				case events <- mirrorTruncateMsg(table):
+				default:
+				}
+			})
+			return err
+		})
 		events <- mirrorDoneMsg{result: result, err: err}
 		return nil
+	}
+}
+
+// loadPreview generates sample rows off the UI goroutine.
+func (m mirrorModel) loadPreview() tea.Cmd {
+	return func() tea.Msg {
+		var text string
+		if err := safego.Run("mirror preview", func() error { text = m.renderPreview(); return nil }); err != nil {
+			text = "Sample rows unavailable: " + err.Error()
+		}
+		return mirrorPreviewMsg(text)
 	}
 }
 
@@ -187,7 +234,9 @@ func (m mirrorModel) View() string {
 	switch m.phase {
 	case mirrorRunning:
 		p := m.progress
-		if p.Tables == 0 {
+		if m.truncating != "" {
+			fmt.Fprintf(&sb, "\n  Truncating %s…\n", m.truncating)
+		} else if p.Tables == 0 {
 			fmt.Fprintf(&sb, "\n  Preparing %d rows into %d tables…\n", m.job.Plan.TotalInsert, len(m.job.Plan.Entries))
 		} else {
 			fmt.Fprintf(&sb, "\n  Filling %s  (%d/%d tables)  %d / %d rows\n", p.Table, p.TableIndex, p.Tables, p.Inserted, p.Requested)
@@ -199,7 +248,9 @@ func (m mirrorModel) View() string {
 	}
 
 	var body strings.Builder
-	if m.showPreview {
+	if m.showPreview && m.previewLoading {
+		body.WriteString("Generating sample rows from the target… (the plan stays usable: p to go back)")
+	} else if m.showPreview {
 		body.WriteString(m.preview)
 	} else {
 		compare.RenderPlan(&body, m.job.Plan)

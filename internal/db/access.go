@@ -41,18 +41,24 @@ type Access struct {
 
 // InspectAccess reports what the user behind conn is allowed to do. dbType is
 // "pgx" (PostgreSQL) or "mysql".
-func InspectAccess(ctx context.Context, conn *sql.DB, dbType string) (Access, error) {
+func InspectAccess(ctx context.Context, conn *sql.DB, dbType string) (acc Access, err error) {
+	var inspect func(context.Context, Querier) (Access, error)
 	switch dbType {
 	case "pgx", "postgres", "postgresql":
-		return inspectPostgresAccess(ctx, conn)
+		inspect = inspectPostgresAccess
 	case "mysql":
-		return inspectMySQLAccess(ctx, conn)
+		inspect = inspectMySQLAccess
 	default:
 		return Access{}, fmt.Errorf("inspect access: unsupported database type %q", dbType)
 	}
+	err = ReadOnce(ctx, conn, dbType, ReadLimits{}, func(ctx context.Context, q Querier) error {
+		acc, err = inspect(ctx, q)
+		return err
+	})
+	return acc, err
 }
 
-func inspectPostgresAccess(ctx context.Context, conn *sql.DB) (Access, error) {
+func inspectPostgresAccess(ctx context.Context, conn Querier) (Access, error) {
 	acc := Access{Tables: map[string]TableAccess{}, Notes: []string{}}
 	var hasSchema, usage bool
 	err := conn.QueryRowContext(ctx, `
@@ -121,15 +127,9 @@ func inspectPostgresAccess(ctx context.Context, conn *sql.DB) (Access, error) {
 	return acc, nil
 }
 
-func inspectMySQLAccess(ctx context.Context, conn *sql.DB) (Access, error) {
-	// Pin one session so CURRENT_ROLE() and SHOW GRANTS describe the same
-	// connection.
-	c, err := conn.Conn(ctx)
-	if err != nil {
-		return Access{}, fmt.Errorf("inspect access: %w", err)
-	}
-	defer func() { _ = c.Close() }()
-
+// inspectMySQLAccess runs on one session (ReadOnce pins it), so CURRENT_ROLE()
+// and SHOW GRANTS describe the same connection.
+func inspectMySQLAccess(ctx context.Context, c Querier) (Access, error) {
 	var user string
 	var database sql.NullString
 	if err := c.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&user, &database); err != nil {
@@ -199,7 +199,7 @@ func inspectMySQLAccess(ctx context.Context, conn *sql.DB) (Access, error) {
 	return acc, nil
 }
 
-func mysqlShowGrants(ctx context.Context, c *sql.Conn, query string) ([]string, error) {
+func mysqlShowGrants(ctx context.Context, c Querier, query string) ([]string, error) {
 	rows, err := c.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", query, err)

@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,4 +96,53 @@ func TestSnapshotFilename(t *testing.T) {
 			t.Errorf("snapshotFilename(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// A snapshot taken from one connection (no comparison) is encoded directly.
+func TestSnapshotsAPI_EncodesASnapshotWithoutAReport(t *testing.T) {
+	s := profileServer(t)
+	s.sessions.sessions["sess-snap"] = &Session{ID: "sess-snap", DBType: "pgx"}
+	snap := compare.Snapshot{
+		Label: "billing@db:5432", DBType: "pgx", CountMode: compare.CountExact, TakenAt: time.Now().UTC(),
+		Tables: map[string]compare.TableStat{"invoices": {Rows: 42, Bytes: 8192}},
+	}
+	rec, out := snapshotCall(t, s, "/api/snapshots/encode", map[string]any{"snapshot": snap, "format": "yaml"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("encode = %d %s", rec.Code, rec.Body)
+	}
+	if out["filename"] != "billing-counts.yaml" || !strings.Contains(out["content"].(string), "invoices:") {
+		t.Fatalf("encode = %v", out)
+	}
+}
+
+// Snapshot counts reads the active connection's volumes as a job, with
+// per-table progress, and returns the snapshot for export.
+func TestRunSnapshot_TakesTheActiveConnectionsCounts(t *testing.T) {
+	registerServeRunnerTestDriver()
+	conn, err := sql.Open(serveRunnerTestDriverName, "counted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	s := profileServer(t)
+	sess := &Session{ID: "snap", DBType: "pgx", conn: conn, Info: ConnectionInfo{DBName: "billing", Host: "db"}}
+	var progress []string
+	jc := recordingJobControl{progress: &progress}
+	result, err := s.runSnapshot(context.Background(), sess, SnapshotRequest{Counts: "exact"}, jc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, ok := result["snapshot"].(compare.Snapshot)
+	if !ok || snap.DBType != "pgx" || snap.Label == "" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+// recordingJobControl keeps progress labels.
+type recordingJobControl struct{ progress *[]string }
+
+func (recordingJobControl) Write(p []byte) (int, error) { return len(p), nil }
+func (recordingJobControl) Phase(string)                {}
+func (r recordingJobControl) Progress(_, _ int, label string) {
+	*r.progress = append(*r.progress, label)
 }

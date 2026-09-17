@@ -1,8 +1,10 @@
 package faker
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"math"
 	"sync"
 
@@ -24,13 +26,22 @@ type Stream struct {
 
 	conn   *sql.DB
 	dbType string
+	// ctx stops database reads (preloads, pool redraws) when a run is cancelled.
+	ctx context.Context
 	// sampled marks preloaded tables whose pool is a sample of the stored keys.
 	sampled map[string]bool
+	// capped marks tables this run generated past poolLimit, whose pool is
+	// therefore a sample too. Kept per stream (forks copy and merge it) so
+	// generators never write a shared map.
+	capped map[string]bool
 	// sinceDraw counts rows generated per table since its parents' samples
 	// were last drawn.
 	sinceDraw map[string]int
 	// offset is how many rows value rules have already numbered, per table.
 	offset map[string]int
+	// refCols lists, per table, columns FKs reference that are not its single
+	// primary key; their values are pooled under "table.column".
+	refCols map[string][]string
 	// gen draws random values; a fork may switch to its own (UseOwnRandom).
 	gen generator
 	// mu guards the maps above while forks are taken and merged (ForkTable).
@@ -41,14 +52,31 @@ type Stream struct {
 // targetTables. With a nil conn nothing is read and the stream starts empty. overrides are the value rules
 // that will be applied, which decide what stored UNIQUE values must be read.
 func NewStream(s *schema.Schema, allTables, targetTables []string, conn *sql.DB, dbType string, overrides Overrides) (*Stream, error) {
+	return NewStreamContext(context.Background(), s, allTables, targetTables, conn, dbType, overrides)
+}
+
+// NewStreamContext is NewStream whose database reads stop when ctx ends.
+func NewStreamContext(ctx context.Context, s *schema.Schema, allTables, targetTables []string, conn *sql.DB, dbType string, overrides Overrides) (*Stream, error) {
+	if err := CheckSeedable(s, targetTables, overrides); err != nil {
+		return nil, err
+	}
 	g := &Stream{
 		sc: s, pks: make(map[string][]interface{}), cursor: make(map[string]int),
-		conn: conn, dbType: dbType, sampled: make(map[string]bool), sinceDraw: make(map[string]int), offset: make(map[string]int),
-		gen: defaultGen,
+		conn: conn, dbType: dbType, ctx: ctx, sampled: make(map[string]bool), capped: make(map[string]bool),
+		sinceDraw: make(map[string]int), offset: make(map[string]int),
+		gen: defaultGen, refCols: referencedColumns(s),
+	}
+	for table, cols := range g.refCols {
+		for _, col := range cols {
+			g.pks[referencePoolKey(table, col)] = []interface{}{}
+		}
 	}
 	preloaded := make(map[string]bool, len(targetTables))
 	if conn != nil {
-		if err := g.gen.queryExistingPKs(conn, allTables, s.Tables, g.pks, dbType, g.sampled); err != nil {
+		if err := g.gen.queryExistingPKs(ctx, conn, allTables, s.Tables, g.pks, dbType, g.sampled); err != nil {
+			return nil, err
+		}
+		if err := g.queryReferencedValues(allTables); err != nil {
 			return nil, err
 		}
 		for _, t := range allTables {
@@ -61,7 +89,7 @@ func NewStream(s *schema.Schema, allTables, targetTables []string, conn *sql.DB,
 		}
 	}
 	var err error
-	if g.existing, err = loadExistingState(conn, targetTables, s.Tables, dbType, preloaded, overrides); err != nil {
+	if g.existing, err = loadExistingState(ctx, conn, targetTables, s.Tables, dbType, preloaded, overrides); err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -105,6 +133,19 @@ func TableRowCount(tableName string, rows int, tableRows map[string]int) (count 
 func (g *Stream) GenerateChunks(tableName string, rows, enumRows int, hasRowOverride bool, chunk int, opts GenerateOptions, emit func([]map[string]interface{}) error) error {
 	opts = normalizeOptions(opts)
 	table := g.sc.Tables[tableName]
+	if len(opts.Shapes) > 0 {
+		if g.gen.shapes == nil {
+			g.gen.shapes = newShaper()
+		}
+		total := rows
+		if enumCol, enumVals := findEnumColumn(withoutColumns(table, opts.Overrides[tableName])); enumCol != "" && enumRows > 0 && !hasRowOverride {
+			total = len(enumVals) * enumRows
+		}
+		if t, ok := opts.ShapeTotals[tableName]; ok && t > 0 {
+			total = t
+		}
+		g.gen.shapes.beginTable(g.sc, tableName, total, g.sampledParents(table), opts)
+	}
 	if chunk <= 0 {
 		chunk = math.MaxInt
 	}
@@ -268,6 +309,7 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 	// self-references can point at them.
 	if kept, dropped := g.gen.enforceUniqueGroups(rows, table, opts.Overrides[tableName], existing.uniqueFor(tableName)); len(dropped) > 0 {
 		requested := len(rows)
+		g.gen.shapes.returnRows(tableName, droppedRows(rows, kept))
 		rows = kept
 		rebuildPKPool(g.pks, tableName, table, preloaded, kept)
 		if opts.OnWarning != nil {
@@ -278,7 +320,12 @@ func (g *Stream) finalize(tableName string, table schema.Table, rows []map[strin
 		return nil, fmt.Errorf("table %s self-reference backfill: %w", tableName, err)
 	}
 	existing.record(table, tableName, rows)
+	g.recordReferencedValues(tableName, rows)
 	g.sinceDraw[tableName] += len(rows)
+	if len(g.pks[tableName]) > poolLimit {
+		// From here the pool is a sample of this table's keys.
+		g.capped[tableName] = true
+	}
 	g.pks[tableName] = capPool(g.pks[tableName], poolLimit, g.gen.rnd)
 	return rows, nil
 }
@@ -300,8 +347,14 @@ func (g *Stream) redrawParents(tableName string, table schema.Table) error {
 		}
 		drawn[parent] = true
 		g.pks[parent] = nil
-		if err := g.gen.queryExistingPKs(g.conn, []string{parent}, g.sc.Tables, g.pks, g.dbType, nil); err != nil {
+		if err := g.gen.queryExistingPKs(g.ctx, g.conn, []string{parent}, g.sc.Tables, g.pks, g.dbType, nil); err != nil {
 			return fmt.Errorf("table %s: redraw %s keys: %w", tableName, parent, err)
+		}
+		for _, col := range g.refCols[parent] {
+			g.pks[referencePoolKey(parent, col)] = []interface{}{}
+		}
+		if err := g.queryReferencedValues([]string{parent}); err != nil {
+			return fmt.Errorf("table %s: redraw %s values: %w", tableName, parent, err)
 		}
 	}
 	return nil
@@ -348,19 +401,33 @@ func (g *Stream) ForkTable(tableName string) *Stream {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	child := &Stream{
-		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, sampled: g.sampled, gen: g.gen,
+		sc: g.sc, existing: g.existing, conn: g.conn, dbType: g.dbType, ctx: g.ctx, sampled: g.sampled,
+		capped:    maps.Clone(g.capped),
+		gen:       generator{rnd: g.gen.rnd, shapes: g.gen.shapes.fork(tableName)},
 		pks:       make(map[string][]interface{}),
 		cursor:    map[string]int{tableName: g.cursor[tableName]},
 		sinceDraw: map[string]int{tableName: g.sinceDraw[tableName]},
 		offset:    map[string]int{tableName: g.offset[tableName]},
+		refCols:   g.refCols,
 	}
 	if pool, ok := g.pks[tableName]; ok {
 		child.pks[tableName] = pool
 	}
+	for _, col := range g.refCols[tableName] {
+		key := referencePoolKey(tableName, col)
+		child.pks[key] = g.pks[key]
+	}
 	for _, colName := range sortedColumnNames(g.sc.Tables[tableName]) {
-		parent, _ := splitFK(g.sc.Tables[tableName].Columns[colName].FK)
-		if pool, ok := g.pks[parent]; ok && parent != "" {
+		fk := g.sc.Tables[tableName].Columns[colName].FK
+		parent, _ := splitFK(fk)
+		if parent == "" {
+			continue
+		}
+		if pool, ok := g.pks[parent]; ok {
 			child.pks[parent] = pool
+		}
+		if pool, ok := g.pks[fk]; ok {
+			child.pks[fk] = pool
 		}
 	}
 	return child
@@ -370,7 +437,9 @@ func (g *Stream) ForkTable(tableName string) *Stream {
 // on its own goroutine never waits on the global source's lock. Output is then
 // not reproducible by seed, which is why only concurrent generation uses it.
 func (g *Stream) UseOwnRandom() {
+	shapes := g.gen.shapes
 	g.gen = privateGenerator()
+	g.gen.shapes = shapes
 }
 
 // MergeTable records what a fork generated for tableName (its key pool, junction
@@ -380,6 +449,13 @@ func (g *Stream) MergeTable(child *Stream, tableName string) {
 	defer g.mu.Unlock()
 	if pool, ok := child.pks[tableName]; ok {
 		g.pks[tableName] = pool
+	}
+	for _, col := range g.refCols[tableName] {
+		key := referencePoolKey(tableName, col)
+		g.pks[key] = child.pks[key]
+	}
+	if child.capped[tableName] {
+		g.capped[tableName] = true
 	}
 	g.cursor[tableName] = child.cursor[tableName]
 	g.sinceDraw[tableName] = child.sinceDraw[tableName]
@@ -394,6 +470,9 @@ func (g *Stream) ReleaseTable(tableName string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.pks, tableName)
+	for _, col := range g.refCols[tableName] {
+		delete(g.pks, referencePoolKey(tableName, col))
+	}
 }
 
 // Schema returns the schema the stream generates for.
@@ -405,4 +484,30 @@ func (g *Stream) KeyPoolLen(tableName string) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.pks[tableName])
+}
+
+// queryReferencedValues reads the stored values of referenced non-key columns.
+func (g *Stream) queryReferencedValues(tables []string) error {
+	for _, table := range tables {
+		for _, col := range g.refCols[table] {
+			if _, err := g.gen.scanPool(g.ctx, g.conn, table, col, referencePoolKey(table, col), g.pks, g.dbType); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// sampledParents reports, per parent table of one table's foreign keys,
+// whether its key pool holds a sample rather than every key.
+func (g *Stream) sampledParents(table schema.Table) map[string]bool {
+	out := map[string]bool{}
+	for _, colName := range sortedColumnNames(table) {
+		parent, _ := splitFK(table.Columns[colName].FK)
+		if parent == "" {
+			continue
+		}
+		out[parent] = g.sampled[parent] || g.capped[parent]
+	}
+	return out
 }

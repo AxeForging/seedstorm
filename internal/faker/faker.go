@@ -1,6 +1,7 @@
 package faker
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -30,6 +31,12 @@ type GenerateOptions struct {
 	// rows then come in smaller chunks: the first chunk probes the row size
 	// and later ones are sized from it, never above the row cap.
 	ChunkBytes int
+	// Shapes are target children-per-parent distributions keyed by
+	// "table.column" (ShapeKey). Unshaped keys pick parents uniformly.
+	Shapes map[string]Shape
+	// ShapeTotals is each shaped table's total rows when it is generated in
+	// several calls (mirror rounds); without it one call's rows are the total.
+	ShapeTotals map[string]int
 }
 
 type GenerationWarning struct {
@@ -131,11 +138,11 @@ func uniqueSequenceValue(colType string, i int) interface{} {
 
 // queryExistingPKs reads the PK pools of sortedTables and records in sampled
 // which tables were too large to keep whole.
-func (gen generator) queryExistingPKs(conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string, sampled map[string]bool) error {
+func (gen generator) queryExistingPKs(ctx context.Context, conn *sql.DB, sortedTables []string, tables map[string]schema.Table, generatedPKs map[string][]interface{}, dbType string, sampled map[string]bool) error {
 	for _, tableName := range sortedTables {
 		table := tables[tableName]
 		for _, colName := range sortedPKColumns(table) {
-			wasSampled, err := gen.scanPKs(conn, tableName, colName, generatedPKs, dbType)
+			wasSampled, err := gen.scanPKs(ctx, conn, tableName, colName, generatedPKs, dbType)
 			if err != nil {
 				return err
 			}
@@ -147,14 +154,19 @@ func (gen generator) queryExistingPKs(conn *sql.DB, sortedTables []string, table
 	return nil
 }
 
-func (gen generator) scanPKs(conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
-	rows, err := conn.Query(fmt.Sprintf("SELECT %s FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType))) //nolint:gosec
+func (gen generator) scanPKs(ctx context.Context, conn *sql.DB, tableName, colName string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
+	return gen.scanPool(ctx, conn, tableName, colName, tableName, generatedPKs, dbType)
+}
+
+// scanPool reads a column's stored values into the pool under key.
+func (gen generator) scanPool(ctx context.Context, conn *sql.DB, tableName, colName, key string, generatedPKs map[string][]interface{}, dbType string) (bool, error) {
+	rows, err := conn.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType))) //nolint:gosec
 	if err != nil {
 		return false, fmt.Errorf("failed to query PKs for %s.%s: %w", tableName, colName, err)
 	}
 	defer rows.Close()
 
-	pool := newPoolSampler(generatedPKs[tableName], poolLimit, gen.rnd)
+	pool := newPoolSampler(generatedPKs[key], poolLimit, gen.rnd)
 	for rows.Next() {
 		var pk interface{}
 		if err := rows.Scan(&pk); err != nil {
@@ -165,7 +177,7 @@ func (gen generator) scanPKs(conn *sql.DB, tableName, colName string, generatedP
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	generatedPKs[tableName] = pool.values()
+	generatedPKs[key] = pool.values()
 	return pool.seen > pool.limit, nil
 }
 
@@ -295,6 +307,7 @@ func (gen generator) generateEnumRows(data map[string][]map[string]interface{}, 
 			generated := false
 			for attempt := 0; attempt < 200; attempt++ {
 				var err error
+				gen.shapes.beginRow()
 				row, err = gen.generateRow(table, tableName, generatedPKs, &v, enumCol)
 				if err != nil {
 					return err
@@ -308,6 +321,7 @@ func (gen generator) generateEnumRows(data map[string][]map[string]interface{}, 
 					break
 				}
 				rollbackLastRowPKs(generatedPKs, tableName, table)
+				gen.shapes.undoRow()
 			}
 			if !generated {
 				return fmt.Errorf("could not generate unique composite PK after 200 attempts for table %s (enum=%s, FK pool too small?)", tableName, enumVal)
@@ -326,6 +340,7 @@ func (gen generator) generateStandardRows(data map[string][]map[string]interface
 		generated := false
 		for attempt := 0; attempt < 200; attempt++ {
 			var err error
+			gen.shapes.beginRow()
 			row, err = gen.generateRow(table, tableName, generatedPKs, nil, "")
 			if err != nil {
 				return err
@@ -341,6 +356,7 @@ func (gen generator) generateStandardRows(data map[string][]map[string]interface
 			// Collision detected — discard the PK values just appended and retry.
 			// Roll back the PKs that were added for this row.
 			rollbackLastRowPKs(generatedPKs, tableName, table)
+			gen.shapes.undoRow()
 		}
 		if !generated {
 			return fmt.Errorf("could not generate a unique composite PK after 200 attempts for table %s (FK pool too small?)", tableName)
@@ -393,7 +409,7 @@ func (gen generator) enumerateCompositeFKPKRows(data map[string][]map[string]int
 		if fkTable == "" {
 			return 0, start, false, nil
 		}
-		pool := generatedPKs[fkTable]
+		pool := poolFor(generatedPKs, col.FK)
 		if len(pool) == 0 {
 			if col.Nullable {
 				return 0, start, false, nil
@@ -523,7 +539,7 @@ func (gen generator) generateValue(col schema.Column, colName, tableName string,
 		parts := strings.SplitN(col.FK, ".", 2)
 		if len(parts) == 2 {
 			fkTable := parts[0]
-			pks := generatedPKs[fkTable]
+			pks := poolFor(generatedPKs, col.FK)
 			if len(pks) == 0 {
 				if fkTable == tableName {
 					// Self-referential FKs are resolved after all rows for the
@@ -538,8 +554,16 @@ func (gen generator) generateValue(col schema.Column, colName, tableName string,
 				}
 				return nil, fmt.Errorf("no PKs available for FK table %s", fkTable)
 			}
+			if v, ok := gen.shapes.pick(gen.rnd, tableName, colName, pks); ok {
+				return v, nil
+			}
 			return pks[gen.rnd.Number(0, len(pks)-1)], nil
 		}
+	}
+	if col.PK && col.PartitionKey && col.Faker != "" {
+		// A key column that is also the partition key must stay inside the
+		// partitions; the other key columns keep the row unique.
+		return gen.generate(col.Faker)
 	}
 	if col.PK {
 		pk, err := gen.generatePK(col.Type, nextSequentialPK(generatedPKs[tableName]))
@@ -794,7 +818,7 @@ var knownFakers = map[string]bool{
 
 // knownParamFakers is the set of valid faker functions that take arguments.
 var knownParamFakers = map[string]bool{
-	"number": true, "price": true, "randomstring": true,
+	"number": true, "price": true, "randomstring": true, "daterange": true, "datetimerange": true,
 	"paragraph": true, "float64": true, "lexify": true, "numerify": true,
 }
 
@@ -905,6 +929,24 @@ func (gen generator) generate(fakerStr string) (interface{}, error) {
 			return gen.rnd.Paragraph(spec.count, 3, 8, " "), nil
 		case "float64":
 			return gen.rnd.Float64(), nil
+		case "daterange", "datetimerange":
+			layout := dateLayout
+			if spec.name == "datetimerange" {
+				layout = timeLayout
+			}
+			from, to, err := rangeBounds(spec.args, layout)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", spec.name, err)
+			}
+			// DateRange may return its end; keep the upper bound exclusive.
+			v := gen.rnd.DateRange(from, to)
+			if !v.Before(to) {
+				v = from
+			}
+			if spec.name == "daterange" {
+				return v.Format(dateLayout), nil
+			}
+			return v, nil
 		case "lexify":
 			// The pattern is raw text, not a comma-separated list.
 			return gen.rnd.Lexify(spec.raw), nil

@@ -64,6 +64,13 @@ test-integration: dev-up
 	done
 	cd integration && go test -race -v -tags integration -count=1 ./... -timeout 1500s
 
+.PHONY: test-loadsim
+# Resource-limited evals: throwaway database containers shaped like managed
+# Cloud SQL instances (integration/loadsim_*_test.go). Needs Docker; skips when
+# the machine has too little free memory. Pass ARGS to filter, e.g. ARGS=-run=TestLoadsim_Read
+test-loadsim:
+	cd integration && go test -race -v -tags "integration loadsim" -count=1 -run TestLoadsim $(ARGS) ./... -timeout 1800s
+
 .PHONY: test-e2e
 # Playwright journeys against a freshly built `seedstorm serve` and the compose
 # databases (make dev-up). Pass ARGS to filter, e.g. ARGS=tests/compare.spec.ts

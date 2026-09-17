@@ -41,6 +41,8 @@ type recording struct {
 	active map[string]int
 	// overlapSelf records a table that ever had two inserts in flight.
 	overlapSelf map[string]bool
+	// inFlight and peak count inserts running at once across tables.
+	inFlight, peak int
 	// discard keeps no events (benchmarks).
 	discard bool
 }
@@ -104,6 +106,8 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 	if r.active[table] > 1 {
 		r.overlapSelf[table] = true
 	}
+	r.inFlight++
+	r.peak = max(r.peak, r.inFlight)
 	ev := insertEvent{table: table, start: time.Now()}
 	if !r.discard {
 		ev.rows = decodeInsert(query, args)
@@ -124,6 +128,7 @@ func (c *recordingConn) ExecContext(ctx context.Context, query string, args []dr
 	}
 	r.mu.Lock()
 	r.active[table]--
+	r.inFlight--
 	ev.end = time.Now()
 	if err == nil && !r.discard {
 		r.events = append(r.events, ev)
@@ -164,6 +169,12 @@ func (r *recording) rowsOf(table string) []map[string]interface{} {
 		out = append(out, e.rows...)
 	}
 	return out
+}
+
+func (r *recording) peakConcurrency() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.peak
 }
 
 func (r *recording) inserts(table string) []insertEvent {
@@ -422,4 +433,77 @@ func TestFill_WorkersSplitAChunkButKeepSelfReferencesWhole(t *testing.T) {
 			t.Fatal("a self-referencing table was split over concurrent writers")
 		}
 	})
+}
+
+// A server with few free connections gets fewer writers, and the run says so
+// instead of failing with "too many connections" part-way through.
+func TestSeed_WritersClampedToTheServersFreeConnections(t *testing.T) {
+	defer func(old func(context.Context, *sql.DB, string) (int, int, error)) { connectionUsage = old }(connectionUsage)
+	connectionUsage = func(context.Context, *sql.DB, string) (int, int, error) { return 20, 16, nil }
+	conn, rec := openRecording(t, map[string]time.Duration{"users": 3 * time.Millisecond, "audit": 3 * time.Millisecond}, nil)
+	var notices []string
+	order := []string{"users", "reviewers", "audit", "posts"}
+	_, err := Seed(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), order, order, SeedOptions{
+		Rows: 4000, BatchSize: 250, ChunkRows: 1000, Workers: 8,
+		OnNotice: func(msg string) { notices = append(notices, msg) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "Using 2 writers instead of 8") {
+		t.Fatalf("notices = %q", notices)
+	}
+	if peak := rec.peakConcurrency(); peak > 2 {
+		t.Fatalf("%d inserts ran at once with 2 writers allowed", peak)
+	}
+}
+
+// The run bounds the pool it was handed, then gives it back as it was: the web
+// keeps seeding on the same pool its pages query, so a capped pool would
+// outlive the run and throttle every later query on that connection.
+func TestSeed_PoolLimitIsRestoredAfterTheRun(t *testing.T) {
+	defer func(old func(context.Context, *sql.DB, string) (int, int, error)) { connectionUsage = old }(connectionUsage)
+	connectionUsage = func(context.Context, *sql.DB, string) (int, int, error) { return 100, 1, nil }
+	order := []string{"users", "reviewers", "audit", "posts"}
+
+	for _, before := range []int{0, 12} {
+		conn, _ := openRecording(t, nil, nil)
+		conn.SetMaxOpenConns(before)
+		if _, err := Seed(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), order, order, SeedOptions{
+			Rows: 200, BatchSize: 50, Workers: 4,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := conn.Stats().MaxOpenConnections; got != before {
+			t.Errorf("after Seed the pool allows %d connections, want %d as before the run", got, before)
+		}
+		if _, err := Fill(withDeadline(t, 20*time.Second), conn, "mysql", usersPostsAudit(), []string{"users"}, map[string]int{"users": 100}, Options{BatchSize: 50, Workers: 4}); err != nil {
+			t.Fatal(err)
+		}
+		if got := conn.Stats().MaxOpenConnections; got != before {
+			t.Errorf("after Fill the pool allows %d connections, want %d as before the run", got, before)
+		}
+	}
+}
+
+// Two runs can share one pool (the web seeds two tabs on one connection):
+// the first to finish must not hand back a limit that erases the other's, and
+// the last one out restores what the pool had before either started.
+func TestBoundPool_ConcurrentRunsRestoreTheOriginalLimit(t *testing.T) {
+	conn, _ := openRecording(t, nil, nil)
+	conn.SetMaxOpenConns(25)
+
+	releaseA := boundPool(conn, 5)
+	releaseB := boundPool(conn, 3)
+	if got := conn.Stats().MaxOpenConnections; got < 5 {
+		t.Fatalf("while both runs hold the pool it allows %d connections, want room for both", got)
+	}
+	releaseA()
+	if got := conn.Stats().MaxOpenConnections; got == 25 {
+		t.Fatal("the first run to finish gave the pool back while another run still holds it")
+	}
+	releaseB()
+	if got := conn.Stats().MaxOpenConnections; got != 25 {
+		t.Fatalf("after both runs the pool allows %d connections, want 25 as before", got)
+	}
 }

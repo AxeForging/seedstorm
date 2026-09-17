@@ -6,8 +6,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/AxeForging/seedstorm/internal/faultinject"
+	"github.com/AxeForging/seedstorm/internal/safego"
 )
 
 // JobStatus represents the lifecycle state of a job.
@@ -74,6 +78,8 @@ type Job struct {
 	cancel  context.CancelFunc
 	closed  bool
 	closeCh chan struct{}
+	// Owner is the session that started the job, so its pages can find it again.
+	Owner string
 }
 
 // JobFunc is the body of a job.
@@ -83,15 +89,26 @@ type JobFunc func(ctx context.Context, jc JobControl) (map[string]any, error)
 type Manager struct {
 	mu   sync.RWMutex
 	jobs map[string]*Job
+	// keepFinished is how many finished jobs stay available (logs, results);
+	// older ones are evicted when a new job starts.
+	keepFinished int
 }
+
+// defaultKeepFinished bounds the memory of finished jobs' logs.
+const defaultKeepFinished = 50
 
 // NewManager constructs an empty job manager.
 func NewManager() *Manager {
-	return &Manager{jobs: make(map[string]*Job)}
+	return &Manager{jobs: make(map[string]*Job), keepFinished: defaultKeepFinished}
 }
 
 // Start registers a new job and runs fn in a goroutine.
 func (m *Manager) Start(ctx context.Context, name string, fn JobFunc) *Job {
+	return m.StartFor(ctx, "", name, fn)
+}
+
+// StartFor is Start for a job owned by a session.
+func (m *Manager) StartFor(ctx context.Context, owner, name string, fn JobFunc) *Job {
 	jctx, cancel := context.WithCancel(ctx)
 	job := &Job{
 		ID:        newID(),
@@ -101,15 +118,26 @@ func (m *Manager) Start(ctx context.Context, name string, fn JobFunc) *Job {
 		subs:      make(map[chan Event]struct{}),
 		cancel:    cancel,
 		closeCh:   make(chan struct{}),
+		Owner:     owner,
 	}
 	m.mu.Lock()
+	m.evictLocked()
 	m.jobs[job.ID] = job
 	m.mu.Unlock()
 
 	go func() {
 		job.setStatus(JobRunning)
 		ctrl := &jobWriter{job: job}
-		result, err := fn(jctx, ctrl)
+		// A panic ends this job as failed; the server and other jobs go on.
+		var result map[string]any
+		err := safego.Run("job "+name, func() error {
+			if err := faultinject.Hit(jctx, "job", name); err != nil {
+				return err
+			}
+			var ferr error
+			result, ferr = fn(jctx, ctrl)
+			return ferr
+		})
 		job.mu.Lock()
 		job.EndedAt = time.Now()
 		job.Result = result
@@ -305,4 +333,55 @@ func newID() string {
 		return fmt.Sprintf("job-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// evictLocked drops the oldest finished jobs beyond keepFinished. Running jobs
+// are never evicted.
+func (m *Manager) evictLocked() {
+	var finished []*Job
+	for _, j := range m.jobs {
+		select {
+		case <-j.closeCh:
+			finished = append(finished, j)
+		default:
+		}
+	}
+	if len(finished) <= m.keepFinished {
+		return
+	}
+	sort.Slice(finished, func(a, b int) bool { return finished[a].StartedAt.Before(finished[b].StartedAt) })
+	for _, j := range finished[:len(finished)-m.keepFinished] {
+		delete(m.jobs, j.ID)
+	}
+}
+
+// ForOwner returns the owner's jobs, newest first.
+func (m *Manager) ForOwner(owner string) []*Job {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*Job
+	for _, j := range m.jobs {
+		if j.Owner == owner {
+			out = append(out, j)
+		}
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].StartedAt.After(out[b].StartedAt) })
+	return out
+}
+
+// Position is the latest phase and progress event of a job.
+func (j *Job) Position() (phase string, progress *Event) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for i := len(j.events) - 1; i >= 0; i-- {
+		ev := j.events[i]
+		if progress == nil && ev.Kind == EventProgress {
+			e := ev
+			progress = &e
+		}
+		if ev.Kind == EventPhase {
+			return ev.Text, progress
+		}
+	}
+	return "", progress
 }

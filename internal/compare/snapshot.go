@@ -14,16 +14,22 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
 )
 
 // SnapshotKind identifies a table-counts snapshot file.
 const SnapshotKind = "seedstorm.table-counts"
 
-// SnapshotVersion is the snapshot file format written by EncodeSnapshot.
+// SnapshotVersion is the snapshot file format of counts only. Version 2 adds
+// relationships and is written only when there are some, so older binaries
+// keep reading counts-only files.
 const SnapshotVersion = 1
 
+// snapshotVersionRelationships is the first version with relationships.
+const snapshotVersionRelationships = 2
+
 // supportedSnapshotVersions lists every version ParseSnapshot reads.
-var supportedSnapshotVersions = []int64{1}
+var supportedSnapshotVersions = []int64{1, 2}
 
 // Snapshot file formats accepted by EncodeSnapshot.
 const (
@@ -33,15 +39,19 @@ const (
 
 // snapshotFields is the order fields are written in, and the set ParseSnapshot
 // accepts at the top level.
-var snapshotFields = []string{"kind", "version", "label", "dbType", "countMode", "takenAt", "tables"}
+var snapshotFields = []string{"kind", "version", "label", "dbType", "countMode", "takenAt", "tables", "relationships"}
 
 // EncodeSnapshot writes s as a versioned table-counts file in format "json" or
 // "yaml". Tables are sorted by name so two snapshots of one database diff line
 // by line. Unknown row counts and sizes are written as db.UnknownCount (-1).
 func EncodeSnapshot(s Snapshot, format string) ([]byte, error) {
+	version := SnapshotVersion
+	if len(s.Relationships) > 0 {
+		version = snapshotVersionRelationships
+	}
 	doc := yaml.MapSlice{
 		{Key: "kind", Value: SnapshotKind},
-		{Key: "version", Value: SnapshotVersion},
+		{Key: "version", Value: version},
 		{Key: "label", Value: s.Label},
 		{Key: "dbType", Value: s.DBType},
 		{Key: "countMode", Value: string(s.CountMode)},
@@ -63,6 +73,9 @@ func EncodeSnapshot(s Snapshot, format string) ([]byte, error) {
 		tables = append(tables, yaml.MapItem{Key: name, Value: entry})
 	}
 	doc = append(doc, yaml.MapItem{Key: "tables", Value: tables})
+	if len(s.Relationships) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "relationships", Value: s.Relationships})
+	}
 
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case FormatYAML, "yml":
@@ -174,6 +187,9 @@ func ParseSnapshot(data []byte) (Snapshot, error) {
 		if !ok || !slices.Contains(supportedSnapshotVersions, n) {
 			return snap, fmt.Errorf("unsupported snapshot version %v (supported: %s)", version, versionList())
 		}
+		if _, has := top["relationships"]; has && n < snapshotVersionRelationships {
+			return snap, fmt.Errorf("relationships need version %d of the snapshot format (this file says %d)", snapshotVersionRelationships, n)
+		}
 	} else if _, present := top["version"]; present {
 		return snap, fmt.Errorf("snapshot has a version but no kind: add kind: %s", SnapshotKind)
 	}
@@ -211,6 +227,17 @@ func ParseSnapshot(data []byte) (Snapshot, error) {
 		snap.TakenAt = t.UTC()
 	default:
 		return snap, fmt.Errorf("snapshot takenAt must be a timestamp, got %s", describe(v))
+	}
+
+	if raw, has := top["relationships"]; has {
+		if minimal {
+			return snap, fmt.Errorf("relationships need kind: %s and version: %d at the top", SnapshotKind, snapshotVersionRelationships)
+		}
+		shapes, err := parseRelationships(raw)
+		if err != nil {
+			return snap, err
+		}
+		snap.Relationships = shapes
 	}
 
 	tablesValue, present := top["tables"]
@@ -379,4 +406,26 @@ func versionList() string {
 		parts[i] = fmt.Sprint(v)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// parseRelationships reads the relationships section through JSON, which the
+// shape type describes field by field.
+func parseRelationships(raw any) ([]relations.Shape, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot relationships: %w", err)
+	}
+	var shapes []relations.Shape
+	if err := json.Unmarshal(data, &shapes); err != nil {
+		return nil, fmt.Errorf("snapshot relationships must be a list of foreign-key shapes: %w", err)
+	}
+	for i, s := range shapes {
+		if s.Child == "" || s.Column == "" || s.Parent == "" {
+			return nil, fmt.Errorf("snapshot relationship %d needs child, column and parent", i+1)
+		}
+	}
+	return shapes, nil
 }

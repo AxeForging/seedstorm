@@ -29,6 +29,9 @@ type Server struct {
 	jobs     *Manager
 	store    *ConnectionStore
 	profiles *profiles.Store
+	// bootID changes every time the server starts: a page holding job ids
+	// from an earlier run learns they are gone.
+	bootID string
 }
 
 // Options configures the Server.
@@ -69,6 +72,7 @@ func New(opts Options) (*Server, error) {
 		jobs:     NewManager(),
 		store:    NewConnectionStore(path),
 		profiles: profiles.NewStore(profilesPath),
+		bootID:   newID()[:12],
 	}
 	s.routes()
 	return s, nil
@@ -78,11 +82,11 @@ func New(opts Options) (*Server, error) {
 func (s *Server) Addr() string { return s.addr }
 
 // Handler returns the underlying http.Handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return recoverHandler(s.mux) }
 
 // ListenAndServe starts the HTTP server.
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	srv := &http.Server{Addr: s.addr, Handler: s.mux}
+	srv := &http.Server{Addr: s.addr, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithCancel(context.Background())
@@ -121,6 +125,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/profiles/ignored", s.handleProfileIgnored)
 	s.mux.HandleFunc("/api/schema", s.handleSchemaJSON)
 	s.mux.HandleFunc("/api/table", s.handleTablePreviewJSON)
+	s.mux.HandleFunc("/api/jobs", s.handleJobList)
+	s.mux.HandleFunc("/api/tuning", s.handleTuning)
 	s.mux.HandleFunc("/api/jobs/", s.handleJobsAPI)
 	s.mux.HandleFunc("/api/seed", s.handleSeedRun)
 	s.mux.HandleFunc("/api/gaps", s.handleGapsRun)
@@ -130,6 +136,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/clone-schema", s.handleCloneSchemaRun)
 	s.mux.HandleFunc("/api/compare", s.handleCompareRun)
 	s.mux.HandleFunc("/api/mirror", s.handleMirrorRun)
+	s.mux.HandleFunc("/api/snapshot", s.handleSnapshotRun)
+	s.mux.HandleFunc("/api/relationships", s.handleRelationships)
+	s.mux.HandleFunc("/api/compare/relationships", s.handleCompareRelationships)
 	s.mux.HandleFunc("/api/snapshots/encode", s.handleSnapshotEncode)
 	s.mux.HandleFunc("/api/snapshots/parse", s.handleSnapshotParse)
 	s.mux.HandleFunc("/api/generators", s.handleGeneratorsJSON)
@@ -137,6 +146,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/profiles/explain", s.handleProfileExplain)
 	s.mux.HandleFunc("/api/profiles/yaml", s.handleProfileYAML)
 	s.mux.HandleFunc("/api/profiles/example", s.handleProfileExample)
+	s.mux.HandleFunc("/api/profiles/relationships", s.handleProfileRelationships)
 }
 
 // loadTemplates parses each page template as its own template set, with the
@@ -185,6 +195,9 @@ func templateFuncs() template.FuncMap {
 			}
 			return b
 		},
+		// connKey identifies what a session points at, so per-connection page
+		// state (remembered form values) survives reconnecting.
+		"connKey": sessionConnectionKey,
 		"connName": func(info ConnectionInfo) string {
 			if info.Label != "" {
 				return info.Label

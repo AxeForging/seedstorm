@@ -18,6 +18,11 @@ type Table struct {
 	// Unique lists multi-column UNIQUE constraints (single-column ones are
 	// flagged on the column).
 	Unique [][]string `yaml:"unique,omitempty"`
+	// PartitionedBy describes a partitioned table's key, e.g. "range (created_at)".
+	PartitionedBy string `yaml:"partitioned_by,omitempty"`
+	// Unseedable says why rows cannot be generated for the table unless a
+	// value rule sets them (e.g. "partitioned by an expression").
+	Unseedable string `yaml:"unseedable,omitempty"`
 }
 
 // Column holds metadata and faker mapping for a single column.
@@ -30,6 +35,9 @@ type Column struct {
 	Nullable  bool   `yaml:"nullable,omitempty"`
 	Unique    bool   `yaml:"unique,omitempty"`
 	Generated bool   `yaml:"generated,omitempty"`
+	// PartitionKey marks the key column of a partitioned table: its faker
+	// keeps values inside the partitions, also when the column is in the PK.
+	PartitionKey bool `yaml:"partition_key,omitempty"`
 }
 
 // Load reads a schema YAML file from disk.

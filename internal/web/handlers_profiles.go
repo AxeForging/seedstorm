@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/AxeForging/seedstorm/internal/compare"
+
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/profiles"
 	"github.com/AxeForging/seedstorm/internal/rules"
@@ -341,4 +343,35 @@ func decodeBody(r *http.Request, v any) error {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return nil
+}
+
+// handleProfileRelationships turns a counts file with relationships (snapshot
+// version 2) into profile relationships:
+// POST {data} -> {relationships, skipped}.
+func (s *Server) handleProfileRelationships(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req struct {
+		Data string `json:"data"`
+	}
+	if err := decodeLimited(w, r, &req, maxSnapshotBody); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	snap, err := compare.ParseSnapshot([]byte(req.Data))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(snap.Relationships) == 0 {
+		writeError(w, http.StatusBadRequest, "the file has no relationships: take it with Analyze relationships or snapshot --relationships")
+		return
+	}
+	rels, skipped := rules.RelationshipsFromShapes(snap.Relationships)
+	if skipped == nil {
+		skipped = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"relationships": rels, "skipped": skipped})
 }

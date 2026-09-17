@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/logging"
@@ -72,11 +73,18 @@ This is same-engine schema cloning for local/test databases, not a lossless migr
 				Aliases: []string{"i"},
 				Usage:   "Review and confirm the clone in the terminal UI",
 			},
+			productionFlags()[0],
+			productionFlags()[1],
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			log := logging.Log
 			sourceType := normalizeDBType(cmd.String("source-db"))
 			targetType := normalizeDBType(cmd.String("target-db"))
+			if !cmd.Bool("dry-run") {
+				if err := refuseProductionWrite(cmd, "clone a schema into the target"); err != nil {
+					return err
+				}
+			}
 			objects, err := db.ParseCloneObjects(cmd.String("objects"))
 			if err != nil {
 				return err
@@ -92,10 +100,14 @@ This is same-engine schema cloning for local/test databases, not a lossless migr
 			if cmd.Bool("interactive") {
 				return tui.RunClone(ctx, sourceType, cmd.String("source-dsn"), targetType, cmd.String("target-dsn"), opts)
 			}
+			start := time.Now()
+			log.Info().Str("source", dsnLabel(sourceType, cmd.String("source-dsn"))).Str("target", dsnLabel(targetType, cmd.String("target-dsn"))).Bool("dry_run", opts.DryRun).
+				Msg("Cloning schema: reading the source, then running DDL on the target")
 			result, err := db.CloneSchema(ctx, sourceType, cmd.String("source-dsn"), targetType, cmd.String("target-dsn"), opts)
 			if err != nil {
 				return err
 			}
+			log.Info().Int("tables", result.Tables).Int("statements", len(result.Statements)).Dur("duration", time.Since(start).Round(time.Millisecond)).Msg("Schema cloned")
 			for _, skipped := range result.Skipped {
 				log.Warn().Str("kind", string(skipped.Kind)).Str("name", skipped.Name).Str("reason", skipped.Reason).Msg("Object not cloned")
 			}

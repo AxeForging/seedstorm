@@ -13,19 +13,23 @@ import (
 // connectForm is everything the connect page collects, kept as strings so a
 // failed attempt can be re-rendered exactly as the user typed it.
 type connectForm struct {
-	ID            string
-	Label         string
-	DBType        string
-	Host          string
-	Port          string
-	DBName        string
-	User          string
-	SSL           string
-	DSN           string
-	Password      string
-	Params        []Param
-	Save          bool
-	SavePassword  bool
+	ID           string
+	Label        string
+	DBType       string
+	Host         string
+	Port         string
+	DBName       string
+	User         string
+	SSL          string
+	DSN          string
+	Password     string
+	Params       []Param
+	Save         bool
+	SavePassword bool
+	// Production marks the connection as a production database (see
+	// SavedConnection.Production); ConfirmLabel is typed to clear it.
+	Production    bool
+	ConfirmLabel  string
 	NeedsPassword bool
 	// Origin is "edit" or "duplicate" when the form was opened from a saved
 	// connection, so the page can say which it is.
@@ -76,6 +80,8 @@ func parseConnectForm(r *http.Request) connectForm {
 		Password:     r.FormValue("password"),
 		Save:         isChecked(r.FormValue("save")),
 		SavePassword: isChecked(r.FormValue("savePassword")),
+		Production:   isChecked(r.FormValue("production")),
+		ConfirmLabel: strings.TrimSpace(r.FormValue("confirmLabel")),
 	}
 	names := r.Form["paramName"]
 	values := r.Form["paramValue"]
@@ -118,11 +124,12 @@ func (f connectForm) info() ConnectionInfo {
 func (f connectForm) saved() SavedConnection {
 	port, _ := strconv.Atoi(f.Port)
 	c := SavedConnection{
-		ID:     f.ID,
-		Label:  f.Label,
-		DBType: f.DBType,
-		DSN:    f.DSN,
-		Params: f.Params,
+		ID:         f.ID,
+		Label:      f.Label,
+		DBType:     f.DBType,
+		DSN:        f.DSN,
+		Params:     f.Params,
+		Production: f.Production,
 	}
 	if f.DSN == "" {
 		c.Host = f.Host
@@ -343,6 +350,7 @@ func (s *Server) handleConnectSaved(w http.ResponseWriter, r *http.Request) {
 		s.renderConnect(w, r, page, err.Error())
 		return
 	}
+	sess.SavedID = saved.ID
 	_ = s.store.Touch(saved.ID)
 	setSessionCookie(w, sess.ID)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -356,16 +364,17 @@ func needsPassword(c SavedConnection) bool {
 
 func savedToForm(c SavedConnection, password string) connectForm {
 	f := connectForm{
-		ID:       c.ID,
-		Label:    c.Label,
-		DBType:   c.DBType,
-		Host:     c.Host,
-		DBName:   c.DBName,
-		User:     c.User,
-		SSL:      c.SSL,
-		DSN:      c.DSN,
-		Params:   c.Params,
-		Password: password,
+		ID:         c.ID,
+		Label:      c.Label,
+		DBType:     c.DBType,
+		Host:       c.Host,
+		DBName:     c.DBName,
+		User:       c.User,
+		SSL:        c.SSL,
+		DSN:        c.DSN,
+		Params:     c.Params,
+		Password:   password,
+		Production: c.Production,
 	}
 	if c.Port > 0 {
 		f.Port = strconv.Itoa(c.Port)
@@ -397,6 +406,7 @@ func (s *Server) handleSavedConnections(w http.ResponseWriter, r *http.Request) 
 			SavedConnection
 			Password      string `json:"password"`
 			ClearPassword bool   `json:"clearPassword"`
+			ConfirmLabel  string `json:"confirmLabel"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxProfileBody)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "bad json: "+err.Error())
@@ -413,6 +423,10 @@ func (s *Server) handleSavedConnections(w http.ResponseWriter, r *http.Request) 
 		}
 		if err := validateParamNames(normalizeParams(conn.Params)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if refusal := s.unflagRefusal(conn, body.ConfirmLabel); refusal != nil {
+			writeProductionRefusal(w, refusal)
 			return
 		}
 		out, err := s.store.Save(conn, body.ClearPassword)

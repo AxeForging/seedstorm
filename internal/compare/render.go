@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
 )
 
 // RenderReport writes the comparison as an aligned text table. onlyDiff hides
@@ -130,4 +131,60 @@ func engineName(driver string) string {
 		return "postgres"
 	}
 	return driver
+}
+
+// RenderShapeDrift writes relationship shapes side by side: average, p95 and
+// maximum children per parent and the share of parents without children.
+// onlyDiff hides relationships whose shapes match.
+func RenderShapeDrift(w io.Writer, drift []ShapeDrift, onlyDiff bool) {
+	_, _ = fmt.Fprintln(w, "\nRelationships (children per parent: avg / p95 / max · parents without children)")
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "RELATIONSHIP\tSOURCE\tTARGET\tSTATUS")
+	counts := map[ShapeStatus]int{}
+	shown := 0
+	for _, d := range drift {
+		counts[d.Status]++
+		if onlyDiff && d.Status == ShapeSame {
+			continue
+		}
+		shown++
+		parent := ""
+		if s := firstShape(d); s != nil {
+			parent = " → " + s.Parent
+		}
+		_, _ = fmt.Fprintf(tw, "%s.%s%s\t%s\t%s\t%s\n", d.Child, d.Column, parent, shapeCell(d.Source), shapeCell(d.Target), d.Status)
+	}
+	_ = tw.Flush()
+	if onlyDiff && shown == 0 {
+		_, _ = fmt.Fprintln(w, "  (every relationship matches)")
+	}
+	_, _ = fmt.Fprintf(w, "%d relationships · same %d · differs %d · source only %d · target only %d · unknown %d\n",
+		len(drift), counts[ShapeSame], counts[ShapeDiffers], counts[ShapeSourceOnly], counts[ShapeTargetOnly], counts[ShapeUnknown])
+}
+
+func firstShape(d ShapeDrift) *relations.Shape {
+	if d.Source != nil {
+		return d.Source
+	}
+	return d.Target
+}
+
+func shapeCell(s *relations.Shape) string {
+	switch {
+	case s == nil:
+		return "—"
+	case !measured(*s):
+		return string(s.Outcome)
+	}
+	mark := ""
+	if s.Outcome == relations.OutcomeEstimated || s.Outcome == relations.OutcomeSkippedUnindexed {
+		mark = "~"
+	}
+	num := func(n int64) string {
+		if n < 0 {
+			return "?"
+		}
+		return fmt.Sprint(n)
+	}
+	return fmt.Sprintf("%s%.2f / %s / %s · %.0f%%", mark, s.Avg, num(s.P95), num(s.Max), s.ZeroShare*100)
 }

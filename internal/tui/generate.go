@@ -396,7 +396,7 @@ func (m GenModel) updateRows(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.execute.dryRun = true // generate is always a "dry run" (no DB)
 		m.step = genStepExecute
 
-		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.genConfig.SelfRefDepth(), m.profile.mergeRows(m.volumes.TableRows()), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType, m.profile.Overrides))
+		return m, tea.Batch(m.execute.spinner.Tick, startGenerate(m.schema, m.volumes.tables, m.genConfig.Rows(), m.genConfig.SelfRefDepth(), m.profile.mergeRows(m.volumes.TableRows()), m.genConfig.Format(), m.genConfig.OutPath(), m.dbType, m.profile.Overrides, m.profile.Shapes))
 	}
 	return m, cmd
 }
@@ -456,7 +456,7 @@ func (m GenModel) View() string {
 // startGenerate generates data and optionally writes it to outPath. Rows
 // stream into the file as they are generated; the preview keeps only counts
 // and each table's first row.
-func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, tableRows map[string]int, format, outPath, dbType string, overrides faker.Overrides) tea.Cmd {
+func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, tableRows map[string]int, format, outPath, dbType string, overrides faker.Overrides, shapes map[string]faker.Shape) tea.Cmd {
 	return func() tea.Msg {
 		sink := io.Writer(io.Discard)
 		var file *fsutil.AtomicFile
@@ -475,7 +475,7 @@ func startGenerate(s *schema.Schema, tables []string, rows, selfRefDepth int, ta
 		samples := map[string]map[string]interface{}{}
 		res, err := seeder.Seed(context.Background(), nil, dbType, s, tables, tables, seeder.SeedOptions{
 			Rows: rows, TableRows: tableRows, DryRun: true,
-			Generate:     faker.GenerateOptions{SelfRefDepth: selfRefDepth, Overrides: overrides},
+			Generate:     faker.GenerateOptions{SelfRefDepth: selfRefDepth, Overrides: overrides, Shapes: shapes},
 			OnTableStart: w.Table,
 			OnRows:       sampleFirstRows(samples, w.Rows),
 		})

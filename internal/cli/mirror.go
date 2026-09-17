@@ -16,7 +16,9 @@ import (
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/logging"
 	"github.com/AxeForging/seedstorm/internal/profiles"
+	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/rules"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 	"github.com/AxeForging/seedstorm/internal/tui"
 )
@@ -39,7 +41,10 @@ func mirrorCmd() *cli.Command {
 		&cli.BoolFlag{Name: "yes", Aliases: []string{"y"}, Usage: "Skip the confirmation prompt for --mode reset"},
 		&cli.IntFlag{Name: "seed", Usage: "Random seed for reproducible data generation (0 = random)"},
 		&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "Review the plan, preview samples and confirm in the terminal UI"},
+		&cli.BoolFlag{Name: "shape-like-source", Usage: "Give target foreign keys the source's children-per-parent shapes (from --source-snapshot relationships, or measured read-only on the source)"},
 	)
+	flags = append(flags, relationshipFlags()...)
+	flags = append(flags, productionFlags()...)
 	return &cli.Command{
 		Name:  "mirror",
 		Usage: "Seed a target database so its table volumes follow a source database",
@@ -56,6 +61,11 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			mode, err := compare.ParseMirrorMode(cmd.String("mode"))
 			if err != nil {
 				return err
+			}
+			if !cmd.Bool("dry-run") {
+				if err := refuseProductionWrite(cmd, "mirror into the target"); err != nil {
+					return err
+				}
 			}
 			counts, err := countMode(cmd)
 			if err != nil {
@@ -85,8 +95,20 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			}
 			defer closeEndpoints(source, target)
 
+			var sourceShapes []relations.Shape
+			if cmd.Bool("shape-like-source") {
+				log.Info().Msg("Reading the source's relationship shapes")
+				logScanServer(ctx, source)
+				if sourceShapes, err = source.Shapes(ctx, relationshipOptions(cmd, counts, "source")); err != nil {
+					return runerr.OnSide(runerr.SideSource, err)
+				}
+				logShapeSummary(sourceShapes)
+			}
+
 			log.Info().Str("source", source.Label).Str("target", target.Label).Msg("Comparing databases")
 			job, err := seeder.PrepareMirror(ctx, source, target, seeder.MirrorConfig{
+				SourceShapes: sourceShapes,
+				OnCount:      sideStepLogger("Counting", time.Now),
 				Options: compare.MirrorOptions{
 					Mode:       mode,
 					Scale:      cmd.Float("scale"),
@@ -100,6 +122,9 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 			if err != nil {
 				return err
 			}
+			for _, notice := range job.Servers.Notices() {
+				log.Warn().Msg(notice)
+			}
 			if job.SameDatabaseUnchecked {
 				log.Warn().Str("source", source.Label).Msg("Source is a snapshot file: cannot check that source and target are different databases")
 			}
@@ -108,11 +133,24 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 					log.Warn().Str("path", issue.Path).Msg(issue.Message)
 				}
 			}
+			workers, err := workersFromFlag(ctx, cmd, target.Conn, target.DBType)
+			if err != nil {
+				return err
+			}
 			runOpts := seeder.Options{
 				BatchSize:   cmd.Int("batch-size"),
-				Workers:     cmd.Int("workers"),
+				Workers:     workers,
 				StopOnError: cmd.Bool("stop-on-error"),
-				Generate:    faker.GenerateOptions{SelfRefDepth: cmd.Int("self-ref-depth")},
+				Generate:    faker.GenerateOptions{SelfRefDepth: cmd.Int("self-ref-depth"), OnWarning: logWarning},
+			}
+			if len(job.Shapes) > 0 {
+				log.Info().Int("relationships", len(job.Shapes)).Msg("Relationship shapes applied")
+			}
+			for _, skipped := range job.ShapesSkipped {
+				log.Warn().Msg("Relationship not shaped: " + skipped)
+			}
+			if n := len(job.ShapesSkipped); n > 0 {
+				log.Warn().Int("not_shaped", n).Int("shaped", len(job.Shapes)).Msg("Some measured relationships cannot be shaped in this schema; their keys are spread evenly")
 			}
 
 			if cmd.Bool("interactive") {
@@ -149,6 +187,9 @@ same-database safety check cannot run then, so double-check --target-dsn.`,
 				log.Info().Int("done", done).Int("total", total).Msg("Truncating target tables")
 			})
 			log.Info().Int64("inserted", result.Inserted).Dur("duration", time.Since(start).Round(time.Millisecond)).Msg("Mirror finished")
+			if runErr == nil {
+				logShapeResults(ctx, target.Conn, target.DBType, job.Schema, job.Shapes)
+			}
 			if format == "json" {
 				if err := writeJSON(map[string]any{"plan": job.Plan, "result": result}); err != nil {
 					return err

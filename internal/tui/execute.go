@@ -13,6 +13,8 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -22,6 +24,12 @@ type tableSeededMsg struct {
 	rows  int
 }
 
+// seedProgressMsg reports a written piece with run totals (seeder.Progress).
+type seedProgressMsg seeder.Progress
+
+// seedPhaseMsg names a step before rows are written (connecting, truncating).
+type seedPhaseMsg string
+
 // seedDoneMsg is sent when the entire seed operation completes.
 type seedDoneMsg struct {
 	totalRows int
@@ -29,6 +37,7 @@ type seedDoneMsg struct {
 	tables    []string
 	rowsMap   map[string]int
 	err       error
+	syncErr   error
 }
 
 // dryRunDoneMsg is sent when dry-run generation completes.
@@ -63,6 +72,14 @@ type executeModel struct {
 	seededTables    []string
 	seededRows      map[string]int
 	height          int
+	// events carries progress from the running seed; nil before it starts.
+	events    chan tea.Msg
+	startedAt time.Time
+	phase     string
+	progress  seeder.Progress
+	meter     *seeder.Meter
+	estimate  seeder.Estimate
+	syncErr   error
 }
 
 func newExecute(totalTables int, dryRun bool) executeModel {
@@ -74,6 +91,7 @@ func newExecute(totalTables int, dryRun bool) executeModel {
 		totalTables: totalTables,
 		dryRun:      dryRun,
 		seededRows:  make(map[string]int),
+		startedAt:   time.Now(),
 	}
 }
 
@@ -106,14 +124,32 @@ func (m executeModel) Update(msg tea.Msg) (executeModel, tea.Cmd) {
 		m.completedTables++
 		m.seededTables = append(m.seededTables, msg.table)
 		m.seededRows[msg.table] = msg.rows
+		return m, waitSeed(m.events)
+	case seedPhaseMsg:
+		m.phase = string(msg)
+		return m, waitSeed(m.events)
+	case seedProgressMsg:
+		p := seeder.Progress(msg)
+		m.phase = ""
+		m.progress = p
+		m.currentTable = p.Table
+		if m.meter == nil {
+			m.meter = seeder.NewMeter(m.startedAt)
+		}
+		m.estimate = m.meter.Observe(time.Now(), p.RowsDone, p.RowsTotal)
+		return m, waitSeed(m.events)
 	case seedDoneMsg:
 		m.done = true
 		m.totalRows = msg.totalRows
 		m.elapsed = msg.elapsed
 		m.seededTables = msg.tables
 		m.seededRows = msg.rowsMap
+		if m.seededRows == nil {
+			m.seededRows = map[string]int{}
+		}
 		m.completedTables = len(msg.tables)
 		m.err = msg.err
+		m.syncErr = msg.syncErr
 		return m, nil
 	case dryRunDoneMsg:
 		m.done = true
@@ -235,67 +271,137 @@ func (m executeModel) View() string {
 	if m.done {
 		if m.err != nil {
 			sb.WriteString(errorStyle.Render(fmt.Sprintf("  Error: %v\n", m.err)))
+			sb.WriteString("\n")
+			var notWritten []string
+			for _, t := range m.seededTables {
+				if n := m.seededRows[t]; n > 0 {
+					fmt.Fprintf(&sb, "    %-30s %d rows\n", t, n)
+				} else {
+					notWritten = append(notWritten, t)
+				}
+			}
+			if len(notWritten) > 0 {
+				sb.WriteString(dimStyle.Render("    not written: " + strings.Join(notWritten, ", ")))
+				sb.WriteString("\n")
+			}
 		} else {
 			sb.WriteString(successStyle.Render(fmt.Sprintf("  Seeding complete! %d rows across %d tables in %s\n",
 				m.totalRows, m.completedTables, m.elapsed.Round(time.Millisecond))))
+			sb.WriteString("\n")
+			for _, t := range m.seededTables {
+				fmt.Fprintf(&sb, "    %-30s %d rows\n", t, m.seededRows[t])
+			}
 		}
-		sb.WriteString("\n")
-		for _, t := range m.seededTables {
-			fmt.Fprintf(&sb, "    %-30s %d rows\n", t, m.seededRows[t])
+		if m.syncErr != nil {
+			sb.WriteString(errorStyle.Render(fmt.Sprintf("\n  Sequences not advanced: %v (application inserts may reuse seeded ids)\n", m.syncErr)))
 		}
 		sb.WriteString("\n")
 		sb.WriteString(helpStyle.Render("  q quit"))
 	} else {
-		pct := 0
-		if m.totalTables > 0 {
-			pct = m.completedTables * 100 / m.totalTables
+		elapsed := time.Since(m.startedAt).Round(100 * time.Millisecond)
+		switch {
+		case m.phase != "":
+			fmt.Fprintf(&sb, "  %s %s  · %s\n", m.spinner.View(), m.phase, elapsed)
+		case m.progress.RowsTotal > 0:
+			pct := m.progress.RowsDone * 100 / m.progress.RowsTotal
+			fmt.Fprintf(&sb, "  %s Seeding %s  %s / %s rows (%d%%)  · %d/%d tables  · %s\n",
+				m.spinner.View(), m.currentTable, groupThousands(m.progress.RowsDone), groupThousands(m.progress.RowsTotal),
+				pct, m.completedTables, m.totalTables, elapsed)
+			if est := m.estimate.String(); est != "" {
+				sb.WriteString(dimStyle.Render("    " + est))
+				sb.WriteString("\n")
+			}
+		case m.currentTable != "":
+			fmt.Fprintf(&sb, "  %s Seeding %s  · %d/%d tables  · %s\n", m.spinner.View(), m.currentTable, m.completedTables, m.totalTables, elapsed)
+		default:
+			fmt.Fprintf(&sb, "  %s Starting (%d tables)  · %s\n", m.spinner.View(), m.totalTables, elapsed)
 		}
-		fmt.Fprintf(&sb, "  %s Seeding %s (%d/%d tables, %d%%)\n",
-			m.spinner.View(), m.currentTable, m.completedTables, m.totalTables, pct)
+		sb.WriteString(helpStyle.Render("\n  ctrl+c aborts (rows already inserted stay)"))
 	}
 
 	return sb.String()
 }
 
-// startSeed returns a tea.Cmd that runs the seed operation in a goroutine.
-func startSeed(ctx context.Context, s *seedParams) tea.Cmd {
+// startSeed runs the seed in a goroutine; progress, finished tables and the
+// final result arrive on events (read with waitSeed).
+func startSeed(ctx context.Context, s *seedParams, events chan tea.Msg) tea.Cmd {
+	return runSeedInto(ctx, s, s.tables, s.truncate, events)
+}
+
+// runSeedInto seeds tables (preloading keys of preload) and reports on events.
+func runSeedInto(ctx context.Context, s *seedParams, preload []string, truncate bool, events chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
-
-		batchSize := s.batchSize
-		if batchSize < 1 {
-			batchSize = 1
-		}
-
-		conn, err := sql.Open(s.dbType, s.dsn)
-		if err != nil {
-			return seedDoneMsg{err: fmt.Errorf("failed to open connection: %w", err)}
-		}
-		defer conn.Close()
-
-		if err := conn.PingContext(ctx); err != nil {
-			return seedDoneMsg{err: fmt.Errorf("failed to ping database: %w", err)}
-		}
-
-		if s.truncate {
-			if err := db.TruncateConcurrently(ctx, conn, s.dbType, s.tables, seeder.DefaultWorkers, nil); err != nil {
-				return seedDoneMsg{err: fmt.Errorf("truncate failed: %w", err)}
+		send := func(msg tea.Msg) {
+			select {
+			case events <- msg:
+			default: // the view keeps up; dropping a tick only skips a redraw
 			}
 		}
-
-		// Move Postgres sequences past the inserted ids, even if an insert fails.
-		defer func() { _, _ = db.SyncSequences(ctx, conn, s.dbType, s.tables) }()
-		res, err := seeder.Seed(ctx, conn, s.dbType, s.schema, s.tables, s.tables, s.seedOptions(batchSize, false, nil))
-		if err != nil {
-			return seedDoneMsg{err: err}
-		}
-		return seedDoneMsg{
-			totalRows: res.Total,
-			elapsed:   time.Since(start),
-			tables:    s.tables,
-			rowsMap:   res.Counts,
-		}
+		done := seedDoneMsg{tables: s.tables}
+		err := safego.Run("seed", func() error {
+			batchSize := max(s.batchSize, 1)
+			send(seedPhaseMsg("Connecting"))
+			conn, err := sql.Open(s.dbType, s.dsn)
+			if err != nil {
+				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("failed to open connection: %w", err))
+			}
+			defer conn.Close()
+			pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err = conn.PingContext(pctx)
+			cancel()
+			if err != nil {
+				return runerr.At(runerr.PhaseConnect, "", fmt.Errorf("database did not answer: %w", err))
+			}
+			if truncate {
+				send(seedPhaseMsg("Truncating tables"))
+				if err := db.TruncateConcurrently(ctx, conn, s.dbType, s.tables, seeder.DefaultWorkers, nil); err != nil {
+					return runerr.At(runerr.PhaseTruncate, "", fmt.Errorf("truncate failed: %w", err))
+				}
+			}
+			send(seedPhaseMsg("Generating the first rows"))
+			// Move Postgres sequences past the inserted ids, even if an insert fails.
+			defer func() {
+				if _, err := db.SyncSequences(context.WithoutCancel(ctx), conn, s.dbType, s.tables); err != nil {
+					done.syncErr = err
+				}
+			}()
+			opts := s.seedOptions(batchSize, false, nil)
+			opts.OnProgress = func(p seeder.Progress) { send(seedProgressMsg(p)) }
+			opts.OnTable = func(p seeder.Progress) { send(tableSeededMsg{table: p.Table, rows: int(p.Inserted)}) }
+			res, err := seeder.Seed(ctx, conn, s.dbType, s.schema, preload, s.tables, opts)
+			done.totalRows, done.rowsMap = res.Total, res.Counts
+			return err
+		})
+		done.err = err
+		done.elapsed = time.Since(start)
+		events <- done
+		return nil
 	}
+}
+
+// waitSeed reads the next message of a running seed.
+func waitSeed(events chan tea.Msg) tea.Cmd {
+	if events == nil {
+		return nil
+	}
+	return func() tea.Msg { return <-events }
+}
+
+// groupThousands formats n as 12,345.
+func groupThousands(n int64) string {
+	s := fmt.Sprint(n)
+	if n < 0 {
+		return "-" + groupThousands(-n)
+	}
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 // startDryRun returns a tea.Cmd that generates data and builds a summary.
@@ -308,7 +414,7 @@ func (s *seedParams) seedOptions(batchSize int, dryRun bool, onRows func(string,
 	return seeder.SeedOptions{
 		Rows: s.rows, EnumRows: s.enumRows, TableRows: s.tableRows, BatchSize: batchSize, DryRun: dryRun,
 		Workers:  seeder.DefaultWorkers,
-		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides},
+		Generate: faker.GenerateOptions{SelfRefDepth: s.selfRefDepth, Overrides: s.overrides, Shapes: s.shapes},
 		OnRows:   onRows,
 	}
 }

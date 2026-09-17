@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"runtime"
 	"strings"
 	"time"
 
@@ -15,8 +14,10 @@ import (
 	"github.com/AxeForging/seedstorm/internal/faker"
 	"github.com/AxeForging/seedstorm/internal/graph"
 	"github.com/AxeForging/seedstorm/internal/rules"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/schema"
 	"github.com/AxeForging/seedstorm/internal/seeder"
+	"github.com/AxeForging/seedstorm/internal/tuning"
 	"github.com/goccy/go-yaml"
 	"github.com/rs/zerolog"
 )
@@ -58,6 +59,9 @@ type SeedRequest struct {
 	Workers int `json:"workers,omitempty"`
 	// GenWorkers is how many tables generate at once (0 or 1: one).
 	GenWorkers int `json:"genWorkers,omitempty"`
+	// ConfirmProduction is the label of a production connection, typed to
+	// write to it.
+	ConfirmProduction string `json:"confirmProduction,omitempty"`
 }
 
 type CloneSchemaRequest struct {
@@ -68,6 +72,9 @@ type CloneSchemaRequest struct {
 	Password      string         `json:"password,omitempty"`
 	DropExisting  bool           `json:"dropExisting"`
 	DryRun        bool           `json:"dryRun"`
+	// ConfirmProduction is the target's label, typed to write to a
+	// production connection.
+	ConfirmProduction string `json:"confirmProduction,omitempty"`
 	// Objects adds views, routines and triggers to the tables clone.
 	Objects db.CloneObjects `json:"objects"`
 }
@@ -191,6 +198,9 @@ func (s *Server) resolveCloneTarget(req CloneSchemaRequest, source *Session) (*S
 
 func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc JobControl) (map[string]any, error) {
 	log := jobLogger(jc)
+	if !req.DryRun {
+		defer sess.InvalidateCounts()
+	}
 	tableRows := cleanTableRows(req.TableRows)
 	truncateOnly := req.Truncate && req.Rows == 0 && req.EnumRows == 0 && len(tableRows) == 0 && req.ProfileID == ""
 	if req.Rows < 0 || (req.Rows == 0 && !truncateOnly) {
@@ -260,6 +270,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		return nil, err
 	}
 	log.Info().Str("order", strings.Join(targetTables, " → ")).Msg("Seed order resolved")
+	// Refuse tables that cannot be generated before anything is truncated.
+	if err := faker.CheckSeedable(sc, targetTables, profile.overrides); err != nil {
+		return nil, err
+	}
 
 	if req.Truncate && !req.DryRun {
 		jc.Phase("truncate")
@@ -270,7 +284,7 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 			}
 			jc.Progress(done, total, table)
 		}); err != nil {
-			return nil, fmt.Errorf("truncate: %w", err)
+			return nil, runerr.At(runerr.PhaseTruncate, "", err)
 		}
 		log.Info().Msg("Truncate complete")
 	}
@@ -328,8 +342,10 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
+		OnNotice:     func(msg string) { log.Warn().Msg(msg) },
 		OnTableStart: func(table string) error { log.Info().Str("table", table).Msg("Seeding table"); return nil },
 		OnRows: func(table string, rows []map[string]interface{}) error {
 			if req.DryRun {
@@ -339,9 +355,14 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 		},
 	})
 	if err != nil {
-		return nil, err
+		finishProgress()
+		return partialSeedResult(res, targetTables, err), err
 	}
 	finishProgress()
+	var shapeResults []seeder.ShapeResult
+	if !req.DryRun {
+		shapeResults = measureShapes(ctx, log, conn, sess.DBType, sc, profile.shapes)
+	}
 	totalRows := res.Total
 	tableCounts := res.Counts
 	elapsed := time.Since(start).Round(time.Millisecond)
@@ -367,6 +388,9 @@ func (s *Server) runSeed(ctx context.Context, sess *Session, req SeedRequest, jc
 	if len(warnings) > 0 {
 		result["warnings"] = generationWarningsView(warnings)
 	}
+	if shapeResults != nil {
+		result["shapes"] = shapeResults
+	}
 	if req.DryRun {
 		result["output"] = dryRunSQL.String()
 		result["format"] = "sql"
@@ -388,10 +412,16 @@ type GapsRequest struct {
 	ProfileID    string         `json:"profileId,omitempty"`
 	Workers      int            `json:"workers,omitempty"`
 	GenWorkers   int            `json:"genWorkers,omitempty"`
+	// ConfirmProduction is the label of a production connection, typed to
+	// write to it.
+	ConfirmProduction string `json:"confirmProduction,omitempty"`
 }
 
 func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc JobControl) (map[string]any, error) {
 	log := jobLogger(jc)
+	if req.Fill && !req.DryRun {
+		defer sess.InvalidateCounts()
+	}
 	if req.Rows <= 0 {
 		req.Rows = 100
 	}
@@ -420,24 +450,26 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 	}
 	jc.Phase("scan")
 	log.Info().Int("tables", len(allSorted)).Msg("Scanning row counts")
-	counts, err := db.GetTableRowCounts(ctx, conn, sess.DBType, allSorted)
-	if err != nil {
+	counts, failed := db.CountTables(ctx, conn, sess.DBType, allSorted, func(done, total int, table string) {
+		jc.Progress(done, total, "count "+table)
+	})
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	// Default gap set: every empty table, in topological order.
-	var gapTables []string
 	for _, t := range allSorted {
-		if counts[t] == 0 {
-			gapTables = append(gapTables, t)
+		if ferr, ok := failed[t]; ok {
+			log.Warn().Str("table", t).Err(ferr).Msg("Row count failed: left out of the gaps (unknown is not empty)")
 		}
 	}
+
+	// Default gap set: every table known to be empty, in topological order.
+	gapTables := seeder.GapTables(allSorted, counts, nil)
 	// If the caller scoped the fill, intersect with empty tables and resolve
 	// non-nullable parents (which may themselves be empty).
 	if len(req.Tables) > 0 {
 		selected := make(map[string]bool, len(req.Tables))
 		for _, t := range req.Tables {
-			if counts[t] == 0 {
+			if seeder.KnownEmpty(counts, t) {
 				selected[t] = true
 			}
 		}
@@ -447,7 +479,7 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		// parents do not need re-seeding.
 		gapTables = gapTables[:0]
 		for _, t := range resolved {
-			if counts[t] == 0 {
+			if seeder.KnownEmpty(counts, t) {
 				gapTables = append(gapTables, t)
 			}
 		}
@@ -485,14 +517,28 @@ func (s *Server) runGaps(ctx context.Context, sess *Session, req GapsRequest, jc
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    profile.overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
+		OnNotice:     func(msg string) { log.Warn().Msg(msg) },
 		OnTableStart: func(table string) error { log.Info().Str("table", table).Msg("Filling table"); return nil },
 	})
 	if err != nil {
-		return nil, err
+		finishProgress()
+		partial := partialSeedResult(res, gapTables, err)
+		for k, v := range result {
+			if _, set := partial[k]; !set {
+				partial[k] = v
+			}
+		}
+		return partial, err
 	}
 	finishProgress()
+	if !req.DryRun {
+		if shapes := measureShapes(ctx, log, conn, sess.DBType, sc, profile.shapes); shapes != nil {
+			result["shapes"] = shapes
+		}
+	}
 	totalRows := res.Total
 	result["filled"] = totalRows
 	if len(warnings) > 0 {
@@ -564,6 +610,7 @@ func (s *Server) runGenerate(ctx context.Context, sess *Session, req GenerateReq
 		Generate: faker.GenerateOptions{
 			SelfRefDepth: requestSelfRefDepth(req.SelfRefDepth),
 			Overrides:    overrides,
+			Shapes:       profile.shapes,
 			OnWarning:    collectWarning(&warnings, log),
 		},
 		OnTableStart: w.Table,
@@ -608,6 +655,7 @@ type runProfile struct {
 	rules     *rules.RuleSet
 	schema    *schema.Schema
 	overrides faker.Overrides
+	shapes    map[string]faker.Shape
 	tableRows map[string]int
 }
 
@@ -629,7 +677,7 @@ func (s *Server) applyProfile(id string, sc *schema.Schema, tableRows map[string
 		return runProfile{}, err
 	}
 	log.Info().Str("profile", rs.Name).Str("run", runID).Msg("Seed profile applied")
-	return runProfile{rules: rs, schema: sc, overrides: overrides, tableRows: cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows))}, nil
+	return runProfile{rules: rs, schema: sc, overrides: overrides, shapes: rs.Shapes(sc), tableRows: cleanTableRows(rules.MergeTableRowsFor(rs, sc, tableRows))}, nil
 }
 
 // applyIgnore removes the profile's ignored tables from a run. A kept table
@@ -719,9 +767,10 @@ func requestWorkers(n int) int {
 // maxWorkers caps connections one web run may open against a database.
 const maxWorkers = 32
 
-// requestGenWorkers bounds a requested generator count to the machine's cores.
+// requestGenWorkers bounds a requested generator count to the cores this
+// process may use (a container CPU quota, not the host's cores).
 func requestGenWorkers(n int) int {
-	return max(1, min(n, runtime.NumCPU()))
+	return tuning.ClampGenerators(n)
 }
 
 func generationWarningsView(warnings []faker.GenerationWarning) []map[string]any {

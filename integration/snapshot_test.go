@@ -134,7 +134,7 @@ func TestSnapshot_BinaryEndToEnd(t *testing.T) {
 				want := map[string]string{
 					"profile.yaml": "looks like a seed profile",
 					"broken.json":  "not valid JSON or YAML",
-					"future.yaml":  "unsupported snapshot version 9 (supported: 1)",
+					"future.yaml":  "unsupported snapshot version 9 (supported: 1, 2)",
 					"dupes.yaml":   "lists the same name twice",
 				}
 				for name, body := range cases {

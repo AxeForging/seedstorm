@@ -278,6 +278,17 @@
 .pf-warn-text { color: var(--warn); }
 .pf-ignore-toggle { align-self: end; min-height: 38px; align-items: center; }
 .pf-ignored-note { margin: 0 0 8px; color: var(--warn); }
+.pf-shapes-import { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pf-file-btn { cursor: pointer; }
+.pf-shape-item { align-items: start; }
+.pf-shape-fields { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: end; min-width: 0; }
+.pf-shape-field { display: grid; gap: 2px; font-size: 11px; color: var(--muted); }
+.pf-shape-field input { width: 76px; min-height: 28px; padding: 3px 6px; font-size: 12px; font-family: var(--mono); }
+@media (max-width: 640px) {
+  .pf-shape-item { grid-template-columns: minmax(0, 1fr) auto; }
+  .pf-shape-fields { grid-column: 1 / -1; grid-row: 2; }
+  .pf-shape-field input { font-size: 16px; }
+}
 
 /* ── profile file import ── */
 .pf-yaml-file {

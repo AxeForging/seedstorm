@@ -108,9 +108,9 @@ func (s *Store) Save(id string, rs rules.RuleSet) (Profile, error) {
 	if rs.Name == "" {
 		return Profile{}, fmt.Errorf("profile name is required")
 	}
-	if rs.Version == 0 {
-		rs.Version = rules.Version
-	}
+	// Relationships need version 2 (older binaries refuse it); without them a
+	// profile stays readable by older binaries as version 1.
+	rs.Version = rules.FormatVersion(&rs)
 	if issues := rs.Validate(nil); rules.HasErrors(issues) {
 		return Profile{}, fmt.Errorf("invalid profile: %s", issues[0])
 	}

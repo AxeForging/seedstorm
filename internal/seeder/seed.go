@@ -8,8 +8,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/faultinject"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/schema"
+	"github.com/AxeForging/seedstorm/internal/tuning"
 )
 
 // SeedOptions describes a plain seed run: seed and gaps --fill in the CLI, TUI
@@ -19,6 +24,10 @@ type SeedOptions struct {
 	Rows      int
 	EnumRows  int
 	TableRows map[string]int
+	// DerivedRows are row counts planned from relationship shapes
+	// (faker.DeriveShapedRows). Unlike TableRows they keep enum coverage, and
+	// an explicit TableRows entry wins.
+	DerivedRows map[string]int
 	// BatchSize is the most rows per INSERT; SplitBatches may send fewer.
 	BatchSize int
 	// ChunkRows bounds rows generated at once (0: DefaultChunkRows).
@@ -31,6 +40,9 @@ type SeedOptions struct {
 	// Workers > 1, and is ignored for dry runs, when OnRows is set (callers
 	// print chunks in order) and when Reproducible is set. See generateTables.
 	GenWorkers int
+	// OnNotice receives decisions the run made that the user should know, such
+	// as fewer writers because the server has few free connections.
+	OnNotice func(msg string)
 	// Reproducible keeps generation on one goroutine so a seeded run repeats
 	// exactly: concurrent tables would draw from the random source in any order.
 	Reproducible bool
@@ -64,7 +76,7 @@ func Seed(ctx context.Context, conn *sql.DB, dbType string, sc *schema.Schema, p
 		opts.BatchSize = DefaultBatchSize
 	}
 	opts.Generate.ChunkBytes = chunkBytesOrDefault(opts.Generate.ChunkBytes)
-	stream, err := faker.NewStream(sc, preload, tables, conn, dbType, opts.Generate.Overrides)
+	stream, err := faker.NewStreamContext(ctx, sc, preload, tables, conn, dbType, opts.Generate.Overrides)
 	if err != nil {
 		return SeedResult{Counts: map[string]int{}}, fmt.Errorf("data generation failed: %w", err)
 	}
@@ -83,26 +95,37 @@ func seedSequential(ctx context.Context, conn *sql.DB, dbType string, stream *fa
 				return tally.result(), err
 			}
 		}
-		count, overridden := faker.TableRowCount(tableName, opts.Rows, opts.TableRows)
-		err := stream.GenerateChunks(tableName, count, opts.EnumRows, overridden, chunkSize(opts.ChunkRows), opts.Generate, func(rows []map[string]interface{}) error {
-			if err := ctx.Err(); err != nil {
+		count, overridden := opts.rowCount(tableName)
+		err := safego.Run("generate "+tableName, func() error {
+			if err := faultinject.Hit(ctx, "generate", tableName); err != nil {
 				return err
 			}
-			if opts.OnRows != nil {
-				if err := opts.OnRows(tableName, rows); err != nil {
+			return stream.GenerateChunks(tableName, count, opts.EnumRows, overridden, chunkSize(opts.ChunkRows), opts.Generate, func(rows []map[string]interface{}) error {
+				if err := ctx.Err(); err != nil {
 					return err
 				}
-			}
-			if !opts.DryRun {
-				if err := insertStrict(ctx, conn, dbType, tableName, rows, opts.BatchSize); err != nil {
-					return err
+				if opts.OnRows != nil {
+					if err := opts.OnRows(tableName, rows); err != nil {
+						return err
+					}
 				}
-			}
-			tally.written(tableName, len(rows))
-			return nil
+				if !opts.DryRun {
+					err := safego.Run("write "+tableName, func() error {
+						if err := faultinject.Hit(ctx, "write", tableName); err != nil {
+							return err
+						}
+						return insertStrict(ctx, conn, dbType, tableName, rows, opts.BatchSize)
+					})
+					if err != nil {
+						return runerr.At(runerr.PhaseWrite, tableName, db.Explain(err))
+					}
+				}
+				tally.written(tableName, len(rows))
+				return nil
+			})
 		})
 		if err != nil {
-			return tally.result(), err
+			return tally.result(), runerr.At(runerr.PhaseGenerate, tableName, err)
 		}
 		releases.generated(stream, tableName)
 		tally.done(tableName)
@@ -114,7 +137,9 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 	chunk := chunkSize(opts.ChunkRows)
 	generators := 1
 	if opts.GenWorkers > 1 && opts.OnRows == nil && !opts.Reproducible {
-		generators = min(opts.GenWorkers, len(tables))
+		// Never more generators than the CPU quota allows (a container's --cpus,
+		// not the host's cores).
+		generators = min(tuning.ClampGenerators(opts.GenWorkers), len(tables))
 		// Every generator holds a chunk: they share one chunk's worth of memory.
 		opts.Generate.ChunkBytes = max(opts.Generate.ChunkBytes/generators, minGeneratorChunkBytes)
 		opts.Generate.OnWarning = serialized(opts.Generate.OnWarning)
@@ -126,6 +151,10 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 	if queue <= 0 {
 		queue = chunk * approxRowMemory
 	}
+	opts.Workers = clampToServer(ctx, conn, dbType, opts.Workers, generators, opts.OnNotice)
+	// The run never holds more connections than it uses: writers, generators
+	// reading parent keys, and one for sequences.
+	defer boundPool(conn, opts.Workers+generators+1)()
 	w := newWriter(ctx, conn, dbType, opts.BatchSize, opts.Workers, queue)
 	// A queued row costs at least half an average row of a full chunk, so
 	// narrow rows queue at most about two chunks of rows: 300k narrow rows with
@@ -159,12 +188,15 @@ func seedConcurrent(ctx context.Context, conn *sql.DB, dbType string, sc *schema
 	generate := func(gen *faker.Stream, tableName string) error {
 		tw := writers[tableName]
 		defer tw.close()
+		if err := faultinject.Hit(w.ctx, "generate", tableName); err != nil {
+			return err
+		}
 		if opts.OnTableStart != nil {
 			if err := opts.OnTableStart(tableName); err != nil {
 				return err
 			}
 		}
-		count, overridden := faker.TableRowCount(tableName, opts.Rows, opts.TableRows)
+		count, overridden := opts.rowCount(tableName)
 		return gen.GenerateChunks(tableName, count, opts.EnumRows, overridden, chunk, opts.Generate, func(rows []map[string]interface{}) error {
 			if opts.OnRows != nil {
 				if err := opts.OnRows(tableName, rows); err != nil {
@@ -199,8 +231,8 @@ const minGeneratorChunkBytes = 4 << 20
 func generateTables(ctx context.Context, stream *faker.Stream, sc *schema.Schema, tables []string, generators int, generate func(*faker.Stream, string) error, releases *poolReleases) error {
 	if generators <= 1 {
 		for _, tableName := range tables {
-			if err := generate(stream, tableName); err != nil {
-				return err
+			if err := safego.Run("generate "+tableName, func() error { return generate(stream, tableName) }); err != nil {
+				return runerr.At(runerr.PhaseGenerate, tableName, err)
 			}
 			releases.generated(stream, tableName)
 		}
@@ -240,8 +272,8 @@ func generateTables(ctx context.Context, stream *faker.Stream, sc *schema.Schema
 			// Its own random source: forks sharing the global one spent their
 			// time waiting on its lock (4 generators ran slower than 1).
 			fork.UseOwnRandom()
-			if err := generate(fork, tableName); err != nil {
-				cancel(err)
+			if err := safego.Run("generate "+tableName, func() error { return generate(fork, tableName) }); err != nil {
+				cancel(runerr.At(runerr.PhaseGenerate, tableName, err))
 				return
 			}
 			stream.MergeTable(fork, tableName)
@@ -364,7 +396,7 @@ func newSeedTally(tables []string, opts SeedOptions) *seedTally {
 	t := &seedTally{opts: opts, index: map[string]int{}, requested: map[string]int64{}, counts: map[string]int{}, tables: len(tables)}
 	for i, name := range tables {
 		t.index[name] = i + 1
-		n, _ := faker.TableRowCount(name, opts.Rows, opts.TableRows)
+		n, _ := opts.rowCount(name)
 		t.requested[name] = int64(n)
 		t.wanted += int64(n)
 	}
@@ -414,4 +446,86 @@ func (t *seedTally) result() SeedResult {
 		res.Total += n
 	}
 	return res
+}
+
+// connectionUsage reads the server's connection limit and use; a variable so
+// tests can stand in for a busy server.
+var connectionUsage = db.ConnectionUsage
+
+// clampToServer lowers writers when the server lacks free connections for the
+// run, and says so. Any error reading the limit leaves writers unchanged.
+func clampToServer(ctx context.Context, conn *sql.DB, dbType string, writers, generators int, notice func(string)) int {
+	maxConns, used, err := connectionUsage(ctx, conn, dbType)
+	if err != nil {
+		return writers
+	}
+	clamped := tuning.ClampWriters(writers, generators, maxConns, used)
+	if clamped < writers && notice != nil {
+		notice(fmt.Sprintf("Using %d writers instead of %d: the server has %d of %d connections in use", clamped, writers, used, maxConns))
+	}
+	return clamped
+}
+
+// rowCount is a table's planned rows: TableRows, then DerivedRows, then Rows.
+// overridden (TableRows only) turns off enum coverage rows.
+func (opts SeedOptions) rowCount(table string) (int, bool) {
+	count, overridden := faker.TableRowCount(table, opts.Rows, opts.TableRows)
+	if n, ok := opts.DerivedRows[table]; ok && !overridden {
+		return n, false
+	}
+	return count, overridden
+}
+
+// boundPool caps the pool for the length of a run and returns a function that
+// gives it back as it was. The web seeds on the same pool its pages query, so
+// a cap left behind would throttle every later query on that connection.
+func boundPool(conn *sql.DB, limit int) func() {
+	bounds.mu.Lock()
+	b, held := bounds.byPool[conn]
+	if !held {
+		b = &poolBound{before: conn.Stats().MaxOpenConnections}
+		bounds.byPool[conn] = b
+	}
+	b.holders = append(b.holders, limit)
+	conn.SetMaxOpenConns(sum(b.holders))
+	bounds.mu.Unlock()
+
+	return func() {
+		bounds.mu.Lock()
+		defer bounds.mu.Unlock()
+		for i, held := range b.holders {
+			if held == limit {
+				b.holders = append(b.holders[:i], b.holders[i+1:]...)
+				break
+			}
+		}
+		if len(b.holders) == 0 {
+			conn.SetMaxOpenConns(b.before)
+			delete(bounds.byPool, conn)
+			return
+		}
+		conn.SetMaxOpenConns(sum(b.holders))
+	}
+}
+
+// poolBound is what one pool's runs reserved and what it allowed before them.
+type poolBound struct {
+	before  int
+	holders []int
+}
+
+// bounds tracks pools several runs share: the web can seed two tabs on one
+// connection, and the first run to finish must not take the other's
+// connections away or hand back a limit while the other still writes.
+var bounds = struct {
+	mu     sync.Mutex
+	byPool map[*sql.DB]*poolBound
+}{byPool: map[*sql.DB]*poolBound{}}
+
+func sum(ns []int) int {
+	total := 0
+	for _, n := range ns {
+		total += n
+	}
+	return total
 }

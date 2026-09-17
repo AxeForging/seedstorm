@@ -46,6 +46,7 @@ type loadedProfile struct {
 	rules     *rules.RuleSet
 	schema    *schema.Schema
 	overrides faker.Overrides
+	shapes    map[string]faker.Shape
 	runID     string
 }
 
@@ -80,6 +81,10 @@ func compileProfile(rs *rules.RuleSet, sc *schema.Schema) (loadedProfile, error)
 		return lp, err
 	}
 	lp.overrides = overrides
+	lp.shapes = rs.Shapes(sc)
+	if len(lp.shapes) > 0 {
+		log.Info().Int("relationships", len(lp.shapes)).Msg("Relationship shapes applied")
+	}
 	name := rs.Name
 	if name == "" {
 		name = "unnamed"
@@ -105,7 +110,7 @@ func (lp loadedProfile) tui() tui.Profile {
 	if name == "" {
 		name = "profile"
 	}
-	return tui.Profile{Name: name, Overrides: lp.overrides, TableRows: rules.MergeTableRowsFor(lp.rules, lp.schema, nil)}
+	return tui.Profile{Name: name, Overrides: lp.overrides, Shapes: lp.shapes, TableRows: rules.MergeTableRowsFor(lp.rules, lp.schema, nil)}
 }
 
 func profileCmd() *cli.Command {

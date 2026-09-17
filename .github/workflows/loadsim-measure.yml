@@ -1,0 +1,47 @@
+name: Loadsim measure
+
+# Throughput and memory per Cloud SQL-like profile and writer count, run by
+# hand. Shared runners are noisy: the numbers are for comparison, never a gate.
+on:
+  workflow_dispatch:
+    inputs:
+      profiles:
+        description: Profiles to measure (comma-separated)
+        default: cloudsql-micro,cloudsql-2vcpu
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Measure
+        env:
+          SEEDSTORM_LOADSIM_MEASURE: ${{ github.workspace }}/loadsim-measure.json
+          SEEDSTORM_LOADSIM_PROFILES: ${{ inputs.profiles || 'cloudsql-micro,cloudsql-2vcpu' }}
+        run: cd integration && go test -v -tags "integration loadsim" -count=1 -run TestLoadsim_MeasureWriters ./... -timeout 3000s
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f loadsim-measure.json ]; then
+            { echo "### Loadsim measure"; echo '```json'; cat loadsim-measure.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadsim-measure
+          path: loadsim-measure.json
+          if-no-files-found: ignore
+          retention-days: 30

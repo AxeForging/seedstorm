@@ -38,7 +38,7 @@ func buildGenModel() GenModel {
 }
 
 func TestStartGenerateHandlesHardSelfReference(t *testing.T) {
-	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 3, 2, nil, "yaml", "", "pgx", nil)()
+	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 3, 2, nil, "yaml", "", "pgx", nil, nil)()
 	done, ok := msg.(generateDoneMsg)
 	if !ok {
 		t.Fatalf("msg type = %T, want generateDoneMsg", msg)
@@ -191,7 +191,7 @@ func TestGenConfig_emptyOutPathMeansStdout(t *testing.T) {
 
 func TestStartGenerateWritesTheWholeFileAndAMatchingPreview(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.json")
-	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 250, 2, nil, "json", path, "pgx", nil)()
+	msg := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 250, 2, nil, "json", path, "pgx", nil, nil)()
 	done := msg.(generateDoneMsg)
 	if done.err != nil {
 		t.Fatalf("startGenerate: %v", done.err)
@@ -218,7 +218,7 @@ func TestStartGenerateLeavesNoPartialFileOnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An unknown format fails before anything is written.
-	done := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 5, 2, nil, "xml", path, "pgx", nil)().(generateDoneMsg)
+	done := startGenerate(hardSelfReferenceTUISchema(), []string{"employees"}, 5, 2, nil, "xml", path, "pgx", nil, nil)().(generateDoneMsg)
 	if done.err == nil {
 		t.Fatal("unknown format must fail")
 	}

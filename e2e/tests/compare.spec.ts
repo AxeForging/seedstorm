@@ -120,3 +120,27 @@ test("compare, export and import counts, then mirror from the imported file", as
     await expectReport(SOURCE_ROWS);
   });
 });
+
+// A job that fails on the server must end in the page: the button comes back
+// and the reason is shown. The failure event used to be named "error", which
+// browsers treat as a broken connection, so the page waited forever.
+test("a compare that fails on the server ends with its reason instead of spinning", async ({ page }) => {
+  await connectPostgres(page, DB.tgt);
+  await connectPostgres(page, DB.src);
+  await page.goto("/compare");
+  await page.getByTestId(cmp.target).selectOption({ label: pgConnectionLabel(DB.tgt) });
+
+  // The target disappears between choosing it and running the job.
+  await page.route("**/api/compare", async (route) => {
+    const body = route.request().postDataJSON();
+    body.target = { id: "gone-" + Date.now() };
+    await route.continue({ postData: JSON.stringify(body) });
+  });
+
+  const run = page.getByTestId(cmp.run);
+  await run.click();
+  await expect(page.getByTestId(cmp.outcome)).toContainText("Compare failed", { timeout: 15_000 });
+  await expect(page.getByTestId(cmp.outcome)).toContainText("target connection not found");
+  await expect(run).toBeEnabled();
+  await expect(run).toHaveText("Compare");
+});

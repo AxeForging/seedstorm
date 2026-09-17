@@ -256,14 +256,7 @@ func ddlProgressLabel(stmt string) string {
 }
 
 func introspectWithConn(conn *sql.DB, dbType string) ([]Table, error) {
-	switch dbType {
-	case "pgx":
-		return introspectPostgres(conn)
-	case "mysql":
-		return introspectMySQL(conn)
-	default:
-		return nil, fmt.Errorf("unsupported database type %q", dbType)
-	}
+	return IntrospectConn(context.Background(), conn, dbType, nil)
 }
 
 func buildCreateTable(table Table, dbType string) (string, error) {

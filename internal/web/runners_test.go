@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
@@ -303,6 +305,9 @@ func containsAll(value string, parts ...string) bool {
 
 const serveRunnerTestDriverName = "seedstorm_web_runner_test"
 
+// countedQueries counts queries run on a "counted" connection.
+var countedQueries atomic.Int64
+
 var registerServeRunnerDriverOnce sync.Once
 
 func registerServeRunnerTestDriver() {
@@ -328,22 +333,51 @@ func (c *serveRunnerTestConn) Prepare(string) (driver.Stmt, error) {
 func (c *serveRunnerTestConn) Close() error { return nil }
 
 func (c *serveRunnerTestConn) Begin() (driver.Tx, error) {
+	if c.name == "counted" {
+		return noopTx{}, nil
+	}
 	return nil, errors.New("transactions not implemented")
 }
 
-func (c *serveRunnerTestConn) Ping(context.Context) error { return nil }
+func (c *serveRunnerTestConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return c.Begin()
+}
+
+// noopTx lets reads run inside the read-only transactions seedstorm opens.
+type noopTx struct{}
+
+func (noopTx) Commit() error   { return nil }
+func (noopTx) Rollback() error { return nil }
+
+func (c *serveRunnerTestConn) Ping(ctx context.Context) error {
+	if c.name == "down" {
+		// A database that stopped answering: the ping waits until its deadline.
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
 
 func (c *serveRunnerTestConn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	return &serveRunnerRows{columns: []string{"id"}}, nil
 }
 
-func (c *serveRunnerTestConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+func (c *serveRunnerTestConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if c.name == "counted" {
+		countedQueries.Add(1)
+		if strings.HasPrefix(query, "SELECT COUNT(*)") {
+			return &oneValueRows{value: int64(3)}, nil
+		}
+	}
 	return &serveRunnerRows{columns: []string{"id"}}, nil
 }
 
 func (c *serveRunnerTestConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	if c.name == "stale" && strings.Contains(query, "INSERT") {
 		return nil, errors.New("cache lookup failed for type 34868 (SQLSTATE XX000)")
+	}
+	if c.name == "fail-orders" && strings.Contains(query, "INSERT") && strings.Contains(query, "orders") {
+		return nil, errors.New(`insert or update on table "orders" violates foreign key constraint`)
 	}
 	if c.name == "truncate-only" && strings.Contains(query, "INSERT") {
 		return nil, errors.New("truncate-only run should not insert rows")
@@ -520,4 +554,93 @@ func TestStartRunRejectsOversizedRequestBodies(t *testing.T) {
 	if res.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status %d, want 413", res.StatusCode)
 	}
+}
+
+// A run that fails part-way reports what it wrote before the failure, where it
+// failed, and what to do next, instead of only an error.
+func TestRunSeedFailureReturnsWhatWasWrittenAndWhereItStopped(t *testing.T) {
+	registerServeRunnerTestDriver()
+	oldOpen := sqlOpen
+	sqlOpen = func(_, dsn string) (*sql.DB, error) { return sql.Open(serveRunnerTestDriverName, dsn) }
+	defer func() { sqlOpen = oldOpen }()
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _ := sql.Open(serveRunnerTestDriverName, "fail-orders")
+	defer conn.Close()
+	sess := &Session{DBType: "mysql", DSN: "fail-orders", conn: conn, schema: runnerRowCountSchema()}
+
+	result, err := srv.runSeed(context.Background(), sess, SeedRequest{Rows: 7, BatchSize: 100, Workers: 1}, testJobControl{})
+	if err == nil {
+		t.Fatal("runSeed succeeded although orders inserts fail")
+	}
+	if result == nil || result["partial"] != true {
+		t.Fatalf("result = %#v, want a partial result", result)
+	}
+	failure, _ := result["failure"].(map[string]any)
+	if failure["phase"] != "write" || failure["table"] != "orders" {
+		t.Fatalf("failure = %#v, want write · orders", failure)
+	}
+	counts, _ := result["tableCounts"].(map[string]int)
+	if counts["users"] != 7 || counts["orders"] != 0 {
+		t.Fatalf("tableCounts = %#v, want users 7 and orders 0", counts)
+	}
+	if next, _ := result["nextStep"].(string); !strings.Contains(next, "Fill empty") {
+		t.Fatalf("nextStep = %q", next)
+	}
+}
+
+// A compare whose target stopped answering fails fast, before reading the
+// source, and says it was the target: it used to count the whole source first
+// and then wait on the dead target with no feedback.
+func TestRunCompare_UnreachableTargetFailsFirstAndNamesTheSide(t *testing.T) {
+	registerServeRunnerTestDriver()
+	defer func(old time.Duration) { preflightTimeout = old }(preflightTimeout)
+	preflightTimeout = 300 * time.Millisecond
+	srv, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := sql.Open(serveRunnerTestDriverName, "counted")
+	dead, _ := sql.Open(serveRunnerTestDriverName, "down")
+	defer src.Close()
+	defer dead.Close()
+	source := &Session{ID: "src", DBType: "pgx", conn: src, schema: runnerRowCountSchema(), Info: ConnectionInfo{DBName: "app"}}
+	target := &Session{ID: "tgt", DBType: "pgx", conn: dead, schema: runnerRowCountSchema(), Info: ConnectionInfo{DBName: "app_copy"}}
+	srv.sessions.add(source)
+	srv.sessions.add(target)
+	countedQueries.Store(0)
+
+	start := time.Now()
+	_, err = srv.runCompare(context.Background(), source, CompareRequest{Source: ConnRef{ID: "src"}, Target: ConnRef{ID: "tgt"}}, testJobControl{})
+	if err == nil {
+		t.Fatal("compare succeeded with a dead target")
+	}
+	if !strings.HasPrefix(err.Error(), "target · connect:") {
+		t.Fatalf("err = %q, want it to start with target · connect:", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("took %s to notice the dead target", d)
+	}
+	if n := countedQueries.Load(); n != 0 {
+		t.Fatalf("the source ran %d queries before the dead target was noticed", n)
+	}
+}
+
+// oneValueRows is a single-row, single-column result.
+type oneValueRows struct {
+	value driver.Value
+	read  bool
+}
+
+func (r *oneValueRows) Columns() []string { return []string{"n"} }
+func (r *oneValueRows) Close() error      { return nil }
+func (r *oneValueRows) Next(dest []driver.Value) error {
+	if r.read {
+		return io.EOF
+	}
+	r.read = true
+	dest[0] = r.value
+	return nil
 }

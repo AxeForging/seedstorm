@@ -13,13 +13,22 @@ const UnknownCount int64 = -1
 // ListTableColumns returns every base table in the connection's schema with its
 // column names in ordinal order. It is a light alternative to Introspect for
 // callers that only need names.
-func ListTableColumns(ctx context.Context, conn *sql.DB, dbType string) (map[string][]string, error) {
+func ListTableColumns(ctx context.Context, conn *sql.DB, dbType string) (out map[string][]string, err error) {
+	err = ReadOnce(ctx, conn, dbType, ReadLimits{}, func(ctx context.Context, q Querier) error {
+		out, err = listTableColumns(ctx, q, dbType)
+		return err
+	})
+	return out, err
+}
+
+func listTableColumns(ctx context.Context, conn Querier, dbType string) (map[string][]string, error) {
 	query := `
 		SELECT c.table_name, c.column_name
 		FROM information_schema.columns c
 		JOIN information_schema.tables t
 		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
 		WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+		  AND c.table_name NOT IN (` + postgresPartitionNames + `)
 		ORDER BY c.table_name, c.ordinal_position`
 	if dbType == "mysql" {
 		query = `
@@ -48,12 +57,25 @@ func ListTableColumns(ctx context.Context, conn *sql.DB, dbType string) (map[str
 
 // GetTableSizes returns on-disk bytes (data plus indexes) per base table.
 // MySQL reports cached statistics, so treat its numbers as approximate.
-func GetTableSizes(ctx context.Context, conn *sql.DB, dbType string) (map[string]int64, error) {
+func GetTableSizes(ctx context.Context, conn *sql.DB, dbType string) (out map[string]int64, err error) {
+	err = ReadOnce(ctx, conn, dbType, ReadLimits{}, func(ctx context.Context, q Querier) error {
+		out, err = getTableSizes(ctx, q, dbType)
+		return err
+	})
+	return out, err
+}
+
+func getTableSizes(ctx context.Context, conn Querier, dbType string) (map[string]int64, error) {
+	// A partitioned table's size is the sum of its partitions (its own
+	// relation is empty); partitions are not listed separately.
 	query := `
-		SELECT c.relname, pg_total_relation_size(c.oid)
+		SELECT c.relname,
+		       CASE WHEN c.relkind = 'p'
+		            THEN COALESCE((SELECT SUM(pg_total_relation_size(pt.relid))::bigint FROM pg_partition_tree(c.oid) pt WHERE pt.isleaf), 0)
+		            ELSE pg_total_relation_size(c.oid) END
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')`
+		WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition`
 	if dbType == "mysql" {
 		query = `
 			SELECT TABLE_NAME, COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0)
@@ -71,13 +93,16 @@ func GetTableSizes(ctx context.Context, conn *sql.DB, dbType string) (map[string
 // without ANALYZE, over planner statistics (reltuples, 0 or -1 before the first
 // ANALYZE depending on version). MySQL 8 caches information_schema statistics
 // for up to a day, so the session asks for fresh ones.
-func GetEstimatedRowCounts(ctx context.Context, conn *sql.DB, dbType string) (map[string]int64, error) {
+func GetEstimatedRowCounts(ctx context.Context, conn *sql.DB, dbType string) (out map[string]int64, err error) {
+	err = ReadOnce(ctx, conn, dbType, ReadLimits{}, func(ctx context.Context, q Querier) error {
+		out, err = getEstimatedRowCounts(ctx, q, dbType)
+		return err
+	})
+	return out, err
+}
+
+func getEstimatedRowCounts(ctx context.Context, c Querier, dbType string) (map[string]int64, error) {
 	if dbType == "mysql" {
-		c, err := conn.Conn(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("read estimated row counts: %w", err)
-		}
-		defer func() { _ = c.Close() }()
 		// MySQL 5.7 has no such variable and never caches: ignore the error.
 		_, _ = c.ExecContext(ctx, "SET SESSION information_schema_stats_expiry = 0")
 		rows, err := c.QueryContext(ctx, `
@@ -89,18 +114,28 @@ func GetEstimatedRowCounts(ctx context.Context, conn *sql.DB, dbType string) (ma
 		}
 		return collectNameInt64(rows, "estimated row counts")
 	}
-	return scanNameInt64(ctx, conn, `
+	// A partitioned table's estimate is the sum over its leaf partitions,
+	// unknown when any of them has none.
+	return scanNameInt64(ctx, c, `
+		WITH leaf AS (
+			SELECT c.oid,
+			       CASE WHEN COALESCE(s.n_live_tup, 0) > 0 THEN s.n_live_tup
+			            WHEN c.reltuples > 0 THEN c.reltuples::bigint
+			            ELSE -1 END AS est
+			FROM pg_class c
+			LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+		)
 		SELECT c.relname,
-		       CASE WHEN COALESCE(s.n_live_tup, 0) > 0 THEN s.n_live_tup
-		            WHEN c.reltuples > 0 THEN c.reltuples::bigint
-		            ELSE -1 END
+		       CASE WHEN c.relkind = 'p' THEN
+		            COALESCE((SELECT CASE WHEN MIN(l.est) < 0 THEN -1 ELSE SUM(l.est)::bigint END
+		                      FROM pg_partition_tree(c.oid) pt JOIN leaf l ON l.oid = pt.relid WHERE pt.isleaf), -1)
+		            ELSE (SELECT l.est FROM leaf l WHERE l.oid = c.oid) END
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-		WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')`, "estimated row counts")
+		WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition`, "estimated row counts")
 }
 
-func scanNameInt64(ctx context.Context, conn *sql.DB, query, what string) (map[string]int64, error) {
+func scanNameInt64(ctx context.Context, conn Querier, query, what string) (map[string]int64, error) {
 	rows, err := conn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", what, err)
@@ -132,7 +167,10 @@ func Identity(ctx context.Context, conn *sql.DB, dbType string) (string, error) 
 		query = `SELECT CONCAT(COALESCE(DATABASE(), ''), '@', @@server_uuid)`
 	}
 	var id string
-	if err := conn.QueryRowContext(ctx, query).Scan(&id); err != nil {
+	err := ReadOnce(ctx, conn, dbType, ReadLimits{}, func(ctx context.Context, q Querier) error {
+		return q.QueryRowContext(ctx, query).Scan(&id)
+	})
+	if err != nil {
 		return "", fmt.Errorf("read database identity: %w", err)
 	}
 	return dbType + ":" + id, nil

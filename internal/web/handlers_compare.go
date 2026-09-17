@@ -8,6 +8,8 @@ import (
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/relations"
+	"github.com/AxeForging/seedstorm/internal/runerr"
 	"github.com/AxeForging/seedstorm/internal/seeder"
 )
 
@@ -38,7 +40,11 @@ func (s *Server) resolveConnection(ref ConnRef, role string) (*Session, error) {
 			return nil, err
 		}
 		info.Label = saved.Label
-		return s.sessions.OpenDSN(driver, dsn, info)
+		sess, err := s.sessions.OpenDSN(driver, dsn, info)
+		if err == nil && sess.SavedID == "" {
+			sess.SavedID = saved.ID
+		}
+		return sess, err
 	}
 	if ref.ID != "" {
 		sess, ok := s.sessions.Get(ref.ID)
@@ -101,17 +107,17 @@ func (s *Server) runCompare(ctx context.Context, _ *Session, req CompareRequest,
 		return nil, err
 	}
 	jc.Phase("connect")
-	srcEP, source, err := s.sourceEndpoint(ctx, req.Source, req.SourceSnapshot)
+	source, target, err := s.connectBoth(ctx, log, req.Source, req.SourceSnapshot, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.resolveConnection(req.Target, "target")
+	srcEP, err := snapshotOrSessionEndpoint(ctx, source, req.SourceSnapshot)
 	if err != nil {
-		return nil, err
+		return nil, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseIntrospect, "", err))
 	}
 	tgtEP, _, err := endpointFor(ctx, target, false)
 	if err != nil {
-		return nil, err
+		return nil, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseIntrospect, "", err))
 	}
 	jc.Phase("count")
 	log.Info().Str("source", srcEP.Label).Str("target", tgtEP.Label).Str("counts", string(mode)).Msg("Reading table volumes")
@@ -125,27 +131,6 @@ func (s *Server) runCompare(ctx context.Context, _ *Session, req CompareRequest,
 	t := report.Totals
 	log.Info().Int("same", t.Same).Int("differs", t.Differs).Int("source_only", t.SourceOnly).Int("target_only", t.TargetOnly).Msg("Comparison complete")
 	return map[string]any{"report": report, "sameConnection": source != nil && source.ID == target.ID, "sourceIsSnapshot": source == nil}, nil
-}
-
-// sourceEndpoint is the source side of a compare or mirror: an imported
-// snapshot when one is given (the returned session is nil), else a connection.
-func (s *Server) sourceEndpoint(ctx context.Context, ref ConnRef, snap *compare.Snapshot) (seeder.Endpoint, *Session, error) {
-	if snap != nil {
-		if len(snap.Tables) == 0 {
-			return seeder.Endpoint{}, nil, fmt.Errorf("the imported counts have no tables")
-		}
-		label := snap.Label
-		if label == "" {
-			label = "imported counts"
-		}
-		return seeder.Endpoint{Snapshot: snap, Label: label, DBType: snap.DBType}, nil, nil
-	}
-	sess, err := s.resolveConnection(ref, "source")
-	if err != nil {
-		return seeder.Endpoint{}, nil, err
-	}
-	ep, _, err := endpointFor(ctx, sess, false)
-	return ep, sess, err
 }
 
 // MirrorRequest seeds the target so its volumes follow the source.
@@ -166,10 +151,21 @@ type MirrorRequest struct {
 	StopOnError    bool              `json:"stopOnError"`
 	DryRun         bool              `json:"dryRun"`
 	PreviewRows    int               `json:"previewRows"`
+	// SourceShapes are the source's relationship shapes (from the compare
+	// report); when set the target's foreign keys are seeded like them.
+	SourceShapes []relations.Shape `json:"sourceShapes,omitempty"`
+	// ConfirmProduction is the target's label, typed to write to a
+	// production connection.
+	ConfirmProduction string `json:"confirmProduction,omitempty"`
 }
 
 func (s *Server) handleMirrorRun(w http.ResponseWriter, r *http.Request) {
-	startRun(s, w, r, "mirror", s.runMirror)
+	startGuardedRun(s, w, r, "mirror", s.runMirror, func(req MirrorRequest, _ *Session) *productionRefusal {
+		if req.DryRun {
+			return nil
+		}
+		return s.guardProduction(s.refTarget(req.Target), req.ConfirmProduction, "mirror into it")
+	})
 }
 
 func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, jc JobControl) (map[string]any, error) {
@@ -187,17 +183,20 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		return nil, err
 	}
 	jc.Phase("connect")
-	srcEP, _, err := s.sourceEndpoint(ctx, req.Source, req.SourceSnapshot)
+	source, target, err := s.connectBoth(ctx, log, req.Source, req.SourceSnapshot, req.Target)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.resolveConnection(req.Target, "target")
+	srcEP, err := snapshotOrSessionEndpoint(ctx, source, req.SourceSnapshot)
 	if err != nil {
-		return nil, err
+		return nil, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseIntrospect, "", err))
+	}
+	if !req.DryRun {
+		defer target.InvalidateCounts()
 	}
 	tgtEP, closeTarget, err := endpointFor(ctx, target, !req.DryRun)
 	if err != nil {
-		return nil, err
+		return nil, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseConnect, "", err))
 	}
 	defer closeTarget()
 
@@ -207,8 +206,9 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		Options: compare.MirrorOptions{
 			Mode: mode, Scale: req.Scale, MaxRows: req.MaxRows, ParentRows: req.ParentRows, Tables: req.Tables,
 		},
-		CountMode: counts,
-		Profile:   profile,
+		CountMode:    counts,
+		Profile:      profile,
+		SourceShapes: req.SourceShapes,
 		OnCount: func(side string, done, total int, table string) {
 			jc.Progress(done, total, side+": "+table)
 		},
@@ -225,6 +225,15 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		"target": tgtEP.Label,
 		// A snapshot source cannot be checked against the target.
 		"sameDatabaseUnchecked": job.SameDatabaseUnchecked,
+		"serverNotices":         job.Servers.Notices(),
+		"shapedKeys":            len(job.Shapes),
+		"shapesSkipped":         job.ShapesSkipped,
+	}
+	for _, notice := range job.Servers.Notices() {
+		log.Warn().Msg(notice)
+	}
+	for _, skipped := range job.ShapesSkipped {
+		log.Warn().Msg("Relationship not shaped: " + skipped)
 	}
 	if job.SameDatabaseUnchecked {
 		log.Warn().Msg("Source is an imported counts file: cannot check that source and target are different databases")
@@ -282,7 +291,11 @@ func (s *Server) runMirror(ctx context.Context, _ *Session, req MirrorRequest, j
 		log.Warn().Str("table", problem.Table).Str("status", problem.Status).Int64("missing", problem.Missing).Msg(problem.Error)
 	}
 	if runErr != nil {
+		result["failure"] = failureView(runErr)
 		return result, runErr
+	}
+	if shapes := measureShapes(ctx, log, tgtEP.Conn, tgtEP.DBType, job.Schema, job.Shapes); shapes != nil {
+		result["shapes"] = shapes
 	}
 	jc.Phase("done")
 	log.Info().Int64("inserted", run.Inserted).Int64("missing", run.Missing).Msg("Mirror complete")

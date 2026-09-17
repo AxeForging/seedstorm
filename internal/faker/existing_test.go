@@ -280,3 +280,21 @@ func TestEnumerateCompositeFKPKRows_ResumesAfterTheLastCombination(t *testing.T)
 		t.Fatalf("%d distinct combinations, want all 9", len(seen))
 	}
 }
+
+// MySQL DATETIME rounds fractional seconds on insert, so two generated
+// timestamps half a second apart can land on the same stored key. The key
+// guard must see them as the same key (CI: Duplicate entry for event_log).
+func TestKeyValue_DatetimeKeysCompareAsTheDatabaseStoresThem(t *testing.T) {
+	a := time.Date(2021, 9, 4, 13, 28, 24, 700_000_000, time.UTC)
+	b := time.Date(2021, 9, 4, 13, 28, 25, 200_000_000, time.UTC)
+	if ka, kb := keyValue("datetime", a), keyValue("datetime", b); ka != kb {
+		t.Fatalf("keys %q and %q differ, but MySQL stores both as 2021-09-04 13:28:25", ka, kb)
+	}
+	stored := time.Date(2021, 9, 4, 13, 28, 25, 0, time.UTC)
+	if keyValue("timestamp", a) != keyValue("timestamp", stored) {
+		t.Fatal("a generated key must match the rounded value read back from the database")
+	}
+	if keyValue("datetime", time.Date(2021, 9, 4, 13, 28, 24, 400_000_000, time.UTC)) == keyValue("datetime", b) {
+		t.Fatal("values in different seconds after rounding must stay distinct")
+	}
+}

@@ -79,6 +79,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			fail(err.Error())
 			return
 		}
+		if refusal := s.unflagRefusal(form.saved(), form.ConfirmLabel); refusal != nil {
+			fail(refusal.Error())
+			return
+		}
 		if _, err := s.store.Save(form.saved(), !form.SavePassword); err != nil {
 			fail(err.Error())
 			return
@@ -146,6 +150,8 @@ func (s *Server) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		ID     string         `json:"id"`
 		Info   ConnectionInfo `json:"info"`
 		Active bool           `json:"active"`
+		// Production: a saved production connection reaches this database.
+		Production bool `json:"production,omitempty"`
 	}
 	out := []entry{}
 	activeID := ""
@@ -153,10 +159,12 @@ func (s *Server) handleConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		activeID = current.Value
 	}
 	for _, sess := range dedupeConnections(s.sessions.All(), activeID) {
+		_, production := s.productionConnection(sessionTarget(sess))
 		out = append(out, entry{
-			ID:     sess.ID,
-			Info:   sess.Info,
-			Active: activeID == sess.ID,
+			ID:         sess.ID,
+			Info:       sess.Info,
+			Active:     activeID == sess.ID,
+			Production: production,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

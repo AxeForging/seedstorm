@@ -115,6 +115,13 @@ seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --scale 5 --max-rows
 
 No live access to production at mirror time? Save its counts once with `seedstorm snapshot --out prod-counts.yaml` (or **Export counts** in the web UI) and pass `--source-snapshot prod-counts.yaml`.
 
+Row counts are not the whole picture: `--relationships` on `compare` and `snapshot` measures children per parent for every foreign key (min, avg, p95, max, parents with none), read-only and one key at a time on a timeout, and `mirror --shape-like-source` seeds the target with the same skew instead of an even spread:
+
+```bash
+seedstorm compare --source-dsn "$PROD" --target-dsn "$STAGE" --relationships
+seedstorm mirror --source-dsn "$PROD" --target-dsn "$STAGE" --shape-like-source
+```
+
 Engines can differ (MySQL volumes onto Postgres works). Only the target is written;
 the command refuses when source and target are the same database. Rows the database
 rejects are regenerated, and a table that cannot be filled is reported without
@@ -166,13 +173,17 @@ live example values and sample rows. See [docs/profiles.md](docs/profiles.md).
 - **Mirror volumes** — `mirror` seeds a target to a source's row counts at any scale (top-up or reset), with a reviewable plan, sample rows, FK-aware parents, and resilient inserts that report what could not be filled
 - **Seed profiles** — value rules (templates with `{{auto}}`/`{{seq}}`/`{{run}}`, fixed values, lists, NULL) applied by column pattern or per column; saved from the web UI and reused with `--profile` in the CLI and TUI
 - **Parallel writes with live progress** — unrelated tables (and pieces of a large table) write on `--workers` connections while generation streams in memory-bounded chunks; runs report rows written, rate and ETA (174k rows into MySQL: 41s → 14.5s). `--gen-workers` generates tables on several cores (1.79M rows/s on 8) for databases that can keep up — see [benchmarks](docs/benchmarks.md)
+- **Relationship shapes** — measure children per parent for every foreign key (exact with an index gate and per-key timeouts, or planner estimates), compare them between databases, save them in counts files, and seed with them (`relationships:` in a profile, `mirror --shape-like-source`): no parent above max, real zero and NULL shares
+- **Safe on production** — every read runs in a read-only transaction with a lock timeout and server-side cancel; unknown counts are never 0; connections marked production need an explicit confirmation to write, and relationship scans there read estimates unless confirmed
+- **Tuning advice** — `tune` (and **Recommend** in the web UI) picks writers and generators from the database's free connections, vCPU, memory and disk, and checks the rows fit; every run lowers its writers when the server has fewer free connections
+- **Failures say what failed** — errors name the side, phase and table and list what was written; a panic in one web job never stops the server or other jobs; exit codes 1 / 70 / 130
 - **Reproducible** — `--seed` writes byte-identical data on every run
 - **Counts snapshots** — `snapshot` saves row counts to JSON/YAML; `compare` and `mirror` accept `--source-snapshot`, and the web UI exports and imports the same files
 - **Ignored tables** — a profile's `ignore:` globs keep tables out of every seed, fill, generate and mirror run
 - **Re-seed safely** — seeding a populated table appends: ids, UNIQUE sequences and composite keys continue past existing rows
 - **Schema clone for test DBs** — copy schema-only structure from one connected Postgres/MySQL database into another matching local target, preserving compatible table metadata before seeding it with safe fake data; `--objects all` adds views, functions/procedures and triggers
 - **Interactive TUI** — wizard for table selection, global config, self-reference depth, per-table row volumes, and review before seeding
-- **Web UI** — `seedstorm serve` exposes an interactive graph workspace with search that zooms to matches, a navigator minimap for large schemas, privilege checks for the connected user, click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
+- **Web UI** — runs you can leave and come back to (live progress, elapsed time, reattach), remembered settings per connection, relationship badges on the graph; `seedstorm serve` exposes an interactive graph workspace with search that zooms to matches, a navigator minimap for large schemas, privilege checks for the connected user, click-to-select tables, self-reference depth, per-table row overrides, truncate-only runs (`Rows = 0` + `truncate`), live SSE job logs with per-table truncate/insert progress, schema clone between connected DBs, and a multi-DB session switcher
 - **Saved connections** — connections persist on the machine and survive a restart, with test-before-connect, opt-in password storage, and driver-aware connection parameters (with JDBC-to-Go translation) for both Postgres and MySQL
 - **Dry-run** — preview the seed plan and INSERT SQL without touching the database
 - **Export** — generate fake data as YAML, JSON, SQL or CSV without a live connection, streamed in flat memory; SQL files load as-is

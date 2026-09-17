@@ -74,6 +74,49 @@ The integration tests `TestSeed_WideRowsStayUnderAMemoryBound`,
 process's own `VmHWM`: rusage's max RSS also counts the test process at fork,
 which under `-race` made every run report 212 MB.
 
+## Relationship shapes
+
+Shaped seeding keeps the streaming memory bound: a dealer holds a few bytes per
+parent (degrees plus a Fenwick tree over the remaining slots) and is freed when
+its table ends. Dealing 5M slots over 500,000 parents takes well under a
+second (`TestDealDegrees_PoolLimitIsFast`).
+
+| Run | Peak memory |
+|-----|------------:|
+| Shaped seed, 100k parents + 225k shaped children (Postgres) | **124 MB** |
+| Unshaped seed, 100k + 200k rows (bound held by `TestSeed_LargeRunsStreamWithFlatMemory`) | < 150 MB |
+
+```bash
+cd integration && go test -tags integration -count=1 -run TestShapedSeed_MemoryStaysBounded -v ./...
+```
+
+With `--seed` and no `relationships:` in the profile, output is byte-identical
+to the version before shaping existed (the 6 recorded files below).
+
+## Tuning and small instances
+
+Writers for a managed database are limited by its CPU and disk more than by
+seedstorm. Local Docker container shaped like Cloud SQL's smallest instance
+(`cloudsql-micro`: 1 vCPU, 629MB, 300 write IOPS), 3 tables × 2,000 rows,
+one run each (2026-09-17):
+
+| Engine | 1 writer | 2 writers | 4 writers | 8 writers |
+|--------|---------:|----------:|----------:|----------:|
+| MySQL 8.4 | 1,672 rows/s | **1,851 rows/s** | 1,496 rows/s | 1,483 rows/s |
+| Postgres 17 (COPY) | 50,887 rows/s | 54,240 rows/s | 54,714 rows/s | 57,910 rows/s |
+
+On MySQL two writers per vCPU is the best of the four and more writers get
+slower; that is what `tune` recommends for a small instance. The Postgres run
+ends in about 0.1s, too short for the disk limit to matter, so it does not rank
+writers. The numbers vary from run to run; read them as ratios.
+
+Reproduce (numbers go to the JSON report):
+
+```bash
+SEEDSTORM_LOADSIM_MEASURE=/tmp/measure.json SEEDSTORM_LOADSIM_PROFILES=cloudsql-micro \
+  make test-loadsim ARGS=-run=TestLoadsim_MeasureWriters
+```
+
 ## Reproducibility
 
 `--seed` writes byte-identical data on every run. The generation speedups were

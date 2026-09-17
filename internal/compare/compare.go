@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AxeForging/seedstorm/internal/db"
+	"github.com/AxeForging/seedstorm/internal/relations"
 )
 
 // CountMode selects how row counts are read.
@@ -53,6 +54,8 @@ type Snapshot struct {
 	CountMode CountMode            `json:"countMode"`
 	TakenAt   time.Time            `json:"takenAt"`
 	Tables    map[string]TableStat `json:"tables"`
+	// Relationships are foreign-key shapes, when they were scanned.
+	Relationships []relations.Shape `json:"relationships,omitempty"`
 }
 
 // Take reads table names, columns, sizes and row counts. progress, if set, is
@@ -86,14 +89,26 @@ func Take(ctx context.Context, conn *sql.DB, dbType, label string, mode CountMod
 		// A missing estimate is unknown, and a zero one may just be stale (a
 		// table filled since statistics were last gathered). Counting those
 		// exactly is cheap when the table really is empty and correct when not.
-		if n, ok := estimates[name]; ok && n > 0 {
+		n, hasEstimate := estimates[name]
+		size, hasSize := sizes[name]
+		if !hasSize {
+			size = db.UnknownCount
+		}
+		switch {
+		case hasEstimate && n > 0:
 			counts[name], estimated[name] = n, true
-		} else {
-			one, err := db.GetTableRowCounts(ctx, conn, dbType, []string{name})
-			if err != nil {
+		case mode == CountEstimate && !exactFallback(n, hasEstimate, size):
+			// Too large to scan in estimate mode: the count stays unknown.
+		default:
+			if err := ctx.Err(); err != nil {
 				return snap, err
 			}
-			counts[name] = one[name]
+			// A table that cannot be counted stays unknown instead of failing
+			// the whole snapshot.
+			one, _ := db.CountTables(ctx, conn, dbType, []string{name}, nil)
+			if n, ok := one[name]; ok {
+				counts[name] = n
+			}
 		}
 		if progress != nil {
 			progress(i+1, len(names), name)
@@ -121,6 +136,9 @@ const (
 	StatusDiffers    Status = "differs"
 	StatusSourceOnly Status = "source_only"
 	StatusTargetOnly Status = "target_only"
+	// StatusUnknown is a matched table whose row count one side could not
+	// report: it is neither the same nor different.
+	StatusUnknown Status = "unknown"
 )
 
 // Row compares one table across both databases.
@@ -148,6 +166,8 @@ type Totals struct {
 	Differs     int   `json:"differs"`
 	SourceOnly  int   `json:"sourceOnly"`
 	TargetOnly  int   `json:"targetOnly"`
+	// Unknown counts matched tables whose row count failed on either side.
+	Unknown int `json:"unknown"`
 	// ColumnDrift counts matched tables whose column names differ.
 	ColumnDrift int `json:"columnDrift"`
 }
@@ -166,6 +186,8 @@ type Report struct {
 	Target SnapshotInfo `json:"target"`
 	Rows   []Row        `json:"rows"`
 	Totals Totals       `json:"totals"`
+	// Relationships is the per-foreign-key shape drift, when it was compared.
+	Relationships []ShapeDrift `json:"relationships,omitempty"`
 }
 
 func info(s Snapshot) SnapshotInfo {
@@ -201,9 +223,12 @@ func Diff(source, target Snapshot) Report {
 		if tgtName != name {
 			row.TargetTable = tgtName
 		}
-		row.Delta = knownRows(tgt.Rows) - knownRows(src.Rows)
-		if src.Rows != tgt.Rows {
+		switch {
+		case src.Rows < 0 || tgt.Rows < 0:
+			row.Status = StatusUnknown
+		case src.Rows != tgt.Rows:
 			row.Status = StatusDiffers
+			row.Delta = tgt.Rows - src.Rows
 		}
 		row.MissingColumns, row.ExtraColumns = columnDiff(src.Columns, tgt.Columns)
 		r.Rows = append(r.Rows, row)
@@ -229,6 +254,8 @@ func Diff(source, target Snapshot) Report {
 			r.Totals.SourceOnly++
 		case StatusTargetOnly:
 			r.Totals.TargetOnly++
+		case StatusUnknown:
+			r.Totals.Unknown++
 		}
 		if len(row.MissingColumns) > 0 || len(row.ExtraColumns) > 0 {
 			r.Totals.ColumnDrift++
@@ -280,4 +307,18 @@ func sortedNames(m map[string]TableStat) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// exactFallbackMaxBytes is the largest table estimate mode still counts
+// exactly when its statistics are missing or zero.
+const exactFallbackMaxBytes = 256 << 20
+
+// exactFallback reports whether estimate mode counts a table exactly: its
+// estimate is missing or zero, and the table is small enough (or of unknown
+// size) that COUNT(*) is cheap. Large tables stay unknown instead of scanned.
+func exactFallback(estimate int64, hasEstimate bool, bytes int64) bool {
+	if hasEstimate && estimate > 0 {
+		return false
+	}
+	return bytes <= exactFallbackMaxBytes
 }

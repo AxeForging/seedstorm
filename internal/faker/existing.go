@@ -1,6 +1,7 @@
 package faker
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -84,7 +85,7 @@ func (e existingState) advanceSequences(table schema.Table, tableName string, n 
 // loadExistingState reads existing primary keys, UNIQUE tuples and sequence
 // maxima for the tables about to be generated. preloaded names tables whose PK
 // pools were read (their maximum id is known); overrides are the value rules.
-func loadExistingState(conn *sql.DB, targetTables []string, tables map[string]schema.Table, dbType string, preloaded map[string]bool, overrides Overrides) (existingState, error) {
+func loadExistingState(ctx context.Context, conn *sql.DB, targetTables []string, tables map[string]schema.Table, dbType string, preloaded map[string]bool, overrides Overrides) (existingState, error) {
 	state := existingState{
 		keys:     make(map[string]*keySet),
 		seqStart: make(map[string]map[string]int),
@@ -96,7 +97,7 @@ func loadExistingState(conn *sql.DB, targetTables []string, tables map[string]sc
 			continue
 		}
 		if !preloaded[tableName] || !keysCannotCollide(table) {
-			keys, err := loadExistingKeys(conn, tableName, table, dbType)
+			keys, err := loadExistingKeys(ctx, conn, tableName, table, dbType)
 			if err != nil {
 				return state, err
 			}
@@ -104,12 +105,12 @@ func loadExistingState(conn *sql.DB, targetTables []string, tables map[string]sc
 				state.keys[tableName] = keys
 			}
 		}
-		tuples, err := loadUniqueTuples(conn, tableName, table, dbType, overrides[tableName])
+		tuples, err := loadUniqueTuples(ctx, conn, tableName, table, dbType, overrides[tableName])
 		if err != nil {
 			return state, err
 		}
 		state.unique[tableName] = tuples
-		starts, err := loadSequenceStarts(conn, tableName, table, dbType)
+		starts, err := loadSequenceStarts(ctx, conn, tableName, table, dbType)
 		if err != nil {
 			return state, err
 		}
@@ -147,13 +148,13 @@ func isIntegerType(t string) bool {
 	return false
 }
 
-func loadExistingKeys(conn *sql.DB, tableName string, table schema.Table, dbType string) (*keySet, error) {
+func loadExistingKeys(ctx context.Context, conn *sql.DB, tableName string, table schema.Table, dbType string) (*keySet, error) {
 	pkCols := sortedPKColumns(table)
 	if len(pkCols) == 0 {
 		return nil, nil
 	}
 	keys := newKeySet(0)
-	err := scanStoredRows(conn, tableName, pkCols, dbType, func(row map[string]interface{}) {
+	err := scanStoredRows(ctx, conn, tableName, pkCols, dbType, func(row map[string]interface{}) {
 		keys.Add(compositePKKey(row, table))
 	})
 	return keys, err
@@ -161,7 +162,7 @@ func loadExistingKeys(conn *sql.DB, tableName string, table schema.Table, dbType
 
 // loadUniqueTuples reads stored tuples of every UNIQUE group. A lone sequence
 // column no rule rewrites is skipped: new values continue past its maximum.
-func loadUniqueTuples(conn *sql.DB, tableName string, table schema.Table, dbType string, overrides map[string]ColumnOverride) (map[string]*keySet, error) {
+func loadUniqueTuples(ctx context.Context, conn *sql.DB, tableName string, table schema.Table, dbType string, overrides map[string]ColumnOverride) (map[string]*keySet, error) {
 	out := make(map[string]*keySet)
 	for _, group := range validGroups(table) {
 		if len(group) == 1 && table.Columns[group[0]].Faker == uniqueSequenceFaker {
@@ -170,7 +171,7 @@ func loadUniqueTuples(conn *sql.DB, tableName string, table schema.Table, dbType
 			}
 		}
 		tuples := newKeySet(0)
-		err := scanStoredRows(conn, tableName, group, dbType, func(row map[string]interface{}) {
+		err := scanStoredRows(ctx, conn, tableName, group, dbType, func(row map[string]interface{}) {
 			if !tupleHasNull(group, row) {
 				tuples.Add(uniqueTupleKey(table, group, row))
 			}
@@ -185,7 +186,7 @@ func loadUniqueTuples(conn *sql.DB, tableName string, table schema.Table, dbType
 
 // scanStoredRows reads the given columns of every stored row, normalising
 // driver values, and hands each row to fn. A nil conn has no stored rows.
-func scanStoredRows(conn *sql.DB, tableName string, cols []string, dbType string, fn func(map[string]interface{})) error {
+func scanStoredRows(ctx context.Context, conn *sql.DB, tableName string, cols []string, dbType string, fn func(map[string]interface{})) error {
 	if conn == nil {
 		return nil
 	}
@@ -194,7 +195,7 @@ func scanStoredRows(conn *sql.DB, tableName string, cols []string, dbType string
 		quoted[i] = db.QuoteIdent(c, dbType)
 	}
 	query := fmt.Sprintf("SELECT %s FROM %s", strings.Join(quoted, ", "), db.QuoteIdent(tableName, dbType)) //nolint:gosec
-	rows, err := conn.Query(query)
+	rows, err := conn.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("read existing rows of %s: %w", tableName, err)
 	}
@@ -217,7 +218,7 @@ func scanStoredRows(conn *sql.DB, tableName string, cols []string, dbType string
 	return rows.Err()
 }
 
-func loadSequenceStarts(conn *sql.DB, tableName string, table schema.Table, dbType string) (map[string]int, error) {
+func loadSequenceStarts(ctx context.Context, conn *sql.DB, tableName string, table schema.Table, dbType string) (map[string]int, error) {
 	starts := make(map[string]int)
 	for _, colName := range sortedColumnNames(table) {
 		col := table.Columns[colName]
@@ -230,7 +231,7 @@ func loadSequenceStarts(conn *sql.DB, tableName string, table schema.Table, dbTy
 		}
 		var maxVal interface{}
 		query := fmt.Sprintf("SELECT MAX(%s) FROM %s", db.QuoteIdent(colName, dbType), db.QuoteIdent(tableName, dbType)) //nolint:gosec
-		if err := conn.QueryRow(query).Scan(&maxVal); err != nil {
+		if err := conn.QueryRowContext(ctx, query).Scan(&maxVal); err != nil {
 			return nil, fmt.Errorf("read max %s.%s: %w", tableName, colName, err)
 		}
 		starts[colName] = sequenceStartAfter(col.Type, normalizeScanned(maxVal))
@@ -370,7 +371,9 @@ func keyValue(colType string, v interface{}) string {
 		}
 	case "datetime":
 		if t, ok := asTime(v, "2006-01-02 15:04:05"); ok {
-			return t.Format("2006-01-02 15:04:05")
+			// MySQL DATETIME/TIMESTAMP round fractional seconds on insert: two
+			// values in adjacent seconds can store as one key.
+			return t.UTC().Round(time.Second).Format("2006-01-02 15:04:05")
 		}
 	}
 	if n, ok := asInt(v); ok {

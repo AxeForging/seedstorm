@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +152,133 @@ func TestStreamJob_ReplaysBacklog(t *testing.T) {
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("missing %q in replayed body:\n%s", needle, body)
+		}
+	}
+}
+
+// A named SSE event called "error" also fires EventSource.onerror in browsers,
+// which closed the stream before "end" arrived: every failed job left the page
+// waiting forever. The terminal failure must use another event name.
+func TestStreamJob_FailedJobEndsWithFailureNotErrorEvent(t *testing.T) {
+	m := NewManager()
+	job := m.Start(context.Background(), "boom", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		jc.Phase("connect")
+		return nil, errors.New("target: ping database: connection refused")
+	})
+	<-job.Done()
+
+	srv := &Server{jobs: m}
+	w := httptest.NewRecorder()
+	srv.streamJob(w, httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil), job)
+
+	body := w.Body.String()
+	if strings.Contains(body, "event: error\n") {
+		t.Fatalf("stream uses the reserved 'error' event name:\n%s", body)
+	}
+	for _, needle := range []string{
+		"event: status\ndata: failed",
+		"event: failure\ndata: target: ping database: connection refused",
+		"event: end",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("missing %q in:\n%s", needle, body)
+		}
+	}
+	if strings.Index(body, "event: failure") > strings.Index(body, "event: end") {
+		t.Fatalf("failure must come before end:\n%s", body)
+	}
+}
+
+// Every job event carries an SSE id so a reconnecting client can resume after
+// the last one it saw instead of replaying (and duplicating) the whole log.
+func TestStreamJob_ResumesAfterLastSeenEvent(t *testing.T) {
+	m := NewManager()
+	job := m.Start(context.Background(), "resume", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		jc.Phase("one")
+		jc.Phase("two")
+		jc.Phase("three")
+		return nil, nil
+	})
+	<-job.Done()
+	srv := &Server{jobs: m}
+
+	w := httptest.NewRecorder()
+	srv.streamJob(w, httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil), job)
+	if body := w.Body.String(); !strings.Contains(body, "id: 1\n") || !strings.Contains(body, "id: 3\n") {
+		t.Fatalf("events carry no SSE ids:\n%s", body)
+	}
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream?after=2", nil),
+		func() *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil)
+			r.Header.Set("Last-Event-ID", "2")
+			return r
+		}(),
+	} {
+		w := httptest.NewRecorder()
+		srv.streamJob(w, req, job)
+		body := w.Body.String()
+		if strings.Contains(body, "] one") || strings.Contains(body, "] two") {
+			t.Fatalf("resumed stream replayed events already seen:\n%s", body)
+		}
+		if !strings.Contains(body, "] three") || !strings.Contains(body, "event: end") {
+			t.Fatalf("resumed stream lost later events:\n%s", body)
+		}
+	}
+}
+
+// A job that writes faster than the browser reads must not lose events: the
+// subscriber's buffer overflows, and the stream fills the gap from the job's
+// own event list (CI: "stream skipped events: got seq 9, want 8").
+func TestJobStream_SlowReaderStillSeesEveryEvent(t *testing.T) {
+	const lines = 500
+	s, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{ID: "stream-sess", DBType: "pgx"}
+	s.sessions.add(sess)
+	started := make(chan struct{})
+	job := s.jobs.StartFor(context.Background(), sess.ID, "noisy", func(ctx context.Context, jc JobControl) (map[string]any, error) {
+		<-started
+		for i := 0; i < lines; i++ {
+			_, _ = fmt.Fprintf(jc, "line %d\n", i)
+		}
+		return nil, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/stream", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Handler().ServeHTTP(rec, req)
+	}()
+	close(started)
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the stream did not end with the job")
+	}
+
+	var seqs []int
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if id, ok := strings.CutPrefix(line, "id: "); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(id))
+			if err != nil {
+				t.Fatalf("unreadable event id %q", id)
+			}
+			seqs = append(seqs, n)
+		}
+	}
+	if len(seqs) < lines {
+		t.Fatalf("stream carried %d events, want at least %d", len(seqs), lines)
+	}
+	for i, seq := range seqs {
+		if seq != i+1 {
+			t.Fatalf("event %d has seq %d: the stream skipped events", i+1, seq)
 		}
 	}
 }

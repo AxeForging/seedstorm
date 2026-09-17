@@ -1,6 +1,8 @@
 package web
 
 import (
+	"database/sql"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,5 +51,43 @@ func TestSessionRegistryOpenReleasesIdleDatabaseConnections(t *testing.T) {
 	}
 	if err := sess.Conn().Ping(); err != nil {
 		t.Fatalf("the session must reconnect on use: %v", err)
+	}
+}
+
+// Pages load the schema at the same time (graph, counts, access). They share
+// one introspection instead of each running one against the database.
+func TestSession_ConcurrentSchemaCallsShareOneIntrospection(t *testing.T) {
+	registerServeRunnerTestDriver()
+	conn, err := sql.Open(serveRunnerTestDriverName, "counted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	countedQueries.Store(0)
+	one := &Session{DBType: "pgx", conn: conn}
+	if _, err := one.Schema(false); err != nil {
+		t.Fatal(err)
+	}
+	perIntrospection := countedQueries.Load()
+	if perIntrospection == 0 {
+		t.Fatal("introspection ran no queries on the session connection")
+	}
+
+	countedQueries.Store(0)
+	shared := &Session{DBType: "pgx", conn: conn}
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := shared.Schema(false); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := countedQueries.Load(); got != perIntrospection {
+		t.Fatalf("12 concurrent calls ran %d queries, want one introspection's %d", got, perIntrospection)
 	}
 }

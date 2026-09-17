@@ -6,11 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/AxeForging/seedstorm/internal/compare"
 	"github.com/AxeForging/seedstorm/internal/db"
 	"github.com/AxeForging/seedstorm/internal/faker"
+	"github.com/AxeForging/seedstorm/internal/relations"
 	"github.com/AxeForging/seedstorm/internal/rules"
+	"github.com/AxeForging/seedstorm/internal/runerr"
+	"github.com/AxeForging/seedstorm/internal/safego"
 	"github.com/AxeForging/seedstorm/internal/schema"
 )
 
@@ -59,6 +64,10 @@ type MirrorConfig struct {
 	CountMode compare.CountMode
 	Profile   *rules.RuleSet
 	RunID     string
+	// SourceShapes, when set, shapes the target's foreign keys like the
+	// source's (from a compare or a snapshot file; never scanned here). A
+	// profile's own relationships win for the keys they name.
+	SourceShapes []relations.Shape
 	// OnCount reports snapshot progress: side is "source" or "target".
 	OnCount func(side string, done, total int, table string)
 }
@@ -69,12 +78,19 @@ type MirrorJob struct {
 	Plan      compare.MirrorPlan
 	Schema    *schema.Schema
 	Overrides faker.Overrides
-	Issues    []rules.Issue
-	RunID     string
+	// Shapes are the relationship shapes the run follows (profile + source).
+	Shapes map[string]faker.Shape
+	// ShapesSkipped names the measured shapes this schema cannot follow, with
+	// the reason for each (junction keys, key columns, self-references).
+	ShapesSkipped []string
+	Issues        []rules.Issue
+	RunID         string
 	// SameDatabaseUnchecked is true when a side was a pre-taken snapshot, so
 	// PrepareMirror could not verify that source and target differ.
 	SameDatabaseUnchecked bool
-	target                Endpoint
+	// Servers relates the two servers (shared server, replicas).
+	Servers ServerRelation
+	target  Endpoint
 }
 
 // Snapshots reads both sides and diffs them. It is the read-only half of a
@@ -87,13 +103,25 @@ func Snapshots(ctx context.Context, source, target Endpoint, mode compare.CountM
 		}
 		return func(done, total int, table string) { onCount(side, done, total, table) }
 	}
-	src, err := source.take(ctx, mode, progress("source"))
-	if err != nil {
-		return compare.Report{}, fmt.Errorf("source: %w", err)
+	// The two databases are independent: read them at the same time.
+	var src, tgt compare.Snapshot
+	var srcErr, tgtErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		srcErr = safego.Run("count source", func() (err error) { src, err = source.take(ctx, mode, progress("source")); return err })
+	}()
+	go func() {
+		defer wg.Done()
+		tgtErr = safego.Run("count target", func() (err error) { tgt, err = target.take(ctx, mode, progress("target")); return err })
+	}()
+	wg.Wait()
+	if srcErr != nil {
+		return compare.Report{}, runerr.OnSide(runerr.SideSource, runerr.At(runerr.PhaseCount, "", srcErr))
 	}
-	tgt, err := target.take(ctx, mode, progress("target"))
-	if err != nil {
-		return compare.Report{}, fmt.Errorf("target: %w", err)
+	if tgtErr != nil {
+		return compare.Report{}, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseCount, "", tgtErr))
 	}
 	return compare.Diff(src, tgt), nil
 }
@@ -108,6 +136,10 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 		if err := refuseSameDatabase(ctx, source, target); err != nil {
 			return nil, err
 		}
+	}
+	servers := RelateServers(ctx, source, target)
+	if servers.TargetWritesBlocked {
+		return nil, ErrTargetReplica
 	}
 	sc := target.Schema
 	if sc == nil {
@@ -132,9 +164,20 @@ func PrepareMirror(ctx context.Context, source, target Endpoint, cfg MirrorConfi
 	if err != nil {
 		return nil, err
 	}
-	job := &MirrorJob{Report: report, Plan: plan, Schema: sc, RunID: cfg.RunID, SameDatabaseUnchecked: unchecked, target: target}
+	job := &MirrorJob{Report: report, Plan: plan, Schema: sc, RunID: cfg.RunID, SameDatabaseUnchecked: unchecked, Servers: servers, target: target}
 	if job.RunID == "" {
 		job.RunID = rules.NewRunID()
+	}
+	if len(cfg.SourceShapes) > 0 {
+		job.Shapes, job.ShapesSkipped = shapesForSchema(sc, cfg.SourceShapes)
+	}
+	if shapes := cfg.Profile.Shapes(sc); len(shapes) > 0 {
+		if job.Shapes == nil {
+			job.Shapes = map[string]faker.Shape{}
+		}
+		for k, v := range shapes {
+			job.Shapes[k] = v
+		}
 	}
 	if cfg.Profile != nil {
 		job.Issues = cfg.Profile.Validate(sc)
@@ -149,11 +192,11 @@ func refuseSameDatabase(ctx context.Context, source, target Endpoint) error {
 	if source.Conn == nil || target.Conn == nil {
 		return errors.New("cannot check that source and target differ: an endpoint has no database connection")
 	}
-	srcID, err := db.Identity(ctx, source.Conn, source.DBType)
+	srcID, err := databaseIdentity(ctx, source.Conn, source.DBType)
 	if err != nil {
 		return fmt.Errorf("source: %w", err)
 	}
-	tgtID, err := db.Identity(ctx, target.Conn, target.DBType)
+	tgtID, err := databaseIdentity(ctx, target.Conn, target.DBType)
 	if err != nil {
 		return fmt.Errorf("target: %w", err)
 	}
@@ -173,13 +216,22 @@ func (j *MirrorJob) Preview(perTable int, selfRefDepth int) (map[string][]map[st
 func (j *MirrorJob) Run(ctx context.Context, opts Options, onTruncate func(done, total int, table string)) (Result, error) {
 	gen := j.generateOptions(opts.Generate.SelfRefDepth)
 	gen.OnWarning = opts.Generate.OnWarning
+	if len(gen.Shapes) > 0 {
+		// Fill generates a table in rounds: shapes deal over the whole planned table.
+		gen.ShapeTotals = j.Plan.Counts()
+	}
 	opts.Generate = gen
+	// Refuse tables that cannot be generated before anything is truncated.
+	if err := faker.CheckSeedable(j.Schema, j.Plan.Order, j.Overrides); err != nil {
+		return Result{}, err
+	}
 	if j.Plan.Mode == compare.ModeReset && len(j.Plan.Truncate) > 0 {
 		if err := db.TruncateConcurrently(ctx, j.target.Conn, j.target.DBType, j.Plan.Truncate, max(opts.Workers, 1), onTruncate); err != nil {
-			return Result{}, fmt.Errorf("truncate target: %w", err)
+			return Result{}, runerr.OnSide(runerr.SideTarget, runerr.At(runerr.PhaseTruncate, "", err))
 		}
 	}
-	return Fill(ctx, j.target.Conn, j.target.DBType, j.Schema, j.Plan.Order, j.Plan.Counts(), opts)
+	res, err := Fill(ctx, j.target.Conn, j.target.DBType, j.Schema, j.Plan.Order, j.Plan.Counts(), opts)
+	return res, runerr.OnSide(runerr.SideTarget, err)
 }
 
 func (j *MirrorJob) generateOptions(selfRefDepth int) faker.GenerateOptions {
@@ -188,6 +240,7 @@ func (j *MirrorJob) generateOptions(selfRefDepth int) faker.GenerateOptions {
 		opts.SelfRefDepth = selfRefDepth
 	}
 	opts.Overrides = j.Overrides
+	opts.Shapes = j.Shapes
 	return opts
 }
 
@@ -221,4 +274,38 @@ func Preview(conn *sql.DB, dbType string, sc *schema.Schema, order []string, cou
 	}
 	sort.Strings(preload)
 	return faker.GenerateFilteredWithOptions(sc, preload, order, 0, 0, sample, conn, dbType, gen)
+}
+
+// shapesForSchema compiles measured shapes for sc: the ones it can follow, and
+// a line per shape it cannot, with the reason. A mirror that silently seeded
+// half the keys evenly would look like the shapes did not work.
+func shapesForSchema(sc *schema.Schema, measured []relations.Shape) (map[string]faker.Shape, []string) {
+	fromSource, unmeasured := rules.RelationshipsFromShapes(measured)
+	rs := &rules.RuleSet{Relationships: fromSource}
+	applied := rs.Shapes(sc)
+	var skipped []string
+	for _, key := range unmeasured {
+		// A shape can be missing because the source could not measure it, or
+		// because this schema cannot follow it (a self-reference is dropped
+		// before it is ever compiled): say which.
+		reason := "not measured on the source"
+		if child, col, ok := strings.Cut(key, "."); ok {
+			// A key this schema holds but cannot shape (a self-reference is
+			// dropped before it is ever compiled) says so; one the schema does
+			// not hold keeps the measurement reason.
+			switch why := faker.ShapeSkipReason(sc, child, col); why {
+			case "", "table is not in the schema", "column is not in the table":
+			default:
+				reason = why
+			}
+		}
+		skipped = append(skipped, key+": "+reason)
+	}
+	for _, issue := range rs.Validate(sc) {
+		if key, ok := strings.CutPrefix(issue.Path, "relationships."); ok {
+			skipped = append(skipped, key+": "+strings.TrimPrefix(issue.Message, "not shaped: "))
+		}
+	}
+	sort.Strings(skipped)
+	return applied, skipped
 }
