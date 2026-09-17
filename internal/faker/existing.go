@@ -371,7 +371,9 @@ func keyValue(colType string, v interface{}) string {
 		}
 	case "datetime":
 		if t, ok := asTime(v, "2006-01-02 15:04:05"); ok {
-			return t.Format("2006-01-02 15:04:05")
+			// MySQL DATETIME/TIMESTAMP round fractional seconds on insert: two
+			// values in adjacent seconds can store as one key.
+			return t.UTC().Round(time.Second).Format("2006-01-02 15:04:05")
 		}
 	}
 	if n, ok := asInt(v); ok {
